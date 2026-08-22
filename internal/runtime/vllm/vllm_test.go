@@ -317,3 +317,32 @@ func endpointOf(t *testing.T, rawurl, key string) runtime.Endpoint {
 	return runtime.Endpoint{Host: u.Hostname(), Port: port,
 		Model: "qwen3-coder", Key: secret.New(key)}
 }
+
+// A gated repository needs a credential at launch, and the credential must not
+// end up in the server's argv where `ps` would show it to anything on the box.
+func TestHuggingFaceTokenIsExportedNotArgv(t *testing.T) {
+	r := New()
+	r.launcher = "vllm serve"
+	r.SetHuggingFaceToken(secret.New("hf_gatedtoken"))
+	cmd := r.launchCommand(spec(), plan(), runtime.Endpoint{
+		Host: runtime.Loopback, Port: RemotePort, Key: secret.New("k")})
+
+	if !strings.Contains(cmd, "export HF_TOKEN='hf_gatedtoken'") {
+		t.Errorf("token should be exported into the shell:\n%s", cmd)
+	}
+	// It must not appear after the launcher, which is what ends up in argv.
+	launchPart := cmd[strings.Index(cmd, "nohup"):]
+	if strings.Contains(launchPart, "hf_gatedtoken") {
+		t.Errorf("token leaked into the server's argv:\n%s", launchPart)
+	}
+}
+
+func TestNoTokenMeansNoExport(t *testing.T) {
+	r := New()
+	r.launcher = "vllm serve"
+	cmd := r.launchCommand(spec(), plan(), runtime.Endpoint{
+		Host: runtime.Loopback, Port: RemotePort, Key: secret.New("k")})
+	if strings.Contains(cmd, "HF_TOKEN") {
+		t.Errorf("an unset token should not appear at all:\n%s", cmd)
+	}
+}

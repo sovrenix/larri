@@ -108,6 +108,17 @@ func (r Requirements) Satisfies(computeCapability int) (bool, string) {
 		float64(computeCapability)/100, float64(r.MinComputeCapability)/100, r.Why)
 }
 
+// CredentialTaker is implemented by runtimes that need a credential to fetch
+// weights.
+//
+// It is a separate interface rather than a field on ModelSpec because a token
+// is a secret and ModelSpec is persisted in state (FR-STATE-05). Handing it
+// over at launch keeps it out of every snapshot and journal entry that carries
+// the spec.
+type CredentialTaker interface {
+	SetHuggingFaceToken(secret.Secret)
+}
+
 // Runtime is an inference engine.
 type Runtime interface {
 	Kind() core.RuntimeKind

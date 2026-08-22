@@ -46,6 +46,11 @@ type Runtime struct {
 	// rather than assumed, because images package it differently.
 	launcher string
 
+	// hfToken authenticates weight downloads for gated repositories. Held
+	// here rather than on ModelSpec because the spec is persisted and this
+	// must not be (FR-STATE-05).
+	hfToken secret.Secret
+
 	// Progress reporting granularity for weight download.
 	PollInterval time.Duration
 }
@@ -58,6 +63,9 @@ func New() *Runtime {
 }
 
 func (r *Runtime) Kind() core.RuntimeKind { return core.RuntimeVLLM }
+
+// SetHuggingFaceToken supplies the credential for gated weights.
+func (r *Runtime) SetHuggingFaceToken(t secret.Secret) { r.hfToken = t }
 
 // Image returns the container image for this spec and plan.
 func (r *Runtime) Image(core.ModelSpec, core.SizingPlan) string {
@@ -204,6 +212,16 @@ func (r *Runtime) launchCommand(spec core.ModelSpec, plan core.SizingPlan, ep ru
 	b.WriteString("pkill -f 'vllm.entrypoints.openai' >/dev/null 2>&1; ")
 	b.WriteString("pkill -f 'vllm serve' >/dev/null 2>&1; sleep 1; ")
 	b.WriteString(": > " + LogPath + "; ")
+	// Exported into the shell rather than prefixed onto the command, so the
+	// token does not appear in the server's own argv. FR-RT-03: it reaches the
+	// host as a process environment variable and is never written to a file
+	// there. The host has root and can read /proc/<pid>/environ regardless
+	// (§15.7) — this keeps it out of casual view, not out of the operator's
+	// threat model.
+	if !r.hfToken.Empty() {
+		b.WriteString("export HF_TOKEN=" + shellQuote(r.hfToken.Reveal()) + "; ")
+		b.WriteString("export HUGGING_FACE_HUB_TOKEN=\"$HF_TOKEN\"; ")
+	}
 	// The server must outlive this exec channel. Without nohup and a detached
 	// redirect it dies with the SSH session and readiness chases a process
 	// that was never going to be there.

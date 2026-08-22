@@ -143,6 +143,11 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 		return live, err
 	}
 
+	// Hand the weight-download credential over at launch, so it never reaches
+	// a snapshot or a journal entry (FR-STATE-05).
+	if taker, ok := o.Runtime.(runtime.CredentialTaker); ok && !hfToken.Empty() {
+		taker.SetHuggingFaceToken(hfToken)
+	}
 	o.emit("launch", "starting %s", o.Runtime.Kind())
 	ep, err := o.Runtime.Launch(ctx, sess, rig.Model, rig.Plan)
 	if err != nil {
