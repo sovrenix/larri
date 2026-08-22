@@ -9,7 +9,7 @@
 |---|---|
 | **Document Title** | LARRI — Requirements Specification |
 | **Document ID** | LARRI-REQ-001 |
-| **Version** | 0.15 — Configuration Bootstrap |
+| **Version** | 0.16 — Cheapest-With-Floors Selection |
 | **Status** | Draft for Review |
 | **Author** | Ram Katru |
 | **Date** | 2026-08-21 |
@@ -233,12 +233,14 @@ which is precisely the condition `--interruptible` expresses.
 |---|---|---|
 | FR-SRCH-01 | M | Query all enabled providers concurrently and normalize results into a single `Offer` type. |
 | FR-SRCH-02 | M | Filter offers by both the operator's criteria and the computed VRAM requirement from §7.1. |
-| FR-SRCH-03 | M | Rank surviving offers by a documented, inspectable scoring function over price, fit, reliability, region/latency, and bandwidth. |
+| FR-SRCH-03 | M | **Select the cheapest offer that meets the criteria and passes the safety floors.** Criteria are a hard filter; fit is a filter, not a scoring term — once the model is known to run, VRAM headroom has no further business competing with price. Every exclusion records a typed reason and evidence, and the selection prints what it rejected alongside what it chose: an operator asking "why not the cheap one" gets the reason, not a score. |
+| FR-SRCH-09 | M | Apply a reliability floor and a price-outlier floor before selecting on price. Both are configurable and both are overridable, but neither may be bypassed by accident: selecting on price alone steers toward exactly what a host harvesting prompts would list. |
+| FR-SRCH-10 | M | Break ties deterministically, so the same market yields the same selection and a choice can be reproduced in a bug report. |
 | FR-SRCH-04 | M | Present ranked candidates with per-offer price, specs, provider, and score before purchase when run interactively. |
 | FR-SRCH-05 | S | Support `--dry-run`: full search, rank, and plan output with zero spend. |
 | FR-SRCH-06 | M | Degrade gracefully when one provider errors or rate-limits — continue with the rest and report the omission explicitly rather than silently narrowing the search. |
 | FR-SRCH-07 | C | Watch mode: poll until an offer meeting criteria appears below a target price. |
-| FR-SRCH-08 | S | Treat a price anomalously low for the hardware class as a signal rather than a bargain. Ranking optimises for price, so a host seeking renters lists below market; a large negative outlier must be surfaced in the score breakdown and must not be scored as optimal. |
+| FR-SRCH-08 | M | Treat a price anomalously low for the hardware class as a signal rather than a bargain, measured against the **class median** with a robust spread and a minimum sample size — never against the mean, which a long tail of overpriced listings renders meaningless. Exclude and report; never silently drop, and never silently select. |
 
 ### 7.3 Provisioning (FR-PROV)
 

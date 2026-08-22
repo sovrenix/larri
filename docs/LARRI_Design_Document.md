@@ -9,7 +9,7 @@
 |---|---|
 | **Document Title** | LARRI — Design Document |
 | **Document ID** | LARRI-DES-001 |
-| **Version** | 0.15 — Configuration Bootstrap |
+| **Version** | 0.16 — Cheapest-With-Floors Selection |
 | **Status** | Draft for Review |
 | **Author** | Ram Katru |
 | **Date** | 2026-08-21 |
@@ -29,7 +29,7 @@
 5. [Provider Layer](#5-provider-layer)
 6. [Runtime Layer](#6-runtime-layer)
 7. [Sizing Engine](#7-sizing-engine)
-8. [Ranking Engine](#8-ranking-engine)
+8. [Selection Engine](#8-selection-engine)
 9. [Provisioning Sequence](#9-provisioning-sequence)
 10. [Wiring Layer](#10-wiring-layer)
 11. [State Store and Reconciliation](#11-state-store-and-reconciliation)
@@ -544,41 +544,77 @@ shortfall named (FR-CRIT-06, NFR-11):
 
 ---
 
-## 8. Ranking Engine
+## 8. Selection Engine
 
+**Criteria are a hard filter. Among everything that survives it, LARRI takes the cheapest
+offer that passes the safety floors.**
+
+That is the product goal stated plainly: the operator says what they need, and LARRI finds
+the least expensive hardware that provides it. Anything more elaborate has to justify
+charging them more than they asked to pay.
+
+An earlier revision of this section specified a weighted score across price, fit,
+reliability, bandwidth, and region, and asserted that "ranking optimises for value, not raw
+price". Two things were wrong with it. Appendix A's worked example — a $1.29 A100 beating a
+$0.81 A6000 — **cannot be produced by the formula it illustrates**: scored with those
+weights the A6000 reaches 0.892 against the A100's 0.711, and the A100's claimed 0.81 is
+above its arithmetic ceiling of 0.717. And the example's premise was confused, because there
+the cheaper card was also the better-fitting one, so price and fit agreed rather than traded
+off. A worked example that cannot occur is worse than none: it would have taught whoever
+implemented this the opposite of what the formula does.
+
+### 8.1 The Filters
+
+Each is a hard gate, and each records **why** it excluded an offer. FR-SRCH-03 requires
+selection to be inspectable, and an operator asking "why not the cheap one" deserves the
+actual reason rather than a score.
+
+| Gate | Rejects | Rationale |
+|---|---|---|
+| **Criteria** | GPU model, count, region, disk, max price | What the operator asked for |
+| **Fit** | Offers whose VRAM cannot hold the model | §7's plan; a rig that OOMs is not cheap |
+| **Reliability floor** | Below `reliability_floor`, default 0.90 | A host that vanishes mid-run costs more than it saved |
+| **Price outlier** | Anomalously below the class median | §8.2 |
+| **Interruptible** | Bid offers unless required (Q-04) | A preempted instance still bills storage |
+
+Fit is a *filter* here rather than a scoring term. It answers one question — will the model
+run — and once answered it has no further business competing with price. An 80 GB card
+serving a 19 GB model is wasteful, but it is not wrong, and if it is the cheapest thing that
+works then it is the right answer.
+
+### 8.2 Anomalously Cheap Is a Signal, Not a Bargain (FR-SRCH-08)
+
+Ranking by price walks straight toward whatever a host fishing for prompts and tokens would
+list, so the floor is not optional. Live Vast data for RTX 4090: n=208, min $0.135, mean
+$0.951, max $8.002.
+
+The mean is useless here — dragged upward by a tail of listings at $8/hr, which is H100
+territory and not the market. So the test is against the **median for the GPU model class**,
+with spread measured by median absolute deviation, and it needs a **minimum sample** before
+it judges anything: a model with four listings has no distribution to be an outlier in.
+
+An offer far below its class median is excluded and *reported*, not silently dropped. It may
+be a genuine bargain on tired hardware, and the operator can lower the floor deliberately —
+but they should do it knowing what they are overriding.
+
+### 8.3 What the Operator Sees
+
+Selection prints the choice **and the road not taken**, so the cost of the safety floors is
+visible rather than implicit:
+
+```console
+  ranked    1. vastai  RTX 4090 24GB  $0.42/hr  rel 0.97   ← selected
+            excluded:
+              RTX 4090 24GB  $0.135/hr  reliability 0.61 below floor 0.90
+              RTX 4090 24GB  $0.19/hr   4.9× below class median $0.94
+              A100 80GB      $1.29/hr   costlier than the selection
 ```
-score(o) = w_price·priceScore + w_fit·fitScore + w_rel·o.Reliability
-         + w_net·netScore + w_region·regionScore − interruptiblePenalty(o)
 
-priceScore  = minPrice / o.PriceHr                      // 1.0 for the cheapest survivor
-fitScore    = clamp(required / availableVRAM, 0, 1)     // penalises gross over-provision
-netScore    = clamp(o.NetDownMbps / 1000, 0, 1)         // download time is billed time
-regionScore = 1.0 if preferred, else 0.5
-```
+An operator who wants the $0.135 machine can have it. What they cannot do is get it by
+accident.
 
-Default weights: price 0.40, fit 0.20, reliability 0.20, net 0.10, region 0.10.
-`interruptiblePenalty` is 0.15 when interruptible offers are merely *allowed*, 0 when
-explicitly required.
-
-**Anomalous pricing needs a median, not a mean (FR-SRCH-08).** Live RTX 4090 offers on
-Vast: n=208, min $0.135, mean $0.951, max $8.002. The mean is dragged upward by a long tail
-of overpriced listings and describes almost nothing in the distribution — a 4090 at $8/hr is
-in H100 territory and is not the market. An anomaly rule expressed against the mean would
-flag a wide band of legitimately cheap offers while missing what it was written for.
-
-So the outlier test is expressed against the **median for the GPU model class**, with the
-spread measured robustly (median absolute deviation or an interquartile range), and it needs
-a minimum sample before it reports anything at all — a model with four listings has no
-distribution to be an outlier in.
-
-`fitScore` deserves a note: an 80 GB card serving a 19 GB model scores poorly not because
-it fails, but because the operator is paying for VRAM they cannot use. Ranking optimises
-for value, not raw price.
-
-Weights are configurable and the full scoring breakdown is printed with `larri offers`.
-An unexplainable ranking is a bug (FR-SRCH-03).
-
----
+Ties are broken deterministically — by reliability, then by offer ID — so the same market
+produces the same choice twice, which is what makes a selection reproducible in a bug report.
 
 ## 9. Provisioning Sequence
 
@@ -2181,7 +2217,7 @@ GPL-3.0-or-later`), and dependency licences are audited for GPL-3.0 compatibilit
 | **M0** | Nothing can spend yet | Module, CI, SPDX header check, licence audit gate, `Secret` type, error taxonomy, **fake provider + fake runtime** | Builds clean; `go vet`, `gofmt`, race, and header checks enforced in CI |
 | **M1** | One rig, safely | `config`, `sizing` (live facts + cache), `state` **including the journal**, `provider/vastai`, `runtime/vllm`, `sshx` (in-process, pinned host key, ephemeral key), `wire` (tunnel + proxy + credential boundary), teardown with verified absence and a termination record, CLI `up`/`down`/`status` | AC-1.1 … AC-1.5, AC-2.9, AC-3.4, AC-3.7, AC-3.7, AC-4.6 … AC-4.9, AC-4.12 … AC-4.14, AC-4.16, AC-4.17 |
 | **M2** | Cost safety under failure | Reconciliation, orphan sweep, `STOPPED` semantics and resume detection, budget ceilings, idle reclamation, crash injection, provider-unreachable handling | AC-2.1 … AC-2.8 |
-| **M3** | Breadth | RunPod adapter, llama.cpp + Ollama runtimes, ranking weights and anomaly signal, `offers` / `--dry-run`, image variant selection | AC-3.1 … AC-3.6, AC-4.10, AC-4.11 |
+| **M3** | Breadth | RunPod adapter, llama.cpp + Ollama runtimes, `offers` / `--dry-run`, image variant selection | AC-3.1 … AC-3.6, AC-4.10, AC-4.11 |
 | **M4** | Surfaces | Daemon API + SSE, tool registry, MCP server, TUI, web UI (console + chat panes, separate origins), client config writers, preemption recovery | AC-4.1 … AC-4.5, AC-4.15 |
 | **M5** | Observability | OTel SDK wiring, lifecycle traces with cost attribution, host/runtime/proxy collectors, persisted metric store, console graphs, optional OTLP and Prometheus export | AC-5.1 … AC-5.4 |
 
@@ -2241,10 +2277,11 @@ $ larri up --model Qwen/Qwen3-Coder-30B --quantization q4_K_M --context 32768 \
   sizing    Qwen3-Coder-30B @ q4_K_M, 32768 ctx
             weights 19.1 GB · kv-cache 4.2 GB · overhead 2.1 GB → 27.9 GB required
   search    vastai 214 offers · runpod 38 offers → 19 satisfy criteria
-  ranked    1. vastai  A100 80GB  $1.29/hr  fit 0.35  rel 0.98  score 0.81
-            2. runpod  A100 80GB  $1.44/hr  fit 0.35  rel 0.99  score 0.76
-            3. vastai  A6000 48GB $0.81/hr  fit 0.58  rel 0.91  score 0.74
-  → select  vastai #9182736 @ $1.29/hr   [confirm? y]
+  ranked    1. vastai  A6000 48GB $0.81/hr  rel 0.91   ← cheapest that fits
+            2. vastai  A100 80GB  $1.29/hr  rel 0.98
+            3. runpod  A100 80GB  $1.44/hr  rel 0.99
+            excluded: A6000 48GB $0.22/hr  3.7× below class median $0.81
+  → select  vastai #7710021 @ $0.81/hr   [confirm? y]
 
   create    intent journaled · instance 14872213 · label larri:01J9Z…
   boot      image ✓ · weights 19.1 GB ████████████ 100% (4m12s, $0.09)
@@ -2270,7 +2307,8 @@ $ larri down
     last request 13:51:04 · inspect with: larri status 01J9Z…
 ```
 
-Note the third-ranked offer: an A6000 at $0.81/hr scores close to the A100 at $1.29/hr
-despite being far cheaper, because `fitScore` rewards using the VRAM you rent. That is the
-ranking engine working as designed (§8) — and the reason ranking is inspectable rather than
-a hidden heuristic.
+Note what was excluded rather than merely out-ranked. A $0.22/hr A6000 would have been the
+cheapest thing that fits, and it is not selected because it sits 3.7× below its class median
+— the shape a host fishing for renters would list (§8.2). The operator can take it anyway by
+lowering the floor. What they cannot do is take it by accident, which is why selection prints
+its exclusions rather than only its choice.
