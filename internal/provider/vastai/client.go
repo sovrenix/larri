@@ -40,11 +40,20 @@ const listPageMax = 25
 
 // searchLimit caps offers requested per search.
 //
-// The bundles endpoint returns at most this many with no "truncated" flag in
-// the response, so a full page is the only signal that more matched. Live runs
-// against a broad query hit this ceiling, which is why Search reports it
-// instead of letting a round number pass for a complete picture.
-const searchLimit = 500
+// A live probe walked the limit upward and found no server-side ceiling: 100,
+// 500 and 1000 each returned exactly what was asked for, while 5000 returned
+// 2382 — the entire rentable on-demand market. The cap was ours alone.
+//
+// That matters because the server sorts by price ascending. At the previous
+// limit of 500, LARRI saw the 500 cheapest of 2382 offers and was blind to
+// four fifths of the market, entirely at the more expensive end — which is
+// where the better-fitting cards live, and fit exists precisely to stop the
+// operator over-paying for VRAM they cannot use (§8).
+//
+// The value now sits well clear of the observed market size, and Search still
+// reports a full page, because the market will grow and the notice is what
+// keeps that growth from silently reintroducing the blind spot.
+const searchLimit = 10000
 
 // listPageBudget bounds pagination so a paging bug cannot spin forever. 400
 // pages is 10,000 instances — far past any plausible account, and cheap

@@ -310,8 +310,7 @@ func TestSearchReportsTruncation(t *testing.T) {
 	full := make([]string, searchLimit)
 	for i := range full {
 		full[i] = fmt.Sprintf(
-			`{"id":%d,"gpu_name":"V100","num_gpus":1,"gpu_ram":32768,"dph_total":%f}`,
-			i, 0.02+float64(i)/10000)
+			`{"id":%d,"gpu_name":"V100","num_gpus":1,"gpu_ram":32768,"dph_total":0.02}`, i)
 	}
 	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"offers":[%s]}`, strings.Join(full, ","))

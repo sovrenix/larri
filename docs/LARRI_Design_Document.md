@@ -560,6 +560,17 @@ Default weights: price 0.40, fit 0.20, reliability 0.20, net 0.10, region 0.10.
 `interruptiblePenalty` is 0.15 when interruptible offers are merely *allowed*, 0 when
 explicitly required.
 
+**Anomalous pricing needs a median, not a mean (FR-SRCH-08).** Live RTX 4090 offers on
+Vast: n=208, min $0.135, mean $0.951, max $8.002. The mean is dragged upward by a long tail
+of overpriced listings and describes almost nothing in the distribution — a 4090 at $8/hr is
+in H100 territory and is not the market. An anomaly rule expressed against the mean would
+flag a wide band of legitimately cheap offers while missing what it was written for.
+
+So the outlier test is expressed against the **median for the GPU model class**, with the
+spread measured robustly (median absolute deviation or an interquartile range), and it needs
+a minimum sample before it reports anything at all — a model with four listings has no
+distribution to be an outlier in.
+
 `fitScore` deserves a note: an 80 GB card serving a 19 GB model scores poorly not because
 it fails, but because the operator is paying for VRAM they cannot use. Ranking optimises
 for value, not raw price.
