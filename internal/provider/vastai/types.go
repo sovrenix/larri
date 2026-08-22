@@ -153,6 +153,9 @@ func (o wireOffer) normalise() (core.Offer, error) {
 	if o.ComputeCap != nil {
 		out.ComputeCapability = int(*o.ComputeCap)
 	}
+	if o.MachineID != nil {
+		out.MachineID = strconv.FormatInt(*o.MachineID, 10)
+	}
 	if o.IsBid != nil {
 		out.Interruptible = *o.IsBid
 	}
@@ -209,6 +212,8 @@ type wireInstance struct {
 	ID           *int64         `json:"id"`
 	ActualStatus *string        `json:"actual_status"`
 	CurState     *string        `json:"cur_state"`
+	StatusMsg    *string        `json:"status_msg"`
+	IntendedStat *string        `json:"intended_status"`
 	Label        *string        `json:"label"`
 	SSHHost      *string        `json:"ssh_host"`
 	SSHPort      *int           `json:"ssh_port"`
@@ -253,6 +258,12 @@ func (i wireInstance) normalise() (core.Instance, error) {
 		out.CreatedAt = time.Unix(sec, 0).UTC()
 	}
 	out.Running = isRunning(i.ActualStatus)
+	if i.ActualStatus != nil {
+		out.Status = *i.ActualStatus
+	}
+	if i.StatusMsg != nil {
+		out.StatusMsg = strings.TrimSpace(*i.StatusMsg)
+	}
 	if i.Label != nil && *i.Label != "" {
 		if id, ok := strings.CutPrefix(*i.Label, core.LabelKey+":"); ok {
 			out.Labels = map[string]string{core.LabelKey: id}

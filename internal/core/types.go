@@ -83,10 +83,15 @@ type Offer struct {
 	// Pascal, 700 for Volta, 890 for Ada. It is a *selection* input, not a
 	// diagnostic: vLLM will not run below 700, so renting a Pascal card to
 	// serve with vLLM buys hardware that cannot work at any price.
-	ComputeCapability int             `json:"compute_capability,omitempty"`
-	DriverVersion     string          `json:"driver_version,omitempty"`
-	Certified         bool            `json:"certified,omitempty"`
-	Raw               json.RawMessage `json:"-"` // provider payload, for debugging only
+	ComputeCapability int    `json:"compute_capability,omitempty"`
+	DriverVersion     string `json:"driver_version,omitempty"`
+	Certified         bool   `json:"certified,omitempty"`
+
+	// MachineID identifies the physical host. A marketplace lists several
+	// offers per machine, so falling back on offer ID alone can land on the
+	// same box that just failed — which a live run did, twice.
+	MachineID string          `json:"machine_id,omitempty"`
+	Raw       json.RawMessage `json:"-"` // provider payload, for debugging only
 }
 
 // VRAMTotalGB is the aggregate VRAM an offer provides.
@@ -94,12 +99,20 @@ func (o Offer) VRAMTotalGB() int { return o.VRAMPerGPUGB * o.GPUCount }
 
 // Instance is a live provider resource.
 type Instance struct {
-	Provider   string            `json:"provider"`
-	InstanceID string            `json:"instance_id"`
-	OfferID    string            `json:"offer_id"`
-	PriceHr    float64           `json:"price_hr"`
-	StorageHr  float64           `json:"storage_hr,omitempty"` // still charged while STOPPED
-	Running    bool              `json:"running"`
+	Provider   string  `json:"provider"`
+	InstanceID string  `json:"instance_id"`
+	OfferID    string  `json:"offer_id"`
+	PriceHr    float64 `json:"price_hr"`
+	StorageHr  float64 `json:"storage_hr,omitempty"` // still charged while STOPPED
+	Running    bool    `json:"running"`
+
+	// Status and StatusMsg are the provider's own account of what the
+	// instance is doing — "loading" while an image pulls, with a message
+	// carrying the progress. Waiting on a boot without reading these is
+	// waiting blind, and a blind timer cannot tell a 15 GB pull that is
+	// working from a host that has stopped trying.
+	Status     string            `json:"status,omitempty"`
+	StatusMsg  string            `json:"status_msg,omitempty"`
 	SSHHost    string            `json:"ssh_host"`
 	SSHPort    int               `json:"ssh_port"`
 	SSHProxied bool              `json:"ssh_proxied,omitempty"`

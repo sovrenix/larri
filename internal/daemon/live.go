@@ -188,18 +188,49 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 	return live, nil
 }
 
+// waitForSSH waits for the host to become usable, driven by what the provider
+// says it is doing rather than by a blind clock.
+//
+// A live run made the case for this. Three attempts each died at a six-minute
+// deadline while the host was still pulling the runtime image — a stock vLLM
+// image is 10-15 GB, and Vast reports that phase as "loading". Every timeout
+// threw away a partly-finished pull and started the same one on a fresh
+// machine, so the run spent eighteen minutes of billing and kept no progress
+// at all. The deadline was not protecting the operator; it was burning their
+// money on principle.
+//
+// So the wait is **progress-driven**: as long as the provider's status keeps
+// changing, the host is working and LARRI keeps waiting. What ends it is a
+// *stall* — no change for StallTimeout — which is the actual signal that a
+// machine has stopped trying. An overall cap remains, because a host that
+// reports novel status messages forever is still a host that is not serving.
+//
+// It also reports each change, so a long boot looks like progress rather than
+// like a hang (FR-RT-06 applied to the phase before the runtime exists).
 func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Instance, error) {
-	// A machine that has not accepted a connection in a few minutes is
-	// usually not going to. Waiting longer costs money and delays the
-	// fallback that would actually work, so the window is short and the
-	// answer to a dead host is the next offer rather than more patience.
-	deadline := time.Now().Add(6 * time.Minute)
-	backoff := 5 * time.Second
+	stall := o.BootStallTimeout
+	if stall == 0 {
+		stall = 8 * time.Minute
+	}
+	cap := o.BootCap
+	if cap == 0 {
+		cap = 30 * time.Minute
+	}
+	poll := o.BootPollInterval
+	if poll == 0 {
+		poll = 10 * time.Second
+	}
+	var (
+		lastSeen  string
+		changedAt = time.Now()
+		deadline  = time.Now().Add(cap)
+	)
 	for time.Now().Before(deadline) {
 		inst, err := o.Provider.Get(ctx, rig.Instance.InstanceID)
 		switch {
 		case err != nil:
-			// Unreachable is not absent; keep asking (FR-SUP-11).
+			// Unreachable is not absent; keep asking (FR-SUP-11). A provider
+			// outage must not be mistaken for a dead host.
 			o.warn("boot", "status query failed: %v", err)
 		case inst == nil:
 			return nil, errs.Newf(errs.ClassProviderUnknownOutcome, "daemon.waitForSSH",
@@ -207,19 +238,49 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 		case inst.Running && inst.SSHHost != "" && inst.SSHPort > 0:
 			return inst, nil
 		default:
-			o.emit("boot", "instance not reporting an endpoint yet")
+			if now := describeBoot(inst); now != lastSeen {
+				o.emit("boot", "%s", now)
+				lastSeen, changedAt = now, time.Now()
+			}
+		}
+		if idle := time.Since(changedAt); idle > stall {
+			return nil, errs.Newf(errs.ClassHostFailure, "daemon.waitForSSH",
+				"no progress for %s (last: %s)", idle.Round(time.Second), orUnknown(lastSeen))
 		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(backoff):
-		}
-		if backoff < 20*time.Second {
-			backoff += 5 * time.Second
+		case <-time.After(poll):
 		}
 	}
 	return nil, errs.Newf(errs.ClassHostFailure, "daemon.waitForSSH",
-		"host never accepted connections")
+		"host did not become usable within %s (last: %s)", cap, orUnknown(lastSeen))
+}
+
+// describeBoot renders the provider's account of what a host is doing.
+func describeBoot(inst *core.Instance) string {
+	status := inst.Status
+	if status == "" {
+		status = "starting"
+	}
+	if inst.StatusMsg != "" {
+		msg := inst.StatusMsg
+		if len(msg) > 120 {
+			msg = msg[:120]
+		}
+		return status + ": " + msg
+	}
+	if inst.SSHHost == "" {
+		return status + " (no ssh endpoint yet)"
+	}
+	return status
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "no status reported"
+	}
+	return s
 }
 
 // verifyPlacedHardware re-runs the fit check against the machine that was

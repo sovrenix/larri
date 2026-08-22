@@ -49,6 +49,21 @@ type Orchestrator struct {
 
 	Events chan<- Event
 
+	// BootStallTimeout ends a wait when the provider's status has stopped
+	// changing. It is the real signal that a host gave up, where a fixed
+	// deadline only measures how long an image happens to be. Zero means
+	// eight minutes.
+	BootStallTimeout time.Duration
+
+	// BootCap bounds a boot even when the status keeps changing. Zero means
+	// thirty minutes.
+	BootCap time.Duration
+
+	// BootPollInterval is how often the provider is asked what a booting host
+	// is doing. Zero means ten seconds — often enough to render progress,
+	// rare enough not to matter against a rate limit.
+	BootPollInterval time.Duration
+
 	// MaxHostAttempts bounds how many machines a single `up` will try before
 	// giving up. Zero means three.
 	MaxHostAttempts int
@@ -57,10 +72,12 @@ type Orchestrator struct {
 	// persisted: FR-STATE-05 forbids private keys in state files.
 	lastKeys *sshx.KeyPair
 
-	// excluded holds offers already tried and found unusable this run, so
-	// fallback moves to a different machine rather than retrying the one that
-	// just failed.
-	excluded []string
+	// excludedMachines holds hosts already tried and found unusable this run.
+	//
+	// Keyed by machine rather than by offer, because a marketplace lists
+	// several offers per physical host: a live run fell back twice and landed
+	// on the same box each time, since only the offer ID had changed.
+	excludedMachines []string
 }
 
 func (o *Orchestrator) emit(phase, format string, args ...any) {
@@ -144,8 +161,13 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 		return false, fmt.Sprintf("%s short",
 			sizing.HumanBytes(plan.RequiredVRAMBytes-avail))
 	}
-	if len(o.excluded) > 0 {
-		offers = withoutOffers(offers, o.excluded)
+	if len(o.excludedMachines) > 0 {
+		before := len(offers)
+		offers = withoutMachines(offers, o.excludedMachines)
+		if dropped := before - len(offers); dropped > 0 {
+			o.emit("fallback", "skipping %d offers on %d host(s) already tried",
+				dropped, len(o.excludedMachines))
+		}
 	}
 	sel := rank.Select(offers, req.Criteria, fits, o.Policy)
 	if sel.Selected == nil {
@@ -245,7 +267,7 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 		if rig != nil && rig.Instance != nil {
 			o.warn("cleanup", "tearing down rather than leaving it billing")
 			o.teardownAfterFailure(rig, core.ReasonHostFailure, err)
-			o.excluded = append(o.excluded, rig.Offer.OfferID)
+			o.excludedMachines = append(o.excludedMachines, machineKey(rig.Offer))
 		}
 		// Only host-attributable failures are worth another machine.
 		if errs.ClassOf(err) != errs.ClassHostFailure {
@@ -269,7 +291,10 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 func (o *Orchestrator) attempt(ctx context.Context, req UpRequest) (*Live, *core.Rig, error) {
 	deadline := o.Deadline
 	if deadline == 0 {
-		deadline = 30 * time.Minute
+		// Generous on purpose: a stock vLLM image is 10-15 GB and the weight
+		// download follows it. The thing that ends a bad attempt early is
+		// stall detection, not this ceiling.
+		deadline = 45 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
@@ -304,16 +329,29 @@ func (o *Orchestrator) teardownAfterFailure(rig *core.Rig, code core.ReasonCode,
 	}
 }
 
-// withoutOffers drops offers already tried this run, so a fallback lands on a
-// different machine instead of the one that just failed.
-func withoutOffers(offers []core.Offer, ids []string) []core.Offer {
-	skip := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		skip[id] = true
+// machineKey identifies the physical host behind an offer, falling back to the
+// offer itself when the provider does not report one.
+func machineKey(o core.Offer) string {
+	if o.MachineID != "" {
+		return o.Provider + ":m" + o.MachineID
+	}
+	return o.Provider + ":o" + o.OfferID
+}
+
+// withoutMachines drops every offer on a host already tried this run.
+//
+// Excluding by machine rather than by offer is the point: a marketplace lists
+// several offers per physical box, so an offer-keyed exclusion lets a fallback
+// land on exactly the host that just failed — which a live run did twice, on
+// the same "GTX 1660 S $0.036/hr" each time.
+func withoutMachines(offers []core.Offer, machines []string) []core.Offer {
+	skip := make(map[string]bool, len(machines))
+	for _, m := range machines {
+		skip[m] = true
 	}
 	out := offers[:0:0]
 	for _, of := range offers {
-		if !skip[of.OfferID] {
+		if !skip[machineKey(of)] {
 			out = append(out, of)
 		}
 	}

@@ -5,6 +5,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +30,7 @@ func offers() []core.Offer {
 		out = append(out, core.Offer{
 			Provider: "fake", OfferID: string(rune('a' + i)), GPUModel: "RTX 4090",
 			GPUCount: 1, VRAMPerGPUGB: 24, PriceHr: 0.40 + float64(i)*0.05,
-			Reliability: 0.97,
+			Reliability: 0.97, MachineID: fmt.Sprintf("m%d", i),
 		})
 	}
 	return out
@@ -335,7 +336,7 @@ func TestFallbackSkipsTheOfferThatFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o.excluded = append(o.excluded, first.Offer.OfferID)
+	o.excludedMachines = append(o.excludedMachines, machineKey(first.Offer))
 
 	second, err := o.Up(context.Background(), upReq())
 	if err != nil {
@@ -344,7 +345,46 @@ func TestFallbackSkipsTheOfferThatFailed(t *testing.T) {
 	if second.Offer.OfferID == first.Offer.OfferID {
 		t.Fatal("fallback re-selected the offer that just failed")
 	}
+	// The live failure: three fallbacks, three different offer IDs, the same
+	// "GTX 1660 S $0.036/hr" box every time.
+	if machineKey(second.Offer) == machineKey(first.Offer) {
+		t.Fatal("fallback landed on the same physical host")
+	}
+	if machineKey(second.Offer) == machineKey(first.Offer) {
+		t.Fatal("fallback landed on the same physical host, which is what a live run did")
+	}
 	if second.Offer.PriceHr < first.Offer.PriceHr {
 		t.Error("the fallback should be the next cheapest, not a cheaper one")
+	}
+}
+
+// A marketplace lists several offers per physical host, so excluding by offer
+// ID lets a fallback land on exactly the box that just failed.
+func TestFallbackExcludesTheWholeMachineNotJustTheOffer(t *testing.T) {
+	sameBox := []core.Offer{
+		{Provider: "fake", OfferID: "slot-1", MachineID: "44221", GPUModel: "GTX 1660 S", PriceHr: 0.036},
+		{Provider: "fake", OfferID: "slot-2", MachineID: "44221", GPUModel: "GTX 1660 S", PriceHr: 0.036},
+		{Provider: "fake", OfferID: "slot-3", MachineID: "44221", GPUModel: "GTX 1660 S", PriceHr: 0.036},
+		{Provider: "fake", OfferID: "other", MachineID: "99887", GPUModel: "RTX 3060", PriceHr: 0.11},
+	}
+	left := withoutMachines(sameBox, []string{machineKey(sameBox[0])})
+	if len(left) != 1 {
+		t.Fatalf("%d offers survived; every slot on the failed host must go", len(left))
+	}
+	if left[0].MachineID != "99887" {
+		t.Errorf("survivor is on machine %s, want a different host", left[0].MachineID)
+	}
+}
+
+// Providers that do not report a machine fall back to per-offer exclusion,
+// which is weaker but never worse than nothing.
+func TestMachineKeyFallsBackToOfferID(t *testing.T) {
+	o := core.Offer{Provider: "p", OfferID: "abc"}
+	if machineKey(o) != "p:oabc" {
+		t.Errorf("machineKey = %q", machineKey(o))
+	}
+	o.MachineID = "44221"
+	if machineKey(o) != "p:m44221" {
+		t.Errorf("machineKey = %q", machineKey(o))
 	}
 }
