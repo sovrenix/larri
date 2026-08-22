@@ -5,6 +5,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -409,5 +410,41 @@ func TestWarmRegimeIsPatientWhileTheLogGrows(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "no output") {
 		t.Error("a runtime that produced output was reported as silent")
+	}
+}
+
+// The race that fixing the previous race exposed.
+//
+// The provider's start-up script installs LARRI's ephemeral key, and it runs
+// after sshd is already listening. Between the banner appearing and the script
+// finishing, the host is reachable and will not accept us — and the endpoint
+// probe, by getting us there sooner, made that window easier to hit.
+func TestAuthFailureDuringBringUpIsTiming(t *testing.T) {
+	cases := map[string]bool{
+		"ssh: handshake failed: ssh: unable to authenticate, attempted methods [none publickey]": true,
+		"ssh: no supported methods remain":              true,
+		"Permission denied (publickey)":                 true,
+		"ssh: handshake failed: ssh: host key mismatch": false,
+		"dial tcp 10.0.0.1:22: connection refused":      false,
+		"": false,
+	}
+	for msg, want := range cases {
+		var err error
+		if msg != "" {
+			err = errors.New(msg)
+		}
+		if got := isAuthFailure(err); got != want {
+			t.Errorf("isAuthFailure(%q) = %v, want %v", msg, got, want)
+		}
+	}
+	// The two conditions must stay distinct: a changed host key is a
+	// different problem from a key not yet installed, and conflating them
+	// would let a genuine mismatch be retried as though it were timing.
+	mismatch := errors.New("ssh: handshake failed: ssh: host key mismatch")
+	if isAuthFailure(mismatch) {
+		t.Error("a host key mismatch is not an authentication failure")
+	}
+	if !isHostKeyMismatch(mismatch) {
+		t.Error("mismatch detection broke")
 	}
 }

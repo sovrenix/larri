@@ -625,12 +625,25 @@ func (o *Orchestrator) pinAndDial(ctx context.Context, inst *core.Instance,
 				return key, client, nil
 			}
 			lastErr = derr
-			if !isHostKeyMismatch(derr) {
-				// Anything other than a mismatch is a real failure: a refused
-				// connection, a rejected credential, a broken host.
+			switch {
+			case isHostKeyMismatch(derr):
+				o.emit("boot", "host key changed during boot; re-pinning")
+			case isAuthFailure(derr):
+				// The key LARRI generated is installed by the provider's
+				// start-up script, which runs *after* sshd is listening. So
+				// between the banner appearing and the script finishing there
+				// is a window where the host is reachable and will not accept
+				// us — and the endpoint probe, by getting us there sooner,
+				// made that window easier to hit.
+				//
+				// During bring-up this is timing, not rejection. It stops
+				// being timing once the attempts are exhausted, which is why
+				// it is bounded rather than patient forever.
+				o.emit("boot", "host not accepting the rig key yet; retrying")
+			default:
+				// A refused connection or a broken host is a real failure.
 				return nil, nil, derr
 			}
-			o.emit("boot", "host key changed during boot; re-pinning")
 		}
 		select {
 		case <-ctx.Done():
@@ -666,4 +679,16 @@ func (o *Orchestrator) stableHostKey(ctx context.Context, inst *core.Instance) (
 
 func isHostKeyMismatch(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "host key mismatch")
+}
+
+// isAuthFailure reports a handshake rejected for credentials rather than for
+// transport or identity.
+func isAuthFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	e := strings.ToLower(err.Error())
+	return strings.Contains(e, "unable to authenticate") ||
+		strings.Contains(e, "no supported methods remain") ||
+		strings.Contains(e, "permission denied")
 }
