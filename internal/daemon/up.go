@@ -60,9 +60,20 @@ type Orchestrator struct {
 	BootCap time.Duration
 
 	// BootPollInterval is how often the provider is asked what a booting host
-	// is doing. Zero means ten seconds — often enough to render progress,
-	// rare enough not to matter against a rate limit.
+	// is doing. Zero means fifteen seconds.
+	//
+	// A live run earned an HTTP 429 polling this endpoint, so the interval is
+	// deliberately unhurried: the operator learns far more from the host
+	// activity probe, which costs the provider nothing.
 	BootPollInterval time.Duration
+
+	// HostProbeInterval is how often the host itself is asked whether it is
+	// doing anything. Zero means twenty seconds.
+	HostProbeInterval time.Duration
+
+	// HostIdleLimit is how long a reachable host may show no CPU, disk or
+	// network activity before LARRI says so. Zero means five minutes.
+	HostIdleLimit time.Duration
 
 	// LabelSealer encrypts the descriptive half of the provider-side label.
 	// Nil writes it in the clear, which is attributable but readable by the
@@ -378,6 +389,20 @@ func machineKey(o core.Offer) string {
 		return o.Provider + ":m" + o.MachineID
 	}
 	return o.Provider + ":o" + o.OfferID
+}
+
+func (o *Orchestrator) hostProbeInterval() time.Duration {
+	if o.HostProbeInterval > 0 {
+		return o.HostProbeInterval
+	}
+	return 20 * time.Second
+}
+
+func (o *Orchestrator) hostIdleLimit() time.Duration {
+	if o.HostIdleLimit > 0 {
+		return o.HostIdleLimit
+	}
+	return 5 * time.Minute
 }
 
 // withoutMachines drops every offer on a host already tried this run.

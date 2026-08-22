@@ -111,6 +111,19 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 	if err := o.Store.Transition(rig, core.StateBootstrapping, "image and weights"); err != nil {
 		return live, err
 	}
+
+	// Once SSH is up, the host can be asked directly whether it is working,
+	// which is a far better signal than the provider's status text. Any of
+	// CPU, disk, or network moving counts: an image finishing its download and
+	// starting to extract goes network-quiet and disk-busy, and a probe that
+	// watched only the wire would call that stuck.
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	defer stopWatch()
+	go o.watchHostActivity(watchCtx, sess, o.hostProbeInterval(), func(idle time.Duration) {
+		if idle > o.hostIdleLimit() {
+			o.warn("host", "no CPU, disk or network activity for %s", idle.Round(time.Second))
+		}
+	})
 	progress := make(chan runtime.Progress, 16)
 	go func() {
 		for p := range progress {
@@ -218,7 +231,7 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 	}
 	poll := o.BootPollInterval
 	if poll == 0 {
-		poll = 10 * time.Second
+		poll = 15 * time.Second
 	}
 	var (
 		lastSeen  string
