@@ -1,0 +1,166 @@
+// Copyright (C) 2026 Sovrenix Inc.
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+package vastai
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"go.sovrenix.com/larri/internal/errs"
+	"go.sovrenix.com/larri/internal/secret"
+)
+
+// DefaultBaseURL is Vast.ai's API host.
+const DefaultBaseURL = "https://console.vast.ai"
+
+// Endpoint paths.
+//
+// The version prefixes genuinely differ per endpoint, and that is not a
+// mistake in this file: search and create are documented under v0 while the
+// instance listing has moved to v1. Hard-coding one version for the whole
+// adapter would have broken the listing silently, which is R-02 exactly. Each
+// path is therefore stated separately and verified by the live contract test.
+const (
+	pathSearch  = "/api/v0/bundles"
+	pathCreate  = "/api/v0/asks/%s"      // offer id
+	pathDestroy = "/api/v0/instances/%s" // instance id
+	pathList    = "/api/v1/instances"
+)
+
+// listPageMax is the provider's ceiling, not our choice: the documented limit
+// is "default 25, max 25". Asking for more does not raise it.
+const listPageMax = 25
+
+// listPageBudget bounds pagination so a paging bug cannot spin forever. 400
+// pages is 10,000 instances — far past any plausible account, and cheap
+// insurance against a next_token that never clears.
+const listPageBudget = 400
+
+// Client is a thin, strict HTTP client for the Vast.ai API.
+type Client struct {
+	BaseURL string
+	Key     secret.Secret
+	HTTP    *http.Client
+}
+
+// NewClient builds a client with sane timeouts.
+func NewClient(key secret.Secret) *Client {
+	return &Client{
+		BaseURL: DefaultBaseURL,
+		Key:     key,
+		HTTP:    &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+// do issues one request and decodes the response strictly.
+//
+// Strictness is the point (R-02). A provider that renames dph_total or changes
+// gpu_ram's unit must produce a loud failure here, because the alternative is
+// a mis-parsed price or VRAM figure that spends money on a wrong assumption.
+func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("vastai: marshal request: %w", err)
+		}
+		rdr = bytes.NewReader(b)
+	}
+	url := strings.TrimRight(c.BaseURL, "/") + path
+	req, err := http.NewRequestWithContext(ctx, method, url, rdr)
+	if err != nil {
+		return fmt.Errorf("vastai: build request: %w", err)
+	}
+	// FR-SEC-10: the key travels in a header, never a query string, where
+	// every intermediary's access log would capture it.
+	req.Header.Set("Authorization", "Bearer "+c.Key.Reveal())
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		// A transport error on a mutation is an unknown outcome, not a
+		// failure: the request may have been executed. The caller decides,
+		// and must reconcile rather than retry (R-07).
+		return errs.New(classifyTransport(method), "vastai."+method, err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if err != nil {
+		return errs.New(classifyTransport(method), "vastai."+method, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return httpError(method, resp.StatusCode, raw)
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return errs.Newf(errs.ClassProviderTransient, "vastai."+method,
+			"decode response: %v", err)
+	}
+	return nil
+}
+
+// A note on decoding strictness, because the obvious approach is wrong here.
+//
+// The instinct for R-02 is DisallowUnknownFields, so a changed payload fails
+// loudly. Against this API it fails uselessly: a Vast offer carries well over
+// a hundred fields and LARRI depends on about fifteen, so every single response
+// would be flagged and the signal would be pure noise inside a week.
+//
+// The hazard is not a field being ADDED — that is routine and harmless. It is
+// a field LARRI depends on being renamed, removed, or changed in unit, because
+// a mis-parsed price or VRAM figure spends money on a wrong assumption.
+//
+// So strictness lives in normalise(): fields we rely on are decoded as
+// pointers, absence is distinguishable from zero, and a missing one is a loud
+// error naming the field. Fields we ignore stay ignored.
+
+// ShapeDrift reports a payload that decoded but failed validation — a field
+// LARRI depends on was absent or implausible.
+type ShapeDrift struct {
+	Op  string
+	Err error
+}
+
+func (d *ShapeDrift) Error() string {
+	return fmt.Sprintf("vastai: %s: %v", d.Op, d.Err)
+}
+
+func classifyTransport(method string) errs.Class {
+	switch method {
+	case http.MethodPut, http.MethodPost, http.MethodDelete:
+		return errs.ClassProviderUnknownOutcome
+	default:
+		return errs.ClassProviderTransient
+	}
+}
+
+func httpError(method string, code int, body []byte) error {
+	msg := strings.TrimSpace(string(body))
+	if len(msg) > 400 {
+		msg = msg[:400]
+	}
+	switch {
+	case code == http.StatusTooManyRequests, code >= 500:
+		return errs.Newf(errs.ClassProviderTransient, "vastai."+method,
+			"http %d: %s", code, msg)
+	case code == http.StatusUnauthorized, code == http.StatusForbidden:
+		return errs.Newf(errs.ClassModelFailure, "vastai."+method,
+			"http %d: check VASTAI_API_KEY: %s", code, msg)
+	default:
+		return errs.Newf(errs.ClassModelFailure, "vastai."+method,
+			"http %d: %s", code, msg)
+	}
+}

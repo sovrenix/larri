@@ -1,0 +1,291 @@
+// Copyright (C) 2026 Sovrenix Inc.
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Package vastai adapts the Vast.ai marketplace to LARRI's Provider interface.
+//
+// Everything Vast-specific dies here (P1): offers, asks, bid pricing, and
+// contract IDs are normalised into core.Offer and core.Instance, and nothing
+// above this package may branch on which provider it is talking to.
+package vastai
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"go.sovrenix.com/larri/internal/core"
+	"go.sovrenix.com/larri/internal/errs"
+	"go.sovrenix.com/larri/internal/provider"
+	"go.sovrenix.com/larri/internal/secret"
+)
+
+// Provider is the Vast.ai adapter.
+type Provider struct {
+	c *Client
+
+	// OnDrift is called when a response parses leniently but not strictly.
+	// Defaults to ignoring it; the daemon wires this to a WARN log.
+	OnDrift func(error)
+}
+
+var _ provider.Provider = (*Provider)(nil)
+
+// New builds an adapter from an API key.
+func New(key secret.Secret) *Provider { return &Provider{c: NewClient(key)} }
+
+// NewWithClient builds an adapter around a configured client, for tests.
+func NewWithClient(c *Client) *Provider { return &Provider{c: c} }
+
+func (p *Provider) Name() string { return "vastai" }
+
+func (p *Provider) drift(err error) {
+	var d *ShapeDrift
+	if err != nil && asDrift(err, &d) && p.OnDrift != nil {
+		p.OnDrift(d)
+	}
+}
+
+func asDrift(err error, out **ShapeDrift) bool {
+	d, ok := err.(*ShapeDrift)
+	if ok {
+		*out = d
+	}
+	return ok
+}
+
+// Search returns offers satisfying the criteria.
+func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, error) {
+	req := searchRequest{
+		Limit: 500,
+		Type:  "on-demand",
+		Order: [][]string{{"dph_total", "asc"}},
+		// Only offers that can actually be rented right now. A ranked list
+		// full of unrentable machines wastes the operator's attention and
+		// invites a create that fails after selection.
+		Rentable: &boolFilter{Eq: true},
+	}
+	// Q-04: interruptible is opt-in. Vast expresses it as a bid contract type.
+	if c.Interruptible == core.Require {
+		req.Type = "bid"
+	}
+	if len(c.GPUModel) > 0 {
+		req.GPUName = &stringsFilter{In: c.GPUModel}
+	}
+	if c.GPUCount > 0 {
+		req.NumGPUs = &intFilter{Gte: &c.GPUCount}
+	}
+	if c.VRAMPerGPUGB > 0 {
+		mb := c.VRAMPerGPUGB * mbPerGB
+		req.GPURAM = &intFilter{Gte: &mb}
+	}
+	if c.MaxPriceHr > 0 {
+		req.DPHTotal = &floatFilter{Lte: &c.MaxPriceHr}
+	}
+	if c.MinReliability > 0 {
+		req.Reliability = &floatFilter{Gte: &c.MinReliability}
+	}
+	if c.DiskGB > 0 {
+		d := float64(c.DiskGB)
+		req.DiskSpace = &floatFilter{Gte: &d}
+	}
+	if c.CPUCores > 0 {
+		req.CPUCores = &intFilter{Gte: &c.CPUCores}
+	}
+	if c.RAMGB > 0 {
+		r := float64(c.RAMGB * mbPerGB)
+		req.CPURAM = &floatFilter{Gte: &r}
+	}
+	if len(c.Regions) > 0 {
+		req.Geolocation = &stringsFilter{In: c.Regions}
+	}
+
+	var resp searchResponse
+	err := p.c.do(ctx, "POST", pathSearch, req, &resp)
+	p.drift(err)
+	if err != nil && !isDrift(err) {
+		return nil, err
+	}
+
+	out := make([]core.Offer, 0, len(resp.Offers))
+	for _, o := range resp.Offers {
+		n, nerr := o.normalise()
+		if nerr != nil {
+			// A single unparseable offer must not fail the search, but it
+			// must not be silently ranked either.
+			if p.OnDrift != nil {
+				p.OnDrift(nerr)
+			}
+			continue
+		}
+		if !c.Interruptible.Permits(n.Interruptible) {
+			continue
+		}
+		if len(c.BlockRegions) > 0 && matchesAny(n.Region, c.BlockRegions) {
+			continue
+		}
+		if c.CertifiedOnly && !n.Certified {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// Create purchases an offer.
+//
+// The label is stamped here, from a rig ID minted before this call was made,
+// which is what lets reconciliation attribute an instance whose create
+// response never arrived (FR-STATE-04).
+func (p *Provider) Create(ctx context.Context, o core.Offer, spec provider.CreateSpec) (*core.Instance, error) {
+	body := createRequest{
+		Image:       spec.Image,
+		Disk:        float64(spec.DiskGB),
+		Label:       spec.Label,
+		RunType:     "ssh",
+		TargetState: "running",
+		OnStart:     spec.OnStart,
+		Env:         renderEnv(spec),
+	}
+	if o.Interruptible {
+		body.Price = o.PriceHr
+	}
+
+	var resp createResponse
+	err := p.c.do(ctx, "PUT", fmt.Sprintf(pathCreate, o.OfferID), body, &resp)
+	p.drift(err)
+	if err != nil && !isDrift(err) {
+		return nil, err
+	}
+	if !resp.Success || resp.NewContract == 0 {
+		return nil, errs.Newf(errs.ClassProviderUnknownOutcome, "vastai.Create",
+			"create reported success=%v contract=%d", resp.Success, resp.NewContract)
+	}
+	id := strconv.FormatInt(resp.NewContract, 10)
+
+	// The create response carries only an ID. Read the instance back so the
+	// caller gets normalised, real values rather than the ones we asked for.
+	inst, gerr := p.Get(ctx, id)
+	if gerr != nil || inst == nil {
+		// The instance exists — the contract ID proves it. Return what is
+		// known so the caller can persist it and reconcile the rest.
+		return &core.Instance{
+			Provider: p.Name(), InstanceID: id, OfferID: o.OfferID,
+			PriceHr: o.PriceHr, CreatedAt: time.Now().UTC(),
+			Labels: map[string]string{core.LabelKey: labelRigID(spec.Label)},
+		}, nil
+	}
+	return inst, nil
+}
+
+// Get returns one instance, running or not.
+func (p *Provider) Get(ctx context.Context, instanceID string) (*core.Instance, error) {
+	all, err := p.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range all {
+		if all[i].InstanceID == instanceID {
+			return &all[i], nil
+		}
+	}
+	return nil, nil // absent: the only proof of destruction
+}
+
+// List returns every instance on the account, running or not, across all pages.
+//
+// Two properties are load-bearing and both are easy to get wrong:
+//
+//   - **No status filter.** Vast supports select_filters on actual_status, and
+//     filtering to running would be the natural thing to write. It would also
+//     hide stopped containers, which still bill for storage — so teardown
+//     would see absence and journal DESTROYED while the bill continued (R-13).
+//   - **Pagination to exhaustion.** The endpoint caps at 25 per page. An
+//     adapter that read one page would silently miss every orphan past the
+//     twenty-fifth, which is R-01 arriving through a default.
+func (p *Provider) List(ctx context.Context) ([]core.Instance, error) {
+	var (
+		out   []core.Instance
+		token string
+	)
+	for page := 0; ; page++ {
+		if page >= listPageBudget {
+			return nil, errs.Newf(errs.ClassProviderTransient, "vastai.List",
+				"pagination exceeded %d pages", listPageBudget)
+		}
+		path := fmt.Sprintf("%s?limit=%d", pathList, listPageMax)
+		if token != "" {
+			path += "&after_token=" + token
+		}
+		var resp listResponse
+		err := p.c.do(ctx, "GET", path, nil, &resp)
+		p.drift(err)
+		if err != nil && !isDrift(err) {
+			return nil, err
+		}
+		for _, in := range resp.Instances {
+			n, nerr := in.normalise()
+			if nerr != nil {
+				if p.OnDrift != nil {
+					p.OnDrift(nerr)
+				}
+				continue
+			}
+			out = append(out, n)
+		}
+		if resp.NextToken == nil || *resp.NextToken == "" || len(resp.Instances) == 0 {
+			return out, nil
+		}
+		token = *resp.NextToken
+	}
+}
+
+// Destroy removes an instance. A nil error is a claim, not proof: absence from
+// List is the evidence teardown checks (FR-DEL-03).
+func (p *Provider) Destroy(ctx context.Context, instanceID string) error {
+	err := p.c.do(ctx, "DELETE", fmt.Sprintf(pathDestroy, instanceID), nil, nil)
+	if err != nil && !isDrift(err) {
+		return err
+	}
+	return nil
+}
+
+func isDrift(err error) bool {
+	_, ok := err.(*ShapeDrift)
+	return ok
+}
+
+func matchesAny(s string, pats []string) bool {
+	for _, p := range pats {
+		if strings.Contains(strings.ToLower(s), strings.ToLower(p)) {
+			return true
+		}
+	}
+	return false
+}
+
+// labelRigID extracts the rig ID from a "larri:<id>" label.
+func labelRigID(label string) string {
+	if id, ok := strings.CutPrefix(label, core.LabelKey+":"); ok {
+		return id
+	}
+	return label
+}
+
+// renderEnv builds Vast's env string.
+//
+// FR-SEC-15: no -p mapping is emitted for the runtime port. Vast reaches SSH
+// through runtype=ssh without a mapping, and a container port that was never
+// mapped is unreachable regardless of what listens on it — which is the
+// primary network control, enforced by the provider rather than by the host.
+func renderEnv(spec provider.CreateSpec) string {
+	var b strings.Builder
+	for _, port := range spec.Ports {
+		fmt.Fprintf(&b, "-p %d:%d ", port, port)
+	}
+	for k, v := range spec.Env {
+		fmt.Fprintf(&b, "-e %s=%s ", k, v.Reveal())
+	}
+	return strings.TrimSpace(b.String())
+}
