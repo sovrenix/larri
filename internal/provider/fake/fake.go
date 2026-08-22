@@ -17,6 +17,7 @@ package fake
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -156,7 +157,10 @@ func (p *Provider) Create(ctx context.Context, o core.Offer, spec provider.Creat
 		SSHHost:    id + ".fake.invalid",
 		SSHPort:    22,
 		CreatedAt:  p.now(),
-		Labels:     map[string]string{core.LabelKey: spec.Label},
+		// Normalised to the bare rig ID, matching the real adapters: the
+		// prefix is provider vocabulary and dies at this boundary, so
+		// reconciliation can compare a label to a rig ID it already holds.
+		Labels: map[string]string{core.LabelKey: stripLabel(spec.Label)},
 	}
 	p.instances[id] = inst
 
@@ -256,6 +260,14 @@ func (p *Provider) SetUnreachable(v bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.behaviour.Unreachable = v
+}
+
+// stripLabel removes the "larri:" prefix a CreateSpec carries.
+func stripLabel(label string) string {
+	if id, ok := strings.CutPrefix(label, core.LabelKey+":"); ok {
+		return id
+	}
+	return label
 }
 
 // Count returns how many instances exist, running or not. Tests assert on this
