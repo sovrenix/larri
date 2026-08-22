@@ -163,9 +163,23 @@ func cmdUp(ctx context.Context, args []string) error {
 	p.OnNotice = func(m string) { fmt.Printf("  ! search     %s\n", m) }
 	p.OnDrift = func(e error) { fmt.Printf("  ! drift      %v\n", e) }
 
+	// Sealing the provider-side marker is configuration, so an unset key is a
+	// reported state rather than a silent one: the operator should know their
+	// rig details are readable by the host, not assume otherwise.
+	labelKey, keySrc, err := config.ResolveLabelKey(os.Getenv, os.ReadFile)
+	if err != nil {
+		return err
+	}
+	sealer, err := config.LabelSealer(labelKey)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("  labels      %s — %s\n\n", keySrc, config.LabelKeyNotice(keySrc))
+
 	o := &daemon.Orchestrator{
 		Store: st, Provider: p, Runtime: vllm.New(),
-		Resolver: sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
+		LabelSealer: sealer,
+		Resolver:    sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
 		Policy: rank.Policy{
 			ReliabilityFloor: *minRel,
 			OutlierFactor:    rank.DefaultPolicy().OutlierFactor,

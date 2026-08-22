@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"go.sovrenix.com/larri/internal/config"
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/provider/vastai"
 	"go.sovrenix.com/larri/internal/rank"
@@ -73,12 +74,25 @@ func TestE2ERentServeDestroy(t *testing.T) {
 		close(done)
 	}()
 
+	// The marker is sealed when a key is configured, so the run exercises the
+	// path an operator actually gets rather than a default nothing sets.
+	labelKey, keySrc, err := config.ResolveLabelKey(os.Getenv, os.ReadFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealer, err := config.LabelSealer(labelKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("label key: %s", keySrc)
+
 	o := &Orchestrator{
 		Store: st, Provider: p, Runtime: vllm.New(),
-		Resolver: sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
-		Policy:   rank.DefaultPolicy(),
-		Deadline: 35 * time.Minute,
-		Events:   events,
+		Resolver:    sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
+		Policy:      rank.DefaultPolicy(),
+		Deadline:    35 * time.Minute,
+		Events:      events,
+		LabelSealer: sealer,
 	}
 
 	// Registered before anything can fail. A create that returns an error may

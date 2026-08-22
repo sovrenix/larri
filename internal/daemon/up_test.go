@@ -388,3 +388,75 @@ func TestMachineKeyFallsBackToOfferID(t *testing.T) {
 		t.Errorf("machineKey = %q", machineKey(o))
 	}
 }
+
+// The marker the orchestrator stamps must actually carry what a recovering
+// LARRI needs, and must actually be sealed when a key is configured.
+//
+// Both halves were briefly untrue at once: the encoding existed, the sealer
+// existed, and nothing set the field — so a live run stamped every detail in
+// the clear on a rented machine. A feature that is implemented but unwired
+// looks finished from the inside.
+func TestOrchestratorStampsARecoverableMarker(t *testing.T) {
+	o, p, _ := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	rig, err := o.Up(context.Background(), upReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, _ := p.List(context.Background())
+	if len(live) != 1 {
+		t.Fatalf("got %d instances", len(live))
+	}
+	raw := live[0].Labels[core.LabelRawKey]
+	if raw == "" {
+		t.Fatal("no raw marker stored; recovery would have only a bare id")
+	}
+	l, ok := core.DecodeLabel(raw)
+	if !ok {
+		t.Fatalf("marker not attributable: %q", raw)
+	}
+	if l.RigID != rig.ID {
+		t.Errorf("marker rig = %q, want %q", l.RigID, rig.ID)
+	}
+	// Unsealed, the detail should be present and readable.
+	if l.Model != rig.Model.Ref || l.Runtime != rig.Runtime {
+		t.Errorf("marker lost detail: %+v", l)
+	}
+}
+
+func TestOrchestratorSealsTheMarkerWhenAKeyIsConfigured(t *testing.T) {
+	key, err := core.NewLabelKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealer, err := core.NewAEADSealer(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, p, _ := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	o.LabelSealer = sealer
+
+	rig, err := o.Up(context.Background(), upReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, _ := p.List(context.Background())
+	raw := live[0].Labels[core.LabelRawKey]
+
+	// The host must not be able to read what is being served.
+	if strings.Contains(raw, rig.Model.Ref) {
+		t.Fatalf("model name written in the clear on a rented machine: %q", raw)
+	}
+	// Attribution still works with no key, which is the deliberate exception.
+	bare, ok := core.DecodeLabel(raw)
+	if !ok || bare.RigID != rig.ID {
+		t.Fatalf("a sealed marker must stay attributable without the key: %q", raw)
+	}
+	if !bare.Sealed {
+		t.Error("the caller should be told the detail is sealed")
+	}
+	// And with the key, everything comes back.
+	opened, ok := core.DecodeLabelWith(raw, sealer)
+	if !ok || opened.Model != rig.Model.Ref {
+		t.Errorf("sealed marker did not round trip: %+v", opened)
+	}
+}
