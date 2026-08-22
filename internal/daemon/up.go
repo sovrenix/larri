@@ -72,11 +72,23 @@ type Orchestrator struct {
 	HostProbeInterval time.Duration
 
 	// EndpointStallLimit is how long an advertised SSH endpoint may refuse
-	// connections before the host is judged dead. Zero means four minutes.
+	// connections before the host is judged dead. Zero means ninety seconds.
 	//
-	// This is the signal that catches a contract which reports running while
-	// its container never starts — the provider's status cannot see that, and
-	// the connection can.
+	// This is the signal that catches a contract reporting running while its
+	// container never starts — the provider's status cannot see that and the
+	// connection can.
+	//
+	// Ninety seconds is measured rather than guessed. Across eleven live
+	// rentals every host that ever answered did so within one poll of the
+	// endpoint appearing — under thirty seconds, without exception — and no
+	// host that failed to answer in that window ever answered at all. Five of
+	// the eleven never answered, which is a dead-on-arrival rate near half on
+	// the cheap tier, and none of it was predicted by the provider's
+	// reliability score: every failed machine scored 0.94 or better.
+	//
+	// So the limit is three times the worst observed success, which keeps the
+	// dominant cost of a fallback chain — waiting on machines that were never
+	// going to work — proportionate to how long working ones actually take.
 	EndpointStallLimit time.Duration
 
 	// ColdStartLimit is how long the runtime may produce NO output at all

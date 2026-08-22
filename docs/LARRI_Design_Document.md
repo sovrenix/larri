@@ -1128,6 +1128,36 @@ reproduce the single-signal blindness these regimes exist to avoid — which is
 the same error as judging liveness by network traffic alone, and the reason the
 host probe reads CPU, disk and network rather than just the wire.
 
+### 12.2.2 Dead on Arrival Is Common, and Reliability Does Not Predict It
+
+Measured across eleven live rentals on the cheap end of the Vast market:
+
+| | |
+|---|---|
+| Rentals | 11 |
+| Answered SSH at all | 6 |
+| **Never answered** | **5** |
+| Time-to-answer, when it answered | under 30 s, every time |
+| Provider reliability of the failures | 0.94 – 1.00 |
+
+Two things follow, and neither is what a first design would assume.
+
+**Fallback is not an edge case, it is the main path.** A dead-on-arrival rate
+near half means an `up` that cannot try another machine will fail about as
+often as it succeeds. FR-PROV-05 reads like insurance and is closer to load
+bearing.
+
+**Reliability does not predict it.** Every machine that failed scored 0.94 or
+better, several scored 1.00. The provider's score describes historical uptime
+of a *host*, not whether the container it just scheduled will start — so it is
+a useful floor against flaky hardware and no help at all here. What detects
+this is the connection (§12.1), and nothing else available does.
+
+The endpoint window follows from the same data rather than from judgement:
+every success answered within one poll, so the limit is set at three times the
+worst observed success. Waiting longer only bills for machines that were never
+going to work.
+
 ### 12.3 A Supervision Probe Is Not a Metrics Collector
 
 §17.1's T1 forbids telemetry from influencing supervision, and GPU health is exactly where
