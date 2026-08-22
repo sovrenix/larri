@@ -157,10 +157,19 @@ func (r *Runtime) Launch(ctx context.Context, sess runtime.Session,
 			"invalid bind address %s: loopback only", ep.Host)
 	}
 
-	cmd := r.launchCommand(spec, plan, ep)
-	if _, err := sess.Run(ctx, cmd); err != nil {
+	// Stop first, in its OWN command. Combining the two is what made the
+	// bracket insufficient: a single command that greps for `vllm serve` and
+	// then launches it contains the literal target text, so the pattern
+	// matches the issuing shell however it is spelled. Two commands, and
+	// neither can kill the other's shell.
+	//
+	// A cleanup that finds nothing to kill exits non-zero, which is the normal
+	// case on a fresh host rather than a failure.
+	_, _ = sess.Run(ctx, stopServersCmd)
+
+	if _, err := sess.Run(ctx, r.launchCommand(spec, plan, ep)); err != nil {
 		return runtime.Endpoint{}, errs.Newf(errs.ClassHostFailure, "vllm.Launch",
-			"start container: %v", err)
+			"start server: %v", err)
 	}
 	return ep, nil
 }
@@ -209,8 +218,7 @@ func (r *Runtime) launchCommand(spec core.ModelSpec, plan core.SizingPlan, ep ru
 
 	var b strings.Builder
 	// Idempotent: a re-launch must not leave two servers fighting for the GPU.
-	b.WriteString("pkill -f 'vllm.entrypoints.openai' >/dev/null 2>&1; ")
-	b.WriteString("pkill -f 'vllm serve' >/dev/null 2>&1; sleep 1; ")
+
 	b.WriteString(": > " + LogPath + "; ")
 	// Exported into the shell rather than prefixed onto the command, so the
 	// token does not appear in the server's own argv. FR-RT-03: it reaches the
@@ -297,10 +305,34 @@ func (r *Runtime) Logs(ctx context.Context, sess runtime.Session, tail int) (io.
 	return io.NopCloser(strings.NewReader(string(out))), nil
 }
 
+// stopServersCmd kills any running server without killing the shell that
+// issues it.
+//
+// Two things are needed and the first alone is not enough. The bracket makes
+// the pattern a regex matching `vllm serve` while the literal `[v]llm serve`
+// in this command's own argv does not match it. But that only holds while the
+// command contains nothing else naming the binary — and a command that killed
+// and then launched contained the real `vllm serve` too, so the pattern
+// matched its own shell regardless of spelling. Hence this is issued
+// separately from the launch.
+//
+// `pkill -f` matches the full command line of every process, including the
+// shell running this very command — whose argv contains the pattern, because
+// the launch that follows names the same binary. A plain `pkill -f 'vllm
+// serve'` therefore terminates its own parent, which a live run reported as
+//
+//	Process exited with status 143 from signal TERM
+//
+// The bracket makes the pattern a regex that matches `vllm serve` while the
+// literal text `[v]llm serve` sitting in the shell's argv does not match it.
+// It is the standard fix for a check that cannot otherwise distinguish itself
+// from its subject.
+const stopServersCmd = `pkill -f '[v]llm serve' >/dev/null 2>&1; ` +
+	`pkill -f '[v]llm\.entrypoints\.openai' >/dev/null 2>&1; sleep 1; true`
+
 // Stop halts the server.
 func (r *Runtime) Stop(ctx context.Context, sess runtime.Session) error {
-	_, err := sess.Run(ctx, "pkill -f 'vllm serve' >/dev/null 2>&1; "+
-		"pkill -f 'vllm.entrypoints.openai' >/dev/null 2>&1; true")
+	_, err := sess.Run(ctx, stopServersCmd)
 	if err != nil {
 		return errs.Newf(errs.ClassHostFailure, "vllm.Stop", "%v", err)
 	}

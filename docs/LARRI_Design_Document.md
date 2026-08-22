@@ -470,6 +470,46 @@ The maintenance burden is real and is accepted deliberately: a CUDA/driver matri
 version to track, and a publishing cadence. It is the price of `READY` meaning the same thing
 on every rig.
 
+### 6.5.1 The Instance *Is* the Container
+
+A marketplace instance is not a machine you install software onto. The image
+named in `CreateSpec` is what the instance **runs**: the provider creates a
+container from it, the start-up script executes inside it, and SSH connects
+into it.
+
+This is easy to get backwards, and getting it backwards is expensive. An
+earlier implementation treated the instance as a VM — `docker pull` in
+bootstrap, `docker run` in launch — which is docker-in-docker inside a
+container with no daemon. Every live bring-up died with
+
+```
+bash: line 1: docker: command not found
+```
+
+*after* successfully probing the endpoint, pinning the host key and verifying
+the GPU, so the failure arrived at the one step that looked like infrastructure
+and read like a network problem.
+
+Three consequences that generalise beyond Vast, and that a new adapter should
+answer before it is written:
+
+- **The runtime arrives with the instance.** Bootstrap's job is to *verify*
+  what turned up, not to fetch it. The image is chosen at create time and is
+  therefore a search input (§6.5), not a bootstrap step.
+- **The launcher is discovered, not assumed.** Images package the same runtime
+  as a console script or a module entrypoint. Guessing one shape is how a
+  bring-up fails on a host that was fine, so LARRI asks the host how to start
+  what it has.
+- **A missing runtime is a *model* failure, not a host failure.** The next
+  machine runs the same image and fails identically, so falling back only
+  spends more (FR-PROV-05). The error taxonomy is what stops the retry, which
+  is why that classification is a type rather than a convention (§16).
+
+The server is started detached, with its output captured to a file. A process
+that dies with the SSH exec channel that launched it leaves readiness chasing
+something that was never going to be there, and a launch that fails before the
+server answers leaves the log as the only account of why.
+
 ### 6.6 Tool Calling Is a Launch-Time Property (FR-RT-09)
 
 The chat pane drives LARRI by having the served model emit tool calls (§14.4.4), which makes
@@ -1055,6 +1095,38 @@ the operator was away must be able to say why, in a form they can inspect later.
 ahead of the deadline on every surface (FR-SUP-09) with time to cancel or extend, because
 reclaiming a rig thirty seconds before it was needed is a worse failure than the idle spend
 it prevented.
+
+### 12.2.1 Waiting Has Two Regimes
+
+Once SSH is up, LARRI can ask the host directly rather than reading the
+provider's status text, and how long to wait should depend on whether there is
+anything to be patient about.
+
+**Before the runtime has produced a line**, there is not. Either it died on
+launch or the host is doing nothing, and both are answered in a few minutes by
+an empty log and quiet hardware. A long deadline here only bills for a failure
+already knowable.
+
+**Once output starts**, the calculus inverts. A weight download is legitimately
+slow, and killing it discards everything transferred — the mistake a fixed
+deadline made three times in a row against a 15 GB image pull. Patience
+therefore runs long, and what ends it is a *stall*: no log growth **and** no
+hardware movement.
+
+The two signals are independent on purpose:
+
+| Phase | Log grows | CPU | Disk | Network |
+|---|---|---|---|---|
+| Fetching weights | yes | low | some | **high** |
+| Extracting an archive | quiet | high | **high** | idle |
+| Loading a checkpoint into VRAM | quiet | high | **high** | idle |
+| Genuinely stuck | no | idle | idle | idle |
+
+A growing log proves work when the counters are quiet; busy counters prove work
+through a phase that logs nothing. Requiring agreement between them would
+reproduce the single-signal blindness these regimes exist to avoid — which is
+the same error as judging liveness by network traffic alone, and the reason the
+host probe reads CPU, disk and network rather than just the wire.
 
 ### 12.3 A Supervision Probe Is Not a Metrics Collector
 

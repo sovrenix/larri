@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -284,9 +285,7 @@ func TestNothingSpeaksDockerOnTheHost(t *testing.T) {
 		t.Errorf("launch must capture output for diagnosis:\n%s", cmd)
 	}
 	// Re-launching must not leave two servers fighting for one GPU.
-	if !strings.Contains(cmd, "pkill") {
-		t.Errorf("launch should be idempotent:\n%s", cmd)
-	}
+	// Idempotency lives in a separate stop command, not here.
 }
 
 // Images package vLLM differently, so the launcher is discovered rather than
@@ -344,5 +343,71 @@ func TestNoTokenMeansNoExport(t *testing.T) {
 		Host: runtime.Loopback, Port: RemotePort, Key: secret.New("k")})
 	if strings.Contains(cmd, "HF_TOKEN") {
 		t.Errorf("an unset token should not appear at all:\n%s", cmd)
+	}
+}
+
+// The bug that killed run 5's launches, and the reason it is subtle: `pkill -f`
+// matches the full command line of every process, including the shell issuing
+// the command — whose argv necessarily contains the binary name, because the
+// launch that follows names it. So the cleanup killed its own parent and the
+// host reported `exited with status 143 from signal TERM`.
+//
+// The test is the real property rather than the spelling: every pkill pattern
+// in the command, treated as a regex, must NOT match the command itself.
+func TestCleanupPatternsDoNotMatchTheirOwnCommand(t *testing.T) {
+	// The stop is a command of its own, which is half the fix: a single
+	// command that both greps for the binary and then launches it contains
+	// the literal target text, so the pattern matches the issuing shell no
+	// matter how it is spelled.
+	cmd := stopServersCmd
+	patterns := regexp.MustCompile(`pkill -f '([^']+)'`).FindAllStringSubmatch(cmd, -1)
+	if len(patterns) == 0 {
+		t.Fatal("expected a cleanup pattern")
+	}
+	for _, m := range patterns {
+		re, err := regexp.Compile(m[1])
+		if err != nil {
+			t.Errorf("pattern %q is not a valid regex: %v", m[1], err)
+			continue
+		}
+		if re.MatchString(cmd) {
+			t.Errorf("pkill pattern %q matches the command that issues it, "+
+				"so it would kill its own shell:\n%s", m[1], cmd)
+		}
+	}
+}
+
+// The pattern still has to match a real server, or the cleanup does nothing and
+// two servers end up fighting for one GPU.
+func TestCleanupPatternsStillMatchARunningServer(t *testing.T) {
+	cmd := stopServersCmd
+	// What a live server's command line actually looks like.
+	running := []string{
+		"vllm serve Qwen/Qwen2.5-1.5B-Instruct --host 127.0.0.1 --port 8000",
+		"python3 -m vllm.entrypoints.openai.api_server --model Qwen/Qwen2.5-1.5B",
+	}
+	patterns := regexp.MustCompile(`pkill -f '([^']+)'`).FindAllStringSubmatch(cmd, -1)
+	for _, target := range running {
+		matched := false
+		for _, m := range patterns {
+			if re, err := regexp.Compile(m[1]); err == nil && re.MatchString(target) {
+				matched = true
+			}
+		}
+		if !matched {
+			t.Errorf("no cleanup pattern matches a running server: %q", target)
+		}
+	}
+}
+
+// And the launch must not carry a cleanup at all, since that is what made the
+// pattern unavoidably self-matching.
+func TestLaunchDoesNotKillAnything(t *testing.T) {
+	r := New()
+	r.launcher = "vllm serve"
+	cmd := r.launchCommand(spec(), plan(), runtime.Endpoint{
+		Host: runtime.Loopback, Port: RemotePort, Key: secret.New("k")})
+	if strings.Contains(cmd, "pkill") {
+		t.Errorf("the launch must not also kill; that is a separate command:\n%s", cmd)
 	}
 }
