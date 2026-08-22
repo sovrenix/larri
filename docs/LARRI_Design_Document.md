@@ -1158,6 +1158,30 @@ every success answered within one poll, so the limit is set at three times the
 worst observed success. Waiting longer only bills for machines that were never
 going to work.
 
+### 12.2.3 Container Counters Lie by Omission
+
+A successful live bring-up settled how much the hardware signals can be
+trusted, and the answer is: not on their own.
+
+| Phase | Log | CPU | Disk | Net |
+|---|---|---|---|---|
+| Downloading weights | growing | **0%** | **0.0 MB/s** | 91 MB/s |
+| Loading, compiling, capturing graphs | growing | **0%** | **0.0 MB/s** | 0.1 MB/s |
+
+Both readings are wrong about the host, and wrong for structural reasons:
+
+- **`/proc/stat` reports the whole machine.** A single-threaded model load on a
+  many-core host is real work that reads as a rounding error, so any CPU floor
+  expressed as a fraction of the box will miss it.
+- **`/proc/diskstats` did not see the overlay filesystem.** Ninety-one megabytes
+  a second arrived and the disk counter never moved.
+
+A supervisor trusting either would have destroyed a host that was working
+perfectly — the same failure as the fixed deadline, arriving through
+instrumentation instead of a clock. Which is the argument for the design that
+was already there: **any one signal, plus log growth, and never all-of**. The
+network caught the download; the log carried everything else.
+
 ### 12.3 A Supervision Probe Is Not a Metrics Collector
 
 §17.1's T1 forbids telemetry from influencing supervision, and GPU health is exactly where
@@ -1302,6 +1326,13 @@ $ larri status 01J9Z…
               health probes excluded from the activity clock
   reclaimed   $0.64/hr of idle spend avoided
 ```
+
+**Storage is not a rounding error on short rigs.** A measured teardown after a
+two-minute session: total $0.0065, of which compute was $0.0014 and storage
+$0.0051 — storage nearly four times compute. The figures invert for a rig that
+serves all day, but the short case is exactly where an operator assumes
+stopping is as good as destroying, and it is where that assumption costs the
+most proportionally (§12.4).
 
 The line about probes being excluded is there deliberately. The operator who wonders whether
 the 30-second health check should have counted as activity (§12.2) gets the answer without

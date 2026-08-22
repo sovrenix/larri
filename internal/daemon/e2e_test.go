@@ -155,7 +155,9 @@ func TestE2ERentServeDestroy(t *testing.T) {
 			Choices []struct {
 				Message struct{ Content string } `json:"message"`
 			} `json:"choices"`
-			Usage struct{ TotalTokens int } `json:"usage"`
+			Usage struct {
+				TotalTokens int `json:"total_tokens"`
+			} `json:"usage"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 			t.Fatal(err)

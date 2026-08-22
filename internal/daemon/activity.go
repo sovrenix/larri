@@ -114,9 +114,22 @@ func (c hostCounters) since(prev hostCounters) activity {
 		n := (c.NetRx + c.NetTx) - (prev.NetRx + prev.NetTx)
 		a.NetMBps = float64(n) / secs / (1 << 20)
 	}
-	// Floors sit above idle chatter: a booted host ticks over at a few percent
-	// CPU and a trickle of packets without doing anything for the operator.
-	a.Moving = a.CPUPercent > 5 || a.DiskMBps > 0.5 || a.NetMBps > 0.2
+	// Floors sit above idle chatter, but two of the three signals turned out
+	// to be structurally muted inside a provider's container, which is why
+	// they are set low and why the disjunction matters more than any one of
+	// them:
+	//
+	//   - `/proc/stat` reports the WHOLE machine, so a single-threaded model
+	//     load on a 32-core host reads as ~3% — real work, under any floor
+	//     expressed as a fraction of the box. A successful run showed 0% CPU
+	//     through an entire engine startup.
+	//   - `/proc/diskstats` did not see the overlay filesystem at all: the
+	//     same run recorded 0.0 MB/s of disk while pulling weights at 91 MB/s.
+	//
+	// So these thresholds detect activity when it is visible and must never be
+	// the only thing consulted. Readiness pairs them with log growth for
+	// exactly this reason (§12.2.1).
+	a.Moving = a.CPUPercent > 1 || a.DiskMBps > 0.5 || a.NetMBps > 0.05
 	return a
 }
 
