@@ -321,7 +321,9 @@ docs.
 
 ## Stack and layout
 
-Go. Single binary, subcommands for the surfaces.
+Go. Single binary, subcommands for the surfaces. Module path **`go.sovrenix.com/larri`** — a
+vanity path, so it needs a `go-import` meta tag served at that URL for as long as the module
+is importable.
 
 ```
 cmd/larri/            CLI entrypoint + subcommands (up, down, status, daemon, mcp, ui)

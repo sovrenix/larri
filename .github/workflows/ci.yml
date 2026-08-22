@@ -1,0 +1,67 @@
+# Copyright (C) 2026 Sovrenix Inc.
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          check-latest: true
+
+      - name: gofmt
+        run: make fmt
+
+      - name: vet
+        run: make vet
+
+      - name: SPDX headers
+        run: make headers
+
+      - name: test
+        run: make test
+
+      - name: race
+        run: make race
+
+      # NFR-09: no test may issue a real create. Provider credentials are not
+      # available to CI, so a test that tried would fail rather than spend —
+      # but the e2e build tag is the deliberate path and it is never on here.
+      - name: no e2e in the default suite
+        run: |
+          if go test -run 'TestE2E' -list '.*' ./... 2>/dev/null | grep -q TestE2E; then
+            echo "e2e tests must be behind the 'e2e' build tag"; exit 1
+          fi
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux,  goarch: amd64 }
+          - { goos: linux,  goarch: arm64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      # NFR-06: a single static binary with no runtime dependencies.
+      - name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -ldflags '-s -w' -o /dev/null ./cmd/larri

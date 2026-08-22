@@ -9,7 +9,7 @@
 |---|---|
 | **Document Title** | LARRI — Design Document |
 | **Document ID** | LARRI-DES-001 |
-| **Version** | 0.13 — Attack Surface Analysis |
+| **Version** | 0.14 — Implementation Plan |
 | **Status** | Draft for Review |
 | **Author** | Ram Katru |
 | **Date** | 2026-08-21 |
@@ -114,6 +114,10 @@ The daemon is the only component that mutates state. Surfaces read and issue com
 ```
 cmd/larri/              CLI entrypoint; subcommands up, down, status, offers,
                         logs, orphans, daemon, mcp, ui
+internal/core/          Normalised domain vocabulary (§4) — shared by provider,
+                        sizing, rank, state, runtime, daemon
+internal/secret/        The Secret type (§15.2)
+internal/errs/          The error taxonomy (§16)
 internal/provider/      Provider interface, registry, normalization
     vastai/             Vast.ai adapter
     runpod/             RunPod adapter
@@ -2023,6 +2027,11 @@ still costing money.
 
 ## 19. Build and Release
 
+Module path: **`go.sovrenix.com/larri`** — a vanity import path, so the code host can change
+without breaking importers. It requires a page at that path serving a `go-import` meta tag
+(`go.sovrenix.com/larri git https://github.com/sovrenix/larri`) for as long as anyone imports
+the module; that page is an operational dependency, not a one-off setup step.
+
 ```bash
 go build ./...
 go run ./cmd/larri -- up --help
@@ -2047,23 +2056,59 @@ GPL-3.0-or-later`), and dependency licences are audited for GPL-3.0 compatibilit
 
 | M | Goal | Delivers | Gate |
 |---|---|---|---|
-| **M1** | The playbook, automated | `sizing`, `state`, Vast.ai adapter, vLLM runtime, SSH tunnel, CLI `up`/`down`/`status` | AC-1.1 … AC-1.5 |
-| **M2** | Cost safety under failure | Journal, reconciliation, orphan sweep, budget ceilings, crash-injection tests, fake provider | AC-2.1 … AC-2.4 |
-| **M3** | Breadth | RunPod adapter, llama.cpp + Ollama runtimes, ranking weights, `offers`/`--dry-run` | AC-3.1 … AC-3.3 |
-| **M4** | Surfaces | Daemon API + SSE, tool registry, MCP server, TUI, web chat pane with read-only chat-driven control, client config writers, preemption recovery | AC-4.1 … AC-4.5 |
-| **M5** | Observability | OTel SDK wiring, lifecycle traces with cost attribution, host/runtime/proxy collectors, metrics ring buffer, console pane, optional OTLP and Prometheus export | AC-5.1 … AC-5.3 |
+| **M0** | Nothing can spend yet | Module, CI, SPDX header check, licence audit gate, `Secret` type, error taxonomy, **fake provider + fake runtime** | Builds clean; `go vet`, `gofmt`, race, and header checks enforced in CI |
+| **M1** | One rig, safely | `config`, `sizing` (live facts + cache), `state` **including the journal**, `provider/vastai`, `runtime/vllm`, `sshx` (in-process, pinned host key, ephemeral key), `wire` (tunnel + proxy + credential boundary), teardown with verified absence and a termination record, CLI `up`/`down`/`status` | AC-1.1 … AC-1.5, AC-2.9, AC-3.4, AC-4.6 … AC-4.9, AC-4.12 … AC-4.14, AC-4.16, AC-4.17 |
+| **M2** | Cost safety under failure | Reconciliation, orphan sweep, `STOPPED` semantics and resume detection, budget ceilings, idle reclamation, crash injection, provider-unreachable handling | AC-2.1 … AC-2.8 |
+| **M3** | Breadth | RunPod adapter, llama.cpp + Ollama runtimes, ranking weights and anomaly signal, `offers` / `--dry-run`, image variant selection | AC-3.1 … AC-3.6, AC-4.10, AC-4.11 |
+| **M4** | Surfaces | Daemon API + SSE, tool registry, MCP server, TUI, web UI (console + chat panes, separate origins), client config writers, preemption recovery | AC-4.1 … AC-4.5, AC-4.15 |
+| **M5** | Observability | OTel SDK wiring, lifecycle traces with cost attribution, host/runtime/proxy collectors, persisted metric store, console graphs, optional OTLP and Prometheus export | AC-5.1 … AC-5.4 |
 
-M1 is deliberately narrow — one provider, one runtime — because the point of M1 is to prove
-the seam between the two abstractions holds before either is generalised. M2 precedes
-breadth because cost safety is the property that makes the tool trustworthy enough to use
-daily (NFR-01).
+### 20.1 Why M1 Is Large
 
-M5 is last but not deferred. Instrumentation *calls* are written as each package lands, from
-M1 onward: the OTel API is a no-op until an SDK is registered, so instrumenting early costs
-nothing while retrofitting later costs a sweep of every package. M5 registers the SDK, adds
-the collectors, and builds the console on top of instrumentation that is already in place.
+M1 looks heavier than "one provider, one runtime" implies, and the reason is that **cost
+safety and the security boundary are not features added later — they are constraints on the
+first line of code that spends money.**
 
----
+The journal was originally scheduled for M2. That was wrong: FR-PROV-01 requires intent to
+be written *before* the create call, and a milestone that spends money without that produces
+exactly the orphaned instance the product exists to prevent. Shipping M1 without it would
+mean the first working version is the least safe one.
+
+The same argument covers the rest of M1's security scope. Loopback binding, host key pinning,
+the ephemeral per-rig key, and the credential boundary are not hardening applied to a working
+tunnel; they are properties of the only tunnel that should ever be written.
+
+### 20.2 Written in M1, Even Though the Feature Lands Later
+
+These cost nothing now and cost a sweep of every package later, so they go in as each package
+is written rather than being retrofitted:
+
+| Now | Because |
+|---|---|
+| OTel instrumentation calls | The API is a no-op until an SDK is registered (§17.5). Retrofitting means touching every package |
+| `trace_id` / `span_id` on journal entries | The journal format is durable; adding fields later means migrating written records |
+| `Rig.End *Termination` | Teardown must record *why* from the first teardown that exists (§13.1) |
+| Per-client token identity | Retrofitting identity onto a shared secret means re-wiring every client |
+| Model-name routing in the proxy | A pass-through at N=1, but retrofitting it later reconfigures every client — the churn P3 exists to prevent (§10.3) |
+| `Provider.List` returning non-running resources | The one shape that makes `STOPPED` detectable at all (§12.4) |
+
+### 20.3 Sequencing Notes
+
+M0 exists so that the fake provider and fake runtime are available *before* the code that
+would otherwise be tested against a paid API. The fake is not test scaffolding added at M2;
+it is what makes M1 developable without spending (NFR-09).
+
+M2 precedes breadth because cost safety is the property that makes the tool trustworthy
+enough to use daily (NFR-01). M5 is last but not deferred — see §20.2.
+
+**M1 uses a stock image, not a pre-baked one.** Q-07 ratified pre-baked images and §6.5 stands,
+but building and publishing a signed image matrix is a separate workstream, and blocking the
+first working rig on registry and signing infrastructure would invert the point of M1 — which
+is to prove the Provider/Runtime seam holds. M1 therefore exercises the stock-image fallback
+path that §6.5 already requires, which has the useful side effect that the fallback is tested
+by the milestone that depends on it rather than rotting unused. The image pipeline, digest
+pinning, and signature verification (FR-SEC-30) follow as their own milestone, and M3 takes
+image variant selection once there are variants to select.
 
 ## Appendix A — Worked Example
 
