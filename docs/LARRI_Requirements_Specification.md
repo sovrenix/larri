@@ -9,7 +9,7 @@
 |---|---|
 | **Document Title** | LARRI — Requirements Specification |
 | **Document ID** | LARRI-REQ-001 |
-| **Version** | 0.13 — Attack Surface Analysis |
+| **Version** | 0.15 — Configuration Bootstrap |
 | **Status** | Draft for Review |
 | **Author** | Ram Katru |
 | **Date** | 2026-08-21 |
@@ -214,7 +214,7 @@ Priority: **M** = MUST (v1), **S** = SHOULD, **C** = COULD (post-v1).
 | FR-CRIT-02 | M | Accept commercial criteria: maximum $/hr, on-demand vs interruptible, minimum provider reliability score, allowed/blocked regions, allowed providers. |
 | FR-CRIT-03 | M | Accept a `ModelSpec`: model identity (Hugging Face repo, Ollama tag, or local path), quantization, and required context length. |
 | FR-CRIT-04 | M | Derive hardware requirements from the `ModelSpec` when the operator has not specified them, so that `larri up --model <name>` alone is a valid invocation. |
-| FR-CRIT-05 | S | Persist named criteria profiles (e.g. `--profile coding-rig`) for reuse. |
+| FR-CRIT-05 | S | Persist **named** criteria profiles (e.g. `--profile coding-rig`) for reuse, saved on explicit request. LARRI must not silently reuse the previous invocation's criteria for a bare `larri up`: a command that reapplies what was typed a fortnight ago can provision hardware nobody intended to buy. |
 | FR-CRIT-06 | M | Reject a request at submit time — before any spend — when the `ModelSpec` cannot fit any offer satisfying the criteria, and explain the shortfall in VRAM terms. |
 
 **Interruptible default (Q-04, resolved): opt-in.** `Criteria.Interruptible` defaults to
@@ -356,7 +356,7 @@ All four surfaces are clients of one daemon API. No lifecycle logic lives in a s
 | FR-UI-12 | M | Bound the chat pane's tool loop: maximum call depth per turn and maximum result size. A model emitting tool calls without terminating must exhaust a budget, not the daemon. |
 | FR-UI-13 | S | When no rig is serving, the chat pane states that plainly. The console pane and the MCP surface must remain fully functional, since they do not depend on the rig. |
 
-### 7.10 Configuration and Secrets (FR-SEC)
+### 7.10 Secrets and Security (FR-SEC)
 
 | ID | Pri | Requirement |
 |---|---|---|
@@ -392,7 +392,19 @@ All four surfaces are clients of one daemon API. No lifecycle logic lives in a s
 | FR-SEC-30 | S | Sign published runtime images and verify the signature before use. A content digest proves which image was pulled, not that the project produced it. |
 | FR-SEC-31 | M | Treat model output as untrusted **content**, not only as untrusted tool calls. Render it as a safe markdown subset, escaped by default and never as raw HTML; serve the UI under a strict Content-Security-Policy; and serve the chat pane and the console pane on **separate origins**, so script execution in the pane that renders untrusted content cannot reach the pane that holds control-plane access. |
 
-### 7.11 Observability (FR-OBS)
+### 7.11 Configuration (FR-CFG)
+
+| ID | Pri | Requirement |
+|---|---|---|
+| FR-CFG-01 | M | Operate fully with no configuration file. Values resolve flags → named profile → config file → built-in defaults, and every layer is optional. Configuration is an optimisation over defaults, never a prerequisite (FR-CRIT-04). |
+| FR-CFG-02 | M | **Never block on interactive input unless interactivity has been detected.** Prompt only when stdin and stderr are both terminals, no non-interactive flag or environment variable is set, and the process is not the daemon, the MCP server, or a machine-readable invocation. `larri_up` is an MCP tool, so a prompt on that path is a hang an agent cannot answer. |
+| FR-CFG-03 | M | Print the destructive defaults — idle reclamation and budget action — on any run that creates a configuration, **whether or not the run is interactive**. A default that destroys and was never mentioned is a trap regardless of how well it is reasoned. |
+| FR-CFG-04 | M | Create configuration in core, not in a surface. A surface may drive configuration creation; it may not own it (P5). |
+| FR-CFG-05 | S | Report what was assumed whenever defaults were used in place of configuration, so a non-interactive run is auditable after the fact. |
+| FR-CFG-06 | S | Allow the TUI to explore offers and save the criteria converged upon as a named profile, via the daemon API rather than by writing configuration directly. |
+| FR-CFG-07 | M | Validate resolvable provider credentials at configuration time without spending. A key that cannot authenticate must surface before it is needed, not during provisioning. |
+
+### 7.12 Observability (FR-OBS)
 
 | ID | Pri | Requirement |
 |---|---|---|
@@ -502,6 +514,10 @@ The seven-step Vast.ai playbook in §1 is reproduced by two commands.
   before any instance is created.
 - **AC-3.5** An offer whose driver cannot run any published runtime image is filtered out
   during search rather than failing after the instance is paid for.
+- **AC-3.7** On a machine with no configuration file, `larri up --model <ref>` runs to
+  completion without prompting, states the destructive defaults it adopted, and writes a
+  configuration reflecting them. The same invocation with a non-terminal stdin behaves
+  identically and never blocks.
 - **AC-3.6** `larri up` configures Continue.dev for both VS Code and JetBrains from one file,
   and `larri down` restores it byte-for-byte. No client whose settings live in an
   application-owned database is written to directly.

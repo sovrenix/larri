@@ -9,7 +9,7 @@
 |---|---|
 | **Document Title** | LARRI — Design Document |
 | **Document ID** | LARRI-DES-001 |
-| **Version** | 0.14 — Implementation Plan |
+| **Version** | 0.15 — Configuration Bootstrap |
 | **Status** | Draft for Review |
 | **Author** | Ram Katru |
 | **Date** | 2026-08-21 |
@@ -1328,8 +1328,93 @@ structurally cannot.
 ### 15.1 Configuration
 
 `~/.config/larri/config.yaml` for non-secret settings: enabled providers, default criteria
-profiles, ranking weights, local port, budget defaults, client wiring targets, `max_concurrent_rigs`, idle and budget
-policy, and the enabled client writers.
+profiles, ranking weights, local port, budget defaults, client wiring targets,
+`max_concurrent_rigs`, idle and budget policy, and the enabled client writers.
+
+#### 15.1.1 Zero Config Is a Supported Mode, Not a Degraded One
+
+**A machine that has never run LARRI can run `larri up --model <ref>` successfully.**
+FR-CRIT-04 already requires that invocation to be valid on its own, which settles the
+question: configuration is an optimisation over defaults, never a prerequisite. A tool whose
+promise is two commands cannot have a third that must run first.
+
+Values resolve in this order, and every layer is optional:
+
+```
+flags  →  named profile (--profile)  →  config file  →  built-in defaults
+```
+
+Secrets are the exception and resolve separately (§15.2), because a missing API key is not
+something a default can supply.
+
+#### 15.1.2 First Run Is Not Interactive by Default
+
+The tempting design is a first-run wizard — a TUI that asks for criteria and writes a config.
+It is the wrong answer here for three reasons, and the third is the one that would have bitten:
+
+1. **Ordering.** The TUI is FR-UI-04, priority S, landing in M4. `larri up` is FR-UI-01,
+   priority M, landing in M1. A first-run flow that depended on the TUI would leave three
+   milestones with no first run at all.
+2. **P5.** Surfaces are clients, not owners. A TUI that creates and owns configuration is
+   lifecycle logic living in a surface, which is the thing P5 exists to prevent. Config
+   creation belongs to `internal/config`; a surface may *drive* it and must not *be* it.
+3. **`larri_up` is an MCP tool.** An agent — Claude Code, or anything else driving the MCP
+   surface — can trigger a first run. So can CI, a script, and `larri daemon` started by
+   systemd. A blocking interactive prompt on a code path an agent can reach is not a prompt;
+   it is a hang, with no output and nothing able to answer it.
+
+So interactivity is **detected, never assumed**. LARRI prompts only when all of these hold:
+
+- stdin *and* stderr are terminals,
+- `--non-interactive` / `--yes` was not passed and `LARRI_NON_INTERACTIVE` is unset,
+- the process is not the daemon, the MCP server, or a `--json` invocation.
+
+Otherwise it proceeds on defaults and prints what it assumed. `CI=true` in the environment
+is treated as non-interactive, because it almost always is.
+
+#### 15.1.3 Destructive Defaults Are Stated Even When Nothing Is Asked
+
+Two defaults destroy things: idle reclamation and budget breach both default to `destroy`
+(Q-11, Q-03). Those defaults are correct — forgetting is the failure this product
+exists to prevent — but a default that destroys and was never mentioned is a trap, however
+well reasoned.
+
+So on the first run that would create a config, LARRI **prints the destructive defaults
+whether or not it is interactive**:
+
+```console
+$ larri up --model Qwen/Qwen3-Coder-30B
+  first run   writing ~/.config/larri/config.yaml
+              idle-timeout   30m → destroy   (larri config set idle.action warn)
+              budget         none set        (larri config set budget.max 5.00)
+              providers      vastai (VASTAI_API_KEY found)
+              wiring         continue.dev detected
+  …
+```
+
+Non-interactive runs get the same four lines. Interactive runs get the same four lines and a
+chance to change them. The information is not the reward for being at a terminal.
+
+#### 15.1.4 Criteria Are Saved Explicitly, Never Silently
+
+Named profiles (FR-CRIT-05) are how criteria are reused. What LARRI does **not** do is
+remember the last invocation and apply it to the next bare `larri up`, and the reason is
+cost: a bare command that silently reuses whatever was typed a fortnight ago can provision an
+H100 because that is what the last experiment needed. Explicit is cheap; implicit is
+expensive and arrives as a surprise.
+
+After a successful `up`, the criteria used are printed with the command that would save them:
+
+```console
+  ✓ rig 01J9Z… READY   http://127.0.0.1:8000/v1
+    reuse these criteria:  larri profile save coder
+```
+
+The TUI's genuine role here is the one it is actually good at — **exploring** offers
+interactively, watching the ranking respond as criteria change, and saving the set converged
+on (`larri offers --tui`, then save). That is FR-UI-04's live-offers dashboard doing what it
+was already for, and it stays a client: it calls the daemon API to persist a profile rather
+than writing config itself.
 
 ### 15.2 Secrets
 
@@ -2057,7 +2142,7 @@ GPL-3.0-or-later`), and dependency licences are audited for GPL-3.0 compatibilit
 | M | Goal | Delivers | Gate |
 |---|---|---|---|
 | **M0** | Nothing can spend yet | Module, CI, SPDX header check, licence audit gate, `Secret` type, error taxonomy, **fake provider + fake runtime** | Builds clean; `go vet`, `gofmt`, race, and header checks enforced in CI |
-| **M1** | One rig, safely | `config`, `sizing` (live facts + cache), `state` **including the journal**, `provider/vastai`, `runtime/vllm`, `sshx` (in-process, pinned host key, ephemeral key), `wire` (tunnel + proxy + credential boundary), teardown with verified absence and a termination record, CLI `up`/`down`/`status` | AC-1.1 … AC-1.5, AC-2.9, AC-3.4, AC-4.6 … AC-4.9, AC-4.12 … AC-4.14, AC-4.16, AC-4.17 |
+| **M1** | One rig, safely | `config`, `sizing` (live facts + cache), `state` **including the journal**, `provider/vastai`, `runtime/vllm`, `sshx` (in-process, pinned host key, ephemeral key), `wire` (tunnel + proxy + credential boundary), teardown with verified absence and a termination record, CLI `up`/`down`/`status` | AC-1.1 … AC-1.5, AC-2.9, AC-3.4, AC-3.7, AC-3.7, AC-4.6 … AC-4.9, AC-4.12 … AC-4.14, AC-4.16, AC-4.17 |
 | **M2** | Cost safety under failure | Reconciliation, orphan sweep, `STOPPED` semantics and resume detection, budget ceilings, idle reclamation, crash injection, provider-unreachable handling | AC-2.1 … AC-2.8 |
 | **M3** | Breadth | RunPod adapter, llama.cpp + Ollama runtimes, ranking weights and anomaly signal, `offers` / `--dry-run`, image variant selection | AC-3.1 … AC-3.6, AC-4.10, AC-4.11 |
 | **M4** | Surfaces | Daemon API + SSE, tool registry, MCP server, TUI, web UI (console + chat panes, separate origins), client config writers, preemption recovery | AC-4.1 … AC-4.5, AC-4.15 |
