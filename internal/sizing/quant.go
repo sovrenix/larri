@@ -28,8 +28,8 @@ func BitsPerWeight(quant string) (float64, error) {
 	if b, ok := quantBits[q]; ok {
 		return b, nil
 	}
-	return 0, fmt.Errorf("sizing: unknown quantization %q: "+
-		"refusing to guess, because a guessed weight size is a confident wrong answer", quant)
+	return 0, fmt.Errorf("sizing: unknown quantization %q: expected one of %s",
+		quant, strings.Join(CommonQuantizations, ", "))
 }
 
 // quantBits maps a quantization name to average bits per weight.
@@ -55,8 +55,15 @@ var quantBits = map[string]float64{
 	"iq4_xs": 4.25, "iq3_xxs": 3.06, "iq2_xxs": 2.06,
 }
 
-// KnownQuantizations lists every recognised scheme, for error messages and
-// shell completion.
+// CommonQuantizations are the schemes worth naming in an error message. The
+// full table is larger; listing all of it would bury the one line the operator
+// needs to read.
+var CommonQuantizations = []string{
+	"fp16", "bf16", "fp8", "awq", "gptq-int4", "q8_0", "q6_K", "q5_K_M", "q4_K_M",
+}
+
+// KnownQuantizations lists every recognised scheme, for validation and shell
+// completion.
 func KnownQuantizations() []string {
 	out := make([]string, 0, len(quantBits))
 	for k := range quantBits {

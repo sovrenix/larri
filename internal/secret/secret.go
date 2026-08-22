@@ -81,6 +81,6 @@ func (s *Secret) UnmarshalJSON(b []byte) error {
 	if string(b) == `"`+Redacted+`"` || string(b) == "null" {
 		return nil
 	}
-	return fmt.Errorf("secret: refusing to unmarshal a credential from JSON; " +
-		"secrets come from the environment or keyring (FR-SEC-01)")
+	return fmt.Errorf("secret: cannot unmarshal a credential from JSON: " +
+		"resolve from environment or keyring")
 }

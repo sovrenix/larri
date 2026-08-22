@@ -97,7 +97,7 @@ func (c ChainResolver) Resolve(ctx context.Context, ref, revision string) (Facts
 	if last == nil {
 		last = fmt.Errorf("sizing: no resolvers configured")
 	}
-	return Facts{}, fmt.Errorf("sizing: could not resolve facts for %q: %w", ref, last)
+	return Facts{}, fmt.Errorf("sizing: resolve facts for %q: %w", ref, last)
 }
 
 // WeightFormat is how a repository stores its weights.
@@ -122,9 +122,8 @@ func (w WeightFormat) ExecutesOnLoad() bool { return w == FormatPickle || w == F
 // instance is created rather than after.
 func CheckWeightFormat(ref string, w WeightFormat) error {
 	if w.ExecutesOnLoad() {
-		return fmt.Errorf(
-			"sizing: %s offers weights as %s, which executes code when loaded; "+
-				"LARRI requires safetensors (FR-SEC-29)", ref, w)
+		return fmt.Errorf("sizing: %s: weight format %s executes code on load: "+
+			"safetensors required", ref, w)
 	}
 	return nil
 }

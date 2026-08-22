@@ -293,6 +293,33 @@ accident:
 Provider API keys and SSH keys come from the environment or the OS keyring. They are never
 committed, never written into state files, and never echoed into logs or TUI output.
 
+## Error messages
+
+Error strings are terse and program-like. Informational output — progress,
+status, disclosures, the shortfall message — may be conversational, because it
+is read by someone who is not currently stuck.
+
+```
+package: subject: problem
+```
+
+- **Lowercase, no trailing punctuation.** Errors compose when wrapped; a capital
+  or a full stop mid-chain reads wrong: `up: sizing: Unknown quant.: no offers`.
+- **State the fact, not the reasoning.** "unknown quantization %q" — not
+  "refusing to guess, because a guessed weight size is a confident wrong
+  answer". The reasoning belongs in the doc comment, where a reader who wants it
+  will look.
+- **The class carries the policy; the message carries the fact.** A
+  `ClassModelFailure` already means "do not retry on another host", so the
+  message says `cuda out of memory loading %s` and nothing about retries.
+- **Append a remedy where one exists**, terse: `: expected one of fp16, bf16, …`
+  or `: safetensors required`.
+- No `because`, `refusing to`, `please`, `you must`, `which means`, `so that`.
+
+This is enforced by `internal/lint`, which walks the AST of every non-test file
+and fails the build on a violation. A convention nobody checks decays into a
+convention nobody follows.
+
 ## Licence, copyright, and file headers
 
 LARRI is a **public open-source project**. Copyright holder: **Sovrenix Inc.** Licence:

@@ -181,7 +181,7 @@ func TestUnknownQuantizationIsRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("an unknown quantization must be refused, not assumed")
 	}
-	if !strings.Contains(err.Error(), "refusing to guess") {
+	if !strings.Contains(err.Error(), "unknown quantization") {
 		t.Errorf("the error should explain why: %v", err)
 	}
 }

@@ -100,8 +100,10 @@ func (r *Runtime) Launch(ctx context.Context, _ runtime.Session, spec core.Model
 	defer r.mu.Unlock()
 
 	if r.behaviour.OOMAtLoad {
+		// The class carries the policy — ClassModelFailure means "do not retry
+		// on another host". The message therefore states only the fact.
 		return runtime.Endpoint{}, errs.Newf(errs.ClassModelFailure, "fake.Launch",
-			"CUDA out of memory loading %s: the next host fails identically", spec.Ref)
+			"cuda out of memory loading %s", spec.Ref)
 	}
 	host := runtime.Loopback
 	if r.behaviour.BindHost != "" {
@@ -116,7 +118,7 @@ func (r *Runtime) Launch(ctx context.Context, _ runtime.Session, spec core.Model
 	// FR-SEC-08: a non-loopback bind is rejected at launch, not warned about.
 	if !ep.Valid() {
 		return runtime.Endpoint{}, errs.Newf(errs.ClassModelFailure, "fake.Launch",
-			"refusing to bind %s: the runtime binds loopback only (FR-SEC-08)", host)
+			"invalid bind address %s: loopback only", host)
 	}
 	r.launched = true
 	return ep, nil

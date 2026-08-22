@@ -91,7 +91,7 @@ func Default() Config {
 // Validate reports configuration that cannot be honoured.
 func (c Config) Validate() error {
 	if c.LocalPort < 1 || c.LocalPort > 65535 {
-		return fmt.Errorf("config: local_port %d out of range", c.LocalPort)
+		return fmt.Errorf("config: local_port %d out of range: expected 1-65535", c.LocalPort)
 	}
 	if c.MaxConcurrentRigs < 1 {
 		return fmt.Errorf("config: max_concurrent_rigs must be at least 1, got %d",
