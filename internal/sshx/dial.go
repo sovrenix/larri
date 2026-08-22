@@ -61,6 +61,24 @@ type Client struct {
 	conf Config
 }
 
+// hostKeyAlgorithms is the host key preference, and it is shared by the scan
+// and the dial for a reason that cost a live run to find.
+//
+// A scan that leaves this unset negotiates whatever Go prefers by default —
+// which puts ECDSA ahead of Ed25519 — while a dial that pins Ed25519 asks the
+// server for a different key. Both keys are legitimate and belong to the same
+// host, so the comparison fails on every attempt, deterministically, and
+// reports itself as `host key mismatch`: a phrase that describes an attack and
+// here described a configuration error.
+//
+// Whatever a pin is compared against must be obtained the same way it will be
+// presented. One list, used twice.
+var hostKeyAlgorithms = []string{
+	ssh.KeyAlgoED25519,
+	ssh.CertAlgoED25519v01,
+	ssh.KeyAlgoRSASHA256,
+}
+
 // hardenedConfig builds the client configuration.
 //
 // Algorithms are named explicitly rather than left to defaults, because the
@@ -85,13 +103,9 @@ func hardenedConfig(c Config) (*ssh.ClientConfig, error) {
 		User: user,
 		// Public key only. No password or keyboard-interactive method is
 		// offered, so a host that asks for one gets nothing.
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(c.Key.Signer())},
-		HostKeyCallback: ssh.FixedHostKey(c.HostKey),
-		HostKeyAlgorithms: []string{
-			ssh.KeyAlgoED25519,
-			ssh.CertAlgoED25519v01,
-			ssh.KeyAlgoRSASHA256,
-		},
+		Auth:              []ssh.AuthMethod{ssh.PublicKeys(c.Key.Signer())},
+		HostKeyCallback:   ssh.FixedHostKey(c.HostKey),
+		HostKeyAlgorithms: hostKeyAlgorithms,
 		Config: ssh.Config{
 			KeyExchanges: []string{
 				"curve25519-sha256", "curve25519-sha256@libssh.org",
@@ -203,7 +217,10 @@ func ScanHostKey(ctx context.Context, host string, port int, timeout time.Durati
 			found = key
 			return nil
 		},
-		Timeout: timeout,
+		// The same preference the dial will use. Scanning with different
+		// algorithms pins a key the connection will never be offered.
+		HostKeyAlgorithms: hostKeyAlgorithms,
+		Timeout:           timeout,
 	}
 	// The handshake is expected to fail at authentication; the host key is
 	// presented before that, which is all this needs.

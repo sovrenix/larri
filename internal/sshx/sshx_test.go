@@ -267,3 +267,35 @@ func TestKeepaliveDetectsADeadConnection(t *testing.T) {
 		t.Fatal("keepalive must report a dead connection, which is what the supervisor watches")
 	}
 }
+
+// The bug a live run exposed, and the one this package most needed a test for.
+//
+// A scan that negotiates its own choice of host key algorithm pins a key the
+// dial will never be offered, because the dial pins a different algorithm. Both
+// keys are genuine and belong to the same host. The failure reports itself as
+// `host key mismatch` — a phrase that describes an attack, and here described a
+// configuration error, deterministically, on every attempt.
+func TestScanAndDialNegotiateTheSameHostKeyAlgorithm(t *testing.T) {
+	s := newTestServer(t, nil)
+
+	scanned, err := ScanHostKey(context.Background(), "127.0.0.1", s.Port(), 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp, _ := NewKeyPair()
+	dialConf, err := hardenedConfig(Config{Key: kp, HostKey: scanned})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scanned.Type() != dialConf.HostKeyAlgorithms[0] {
+		t.Errorf("scan produced a %s key while the dial pins %s first; "+
+			"a pin must be obtained the way it will be presented",
+			scanned.Type(), dialConf.HostKeyAlgorithms[0])
+	}
+	// And the round trip works, which is the property that actually matters.
+	c, err := dialTest(t, s, scanned)
+	if err != nil {
+		t.Fatalf("a scanned key must be usable as a pin: %v", err)
+	}
+	c.Close()
+}

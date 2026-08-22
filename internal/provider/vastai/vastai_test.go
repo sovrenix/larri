@@ -48,8 +48,8 @@ const realisticOffer = `{
 
 func TestSearchNormalisesARealisticOffer(t *testing.T) {
 	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v0/bundles" {
-			t.Errorf("search path = %s, want /api/v0/bundles", r.URL.Path)
+		if r.URL.Path != "/api/v0/bundles/" {
+			t.Errorf("search path = %s, want /api/v0/bundles/", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
 			t.Errorf("auth header = %q", got)

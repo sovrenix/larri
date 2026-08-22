@@ -28,10 +28,14 @@ const DefaultBaseURL = "https://console.vast.ai"
 // adapter would have broken the listing silently, which is R-02 exactly. Each
 // path is therefore stated separately and verified by the live contract test.
 const (
-	pathSearch  = "/api/v0/bundles"
-	pathCreate  = "/api/v0/asks/%s"      // offer id
-	pathDestroy = "/api/v0/instances/%s" // instance id
-	pathList    = "/api/v1/instances"
+	// Trailing slashes are not cosmetic: without them the API answers 301 to
+	// the slashed form. Go follows the redirect, so the calls worked — but
+	// every request paid for two round trips, and a redirect that ever crossed
+	// hosts would have had the Authorization header stripped in flight.
+	pathSearch  = "/api/v0/bundles/"
+	pathCreate  = "/api/v0/asks/%s/"      // offer id
+	pathDestroy = "/api/v0/instances/%s/" // instance id
+	pathList    = "/api/v1/instances/"
 )
 
 // listPageMax is the provider's ceiling, not our choice: the documented limit
