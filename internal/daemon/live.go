@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -411,7 +412,6 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 		everLogged bool
 		prevCount  = readCounters(ctx, sess)
 		attempts   int
-		lastErr    error
 	)
 	for time.Now().Before(deadline) {
 		attempts++
@@ -421,8 +421,6 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 			o.emit("ready", "completion verified after %s",
 				time.Since(deadline.Add(-o.readyCap())).Round(time.Second))
 			return nil
-		} else {
-			lastErr = err
 		}
 
 		size, tail := o.readLogState(ctx, sess)
@@ -452,13 +450,18 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 		idle := time.Since(lastGrowth)
 		switch {
 		case !everLogged && idle > cold:
+			// A runtime that never spoke is usually a runtime that died on
+			// its first line — a missing library, an unsupported flag, a
+			// wrong architecture. Whatever it managed to say is the answer,
+			// so it goes in the error rather than being left on the host that
+			// is about to be destroyed.
 			return errs.Newf(errs.ClassHostFailure, "daemon.waitReady",
-				"runtime produced no output in %s and the host is idle (%s): %v",
-				idle.Round(time.Second), act, shortErr(lastErr))
+				"runtime produced no output in %s and the host is idle (%s)%s",
+				idle.Round(time.Second), act, o.runtimeSaid(ctx, sess))
 		case everLogged && idle > warm:
 			return errs.Newf(errs.ClassHostFailure, "daemon.waitReady",
-				"runtime stalled: no log growth or activity for %s (%s)",
-				idle.Round(time.Second), act)
+				"runtime stalled: no log growth or activity for %s (%s)%s",
+				idle.Round(time.Second), act, o.runtimeSaid(ctx, sess))
 		}
 		select {
 		case <-ctx.Done():
@@ -466,13 +469,49 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 		case <-time.After(o.readyPoll()):
 		}
 	}
-	// Out of time: show what the runtime last said, because that is where the
-	// answer usually is.
-	if _, tail := o.readLogState(ctx, sess); tail != "" {
-		o.warn("ready", "last from the runtime: %s", tail)
-	}
 	return errs.Newf(errs.ClassHostFailure, "daemon.waitReady",
-		"no completion before the deadline: %v", shortErr(lastErr))
+		"no completion before the deadline%s", o.runtimeSaid(ctx, sess))
+}
+
+// runtimeSaid collects the runtime's own account of what went wrong.
+//
+// The host is about to be destroyed, so anything not carried out in the error
+// is lost — and the log is almost always where the answer is. A bring-up that
+// fails with only LARRI's view of it ("no completion") tells the operator
+// nothing they could act on.
+func (o *Orchestrator) runtimeSaid(ctx context.Context, sess runtime.Session) string {
+	// A fresh, short-lived context: the caller's may already be cancelled,
+	// and this is the last chance to read anything at all.
+	rctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_ = ctx
+
+	rc, err := o.Runtime.Logs(rctx, sess, 25)
+	if err != nil {
+		return ""
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(io.LimitReader(rc, 16<<10))
+	if err != nil || len(b) == 0 {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	// The last few non-empty lines: a Python traceback puts the cause last,
+	// and a CUDA error puts it on the line that mentions CUDA.
+	var keep []string
+	for i := len(lines) - 1; i >= 0 && len(keep) < 6; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			keep = append([]string{l}, keep...)
+		}
+	}
+	if len(keep) == 0 {
+		return ""
+	}
+	out := "\n      runtime log:\n        " + strings.Join(keep, "\n        ")
+	if len(out) > 1200 {
+		out = out[:1200] + " …"
+	}
+	return out
 }
 
 func (o *Orchestrator) readyPoll() time.Duration {
