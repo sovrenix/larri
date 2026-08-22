@@ -258,8 +258,16 @@ func (i wireInstance) normalise() (core.Instance, error) {
 		out.CreatedAt = time.Unix(sec, 0).UTC()
 	}
 	out.Running = isRunning(i.ActualStatus)
-	if i.ActualStatus != nil {
+	// Vast reports two different things and both matter. actual_status is the
+	// container — what decides whether sshd can be reached. cur_state is the
+	// contract, which reads "running" the moment billing starts, long before
+	// the container exists. Carrying both means a caller can tell "not ready"
+	// from "not reporting", which are different problems.
+	switch {
+	case i.ActualStatus != nil && *i.ActualStatus != "":
 		out.Status = *i.ActualStatus
+	case i.CurState != nil && *i.CurState != "":
+		out.Status = "contract " + *i.CurState
 	}
 	if i.StatusMsg != nil {
 		out.StatusMsg = strings.TrimSpace(*i.StatusMsg)

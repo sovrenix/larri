@@ -224,6 +224,7 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 		lastSeen  string
 		changedAt = time.Now()
 		deadline  = time.Now().Add(cap)
+		everSpoke bool
 	)
 	for time.Now().Before(deadline) {
 		inst, err := o.Provider.Get(ctx, rig.Instance.InstanceID)
@@ -238,15 +239,29 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 		case inst.Running && inst.SSHHost != "" && inst.SSHPort > 0:
 			return inst, nil
 		default:
+			if inst.StatusMsg != "" {
+				everSpoke = true
+			}
 			if now := describeBoot(inst); now != lastSeen {
 				o.emit("boot", "%s", now)
 				lastSeen, changedAt = now, time.Now()
 				o.lastBootStatus = now
 			}
 		}
-		if idle := time.Since(changedAt); idle > stall {
-			return nil, errs.Newf(errs.ClassHostFailure, "daemon.waitForSSH",
-				"no progress for %s (last: %s)", idle.Round(time.Second), orUnknown(lastSeen))
+		// Stall detection needs something to detect a stall IN.
+		//
+		// Vast reports contract state immediately but often says nothing about
+		// the container for minutes — no status, no message — while an image
+		// pulls. Treating that silence as a stall would kill a host that is
+		// working, which is the same mistake the fixed deadline made, wearing
+		// a smarter disguise. So the stall clock only applies once the
+		// provider has actually shown progress; until then the cap governs.
+		if everSpoke {
+			if idle := time.Since(changedAt); idle > stall {
+				return nil, errs.Newf(errs.ClassHostFailure, "daemon.waitForSSH",
+					"no progress for %s (last: %s)",
+					idle.Round(time.Second), orUnknown(lastSeen))
+			}
 		}
 		select {
 		case <-ctx.Done():

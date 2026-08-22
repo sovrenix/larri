@@ -179,3 +179,53 @@ func TestDescribeBootPrefersTheProviderMessage(t *testing.T) {
 		t.Errorf("message not truncated: %d chars", len(long))
 	}
 }
+
+// Silence from a provider is not evidence of a stalled host.
+//
+// Vast reports contract state the moment billing starts but often says nothing
+// about the container for minutes while an image pulls — no status, no
+// message. Treating that silence as a stall kills a host that is working,
+// which is the same mistake a fixed deadline makes wearing a smarter disguise.
+func TestProviderSilenceIsNotAStall(t *testing.T) {
+	quiet := core.Instance{InstanceID: "i", Status: "contract running"} // no StatusMsg, ever
+	p := &bootProvider{steps: []core.Instance{quiet}, repeat: true}
+	o := &Orchestrator{
+		Provider:         p,
+		BootStallTimeout: 100 * time.Millisecond, // would fire instantly if applied
+		BootCap:          1200 * time.Millisecond,
+		BootPollInterval: 20 * time.Millisecond,
+	}
+	rig := &core.Rig{Instance: &core.Instance{InstanceID: "i"}}
+	start := time.Now()
+	_, err := o.waitForSSH(context.Background(), rig)
+	if err == nil {
+		t.Fatal("it should eventually give up on the cap")
+	}
+	if strings.Contains(err.Error(), "no progress") {
+		t.Fatal("a silent provider was reported as a stalled host")
+	}
+	// It waited for the cap, not the much shorter stall window.
+	if time.Since(start) < time.Second {
+		t.Errorf("gave up after %s; the cap should govern when there is no signal",
+			time.Since(start).Round(time.Millisecond))
+	}
+}
+
+// Once the provider HAS spoken, going quiet is a genuine stall.
+func TestStallAppliesOnceTheProviderHasSpoken(t *testing.T) {
+	p := &bootProvider{
+		steps:  []core.Instance{loading("Downloading 4%")},
+		repeat: true,
+	}
+	o := &Orchestrator{
+		Provider:         p,
+		BootStallTimeout: 200 * time.Millisecond,
+		BootCap:          10 * time.Second,
+		BootPollInterval: 20 * time.Millisecond,
+	}
+	rig := &core.Rig{Instance: &core.Instance{InstanceID: "i"}}
+	_, err := o.waitForSSH(context.Background(), rig)
+	if err == nil || !strings.Contains(err.Error(), "no progress") {
+		t.Fatalf("a host that spoke and then went quiet is stalled: %v", err)
+	}
+}
