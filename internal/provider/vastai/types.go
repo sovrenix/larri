@@ -265,8 +265,14 @@ func (i wireInstance) normalise() (core.Instance, error) {
 		out.StatusMsg = strings.TrimSpace(*i.StatusMsg)
 	}
 	if i.Label != nil && *i.Label != "" {
-		if id, ok := strings.CutPrefix(*i.Label, core.LabelKey+":"); ok {
-			out.Labels = map[string]string{core.LabelKey: id}
+		if l, ok := core.DecodeLabel(*i.Label); ok {
+			// Both the parsed ID and the raw marker: the ID is what
+			// reconciliation compares, the raw is what lets a future version
+			// read a label this one did not fully understand.
+			out.Labels = map[string]string{
+				core.LabelKey:    l.RigID,
+				core.LabelRawKey: *i.Label,
+			}
 		}
 	}
 	return out, nil

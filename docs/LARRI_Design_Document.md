@@ -308,6 +308,53 @@ Normalization rules:
   the *class* requested and `Instance` carries what was actually placed. Ranking operates
   on the class; the sizing check re-runs against the placed instance before bootstrap.
 
+### 5.3 The Ownership Marker Is Provider-Neutral
+
+Every provider gets one string of LARRI's choosing stamped on the resource, and
+each platform calls it something different: Vast has `label`, RunPod names pods,
+and a future adapter will have its own field with its own length cap. The
+*content* is therefore defined once in `core` and the adapter only decides where
+to put it and how much of it fits.
+
+What the marker carries, and why more than a rig ID:
+
+| | |
+|---|---|
+| Rig ID | Attribution. The one field that must survive anything (FR-STATE-04) |
+| Model, served name, runtime | What an orphan was doing, so a report explains rather than merely alerts |
+| Created-at, price | Whether it is worth destroying immediately and what it has cost since |
+| Local port | Which client configuration points at it |
+
+It exists for the case where **local state is gone entirely** — a lost disk, a
+new laptop, a corrupted directory — and the only surviving record of a billing
+resource is what was stamped on it. A bare rig ID is a puzzle; "rig 01J9Z
+serving Qwen3-Coder on vllm since Tuesday at $1.29/hr" is a decision.
+
+Three constraints shape the encoding and they pull against each other:
+
+- **The host reads it.** The detail fields are sealed with AES-256-GCM under a
+  key the operator supplies (§15.5.4). Model and runtime are visible in the
+  host's own process table anyway, but the marker should not volunteer them,
+  and the local port says something about the operator's machine rather than
+  the rented one.
+- **The rig ID is deliberately *not* sealed.** Attribution has to survive losing
+  the key. An operator who reinstalls without their key still needs
+  `larri orphans` to say "this is yours"; a fully encrypted marker would turn
+  every surviving rig into an unattributable stranger's instance at exactly the
+  moment that costs money.
+- **Truncation degrades rather than destroys.** Providers cap marker length
+  without always documenting where, so the rig ID comes first and detail is
+  appended in decreasing order of usefulness. Unknown keys are ignored, so a
+  marker written by a later LARRI stays attributable to an earlier one.
+
+Adapters map it as follows, and a new provider answers the same two questions:
+which field survives a restart and is readable back, and how long may it be.
+
+| Provider | Field | Cap |
+|---|---|---|
+| Vast.ai | `label` on the instance | conservative default until measured |
+| RunPod | pod name / metadata | to be confirmed when the adapter lands (M3) |
+
 **Decoding discipline (R-02).** On a shape LARRI cannot parse, fail loudly: a mis-parsed
 price or VRAM figure is worse than an outright error, because it spends money on a wrong
 assumption.
@@ -1745,6 +1792,32 @@ API. Request signing, mTLS, or nonce schemes inside that channel would add machi
 change no outcome. The rig token earns its place as a *fail-safe* — it is what still stands if
 a port is someday mapped by mistake or a bind address is someday wrong — not as a defence
 against an adversary already inside the tunnel.
+
+#### 15.5.4 Sealing the Ownership Marker
+
+The marker LARRI stamps on a rented resource is read by the host and by the
+provider, so its descriptive fields are encrypted: AES-256-GCM, random nonce per
+write, under a 32-byte key the operator supplies via `LARRI_LABEL_KEY` or a file
+it points at.
+
+**The key is configuration, never generated silently.** A key LARRI invented and
+stored by itself would be one the operator does not know exists, cannot back up,
+and loses on reinstall — at which point every surviving rig's details become
+unreadable in precisely the situation where an orphan most needs explaining. A
+key they supplied is a key they can keep.
+
+**The rig ID is outside the seal, deliberately.** It is the difference between
+"this instance is yours" and "this instance belongs to someone" — and that
+distinction has to work with no key at all, on a fresh machine, during the
+recovery where local state was what went missing. Sealing it would trade a
+cost-safety guarantee for hiding an opaque identifier the provider already
+associates with the operator's account.
+
+**Nonces are per write**, so two rigs serving the same model do not produce
+identical markers, which would otherwise let a host correlate them.
+
+When no key is configured, markers are written unsealed and LARRI says so. It
+does not quietly fall back to protecting nothing while implying otherwise.
 
 ### 15.6 Denial of Service Is a Financial Attack
 

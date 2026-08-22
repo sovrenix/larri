@@ -17,7 +17,6 @@ package fake
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -160,7 +159,7 @@ func (p *Provider) Create(ctx context.Context, o core.Offer, spec provider.Creat
 		// Normalised to the bare rig ID, matching the real adapters: the
 		// prefix is provider vocabulary and dies at this boundary, so
 		// reconciliation can compare a label to a rig ID it already holds.
-		Labels: map[string]string{core.LabelKey: stripLabel(spec.Label)},
+		Labels: labelsFrom(spec.Label),
 	}
 	p.instances[id] = inst
 
@@ -262,12 +261,14 @@ func (p *Provider) SetUnreachable(v bool) {
 	p.behaviour.Unreachable = v
 }
 
-// stripLabel removes the "larri:" prefix a CreateSpec carries.
-func stripLabel(label string) string {
-	if id, ok := strings.CutPrefix(label, core.LabelKey+":"); ok {
-		return id
+// labelsFrom normalises a provider-side marker the way real adapters do: the
+// parsed rig ID for comparison, and the raw marker for a future reader.
+func labelsFrom(raw string) map[string]string {
+	l, ok := core.DecodeLabel(raw)
+	if !ok {
+		return map[string]string{core.LabelKey: raw}
 	}
-	return label
+	return map[string]string{core.LabelKey: l.RigID, core.LabelRawKey: raw}
 }
 
 // Count returns how many instances exist, running or not. Tests assert on this

@@ -64,6 +64,15 @@ type Orchestrator struct {
 	// rare enough not to matter against a rate limit.
 	BootPollInterval time.Duration
 
+	// LabelSealer encrypts the descriptive half of the provider-side label.
+	// Nil writes it in the clear, which is attributable but readable by the
+	// host and the provider.
+	LabelSealer core.Sealer
+
+	// LabelLimit is the provider's cap on marker length. Zero uses the
+	// conservative default.
+	LabelLimit int
+
 	// MaxHostAttempts bounds how many machines a single `up` will try before
 	// giving up. Zero means three.
 	MaxHostAttempts int
@@ -71,6 +80,10 @@ type Orchestrator struct {
 	// lastKeys carries the ephemeral identity from Up to Serve. Not
 	// persisted: FR-STATE-05 forbids private keys in state files.
 	lastKeys *sshx.KeyPair
+
+	// lastBootStatus is the provider's most recent account of what the host
+	// was doing, kept so a failure can say how far it got.
+	lastBootStatus string
 
 	// excludedMachines holds hosts already tried and found unusable this run.
 	//
@@ -210,9 +223,14 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 
 	o.emit("create", "renting %s at $%.3f/hr", chosen.OfferID, chosen.PriceHr)
 	inst, err := o.Provider.Create(ctx, chosen, provider.CreateSpec{
-		Image:   o.Runtime.Image(req.Model, plan),
-		DiskGB:  req.DiskGB,
-		Label:   core.LabelKey + ":" + rig.ID,
+		Image:  o.Runtime.Image(req.Model, plan),
+		DiskGB: req.DiskGB,
+		// Everything a recovering LARRI would need if local state were gone:
+		// what was being served, on what runtime, since when, at what price,
+		// behind which local port. Sealed when a key is configured; the rig
+		// ID stays readable either way, because attribution must not depend
+		// on holding a key.
+		Label:   core.EncodeLabel(core.LabelFor(rig), o.LabelLimit, o.LabelSealer),
 		OnStart: keys.OnStartScript(),
 		// FR-SEC-15: SSH only. A container port that was never mapped is
 		// unreachable regardless of what listens on it.
@@ -323,6 +341,19 @@ func (o *Orchestrator) teardownAfterFailure(rig *core.Rig, code core.ReasonCode,
 		Actor: core.ActorFault, Code: code, At: time.Now().UTC(),
 		Summary:  "bring-up failed: " + shortErr(cause),
 		Evidence: map[string]string{"error": shortErr(cause)},
+	}
+	// The provider's last word on what the host was doing. Without it a
+	// post-mortem cannot tell a stalled image pull from a host that never
+	// scheduled, which are different problems with different answers.
+	if s := o.lastBootStatus; s != "" {
+		term.Evidence["last_host_status"] = s
+	}
+	if rig.Offer.GPUModel != "" {
+		term.Evidence["gpu"] = rig.Offer.GPUModel
+		term.Evidence["price_hr"] = fmt.Sprintf("%.4f", rig.Offer.PriceHr)
+	}
+	if rig.Instance != nil {
+		term.Evidence["instance"] = rig.Instance.InstanceID
 	}
 	if err := o.Down(ctx, rig, term); err != nil {
 		o.warn("cleanup", "TEARDOWN UNCONFIRMED: %v — check the provider dashboard", err)

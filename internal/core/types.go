@@ -127,10 +127,29 @@ type Instance struct {
 // Rig.ID is minted before the create call rather than after it returns.
 const LabelKey = "larri"
 
+// LabelRawKey holds the full provider-side marker as it was read back, so a
+// recovering LARRI can parse whatever a past version wrote.
+const LabelRawKey = "larri.raw"
+
 // RigID returns the rig this instance belongs to, and whether it is ours.
 func (i Instance) RigID() (string, bool) {
 	id, ok := i.Labels[LabelKey]
 	return id, ok && id != ""
+}
+
+// Label returns everything the provider-side marker records about this rig.
+//
+// Adapters store the raw marker under LabelRaw so recovery can read it even
+// when local state is gone entirely — the case where a bare rig ID would be a
+// puzzle rather than an answer.
+func (i Instance) Label() (Label, bool) {
+	if raw, ok := i.Labels[LabelRawKey]; ok {
+		return DecodeLabel(raw)
+	}
+	if id, ok := i.RigID(); ok {
+		return Label{RigID: id, Version: LabelVersion}, true
+	}
+	return Label{}, false
 }
 
 // SizingPlan is the output of the sizing engine (§7.3).

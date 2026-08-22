@@ -241,6 +241,7 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 			if now := describeBoot(inst); now != lastSeen {
 				o.emit("boot", "%s", now)
 				lastSeen, changedAt = now, time.Now()
+				o.lastBootStatus = now
 			}
 		}
 		if idle := time.Since(changedAt); idle > stall {
