@@ -299,3 +299,49 @@ func TestScanAndDialNegotiateTheSameHostKeyAlgorithm(t *testing.T) {
 	}
 	c.Close()
 }
+
+// A published endpoint is not a reachable one. During a live run a provider
+// advertised ssh7.vast.ai:27370 the moment the contract started, while the
+// container behind it never came up — ten minutes of billing against an
+// address nothing was listening on.
+func TestProbeDistinguishesPublishedFromReachable(t *testing.T) {
+	s := newTestServer(t, nil)
+	if err := Probe(context.Background(), "127.0.0.1", s.Port(), 5*time.Second); err != nil {
+		t.Errorf("a live server should probe clean: %v", err)
+	}
+	// A port nothing listens on.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	if err := Probe(context.Background(), "127.0.0.1", dead, 2*time.Second); err == nil {
+		t.Error("a refused port must not read as reachable")
+	}
+}
+
+// A proxy can accept on behalf of a backend that is not there, so completing a
+// TCP handshake is not enough — the banner is what proves an SSH server.
+func TestProbeRejectsAnAcceptorThatIsNotSSH(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Accept and say nothing, as a proxy fronting a dead backend does.
+			time.Sleep(3 * time.Second)
+			c.Close()
+		}
+	}()
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := Probe(context.Background(), "127.0.0.1", port, 700*time.Millisecond); err == nil {
+		t.Fatal("an accepted connection with no banner is not an SSH server")
+	}
+}

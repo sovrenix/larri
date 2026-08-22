@@ -71,6 +71,14 @@ type Orchestrator struct {
 	// doing anything. Zero means twenty seconds.
 	HostProbeInterval time.Duration
 
+	// EndpointStallLimit is how long an advertised SSH endpoint may refuse
+	// connections before the host is judged dead. Zero means four minutes.
+	//
+	// This is the signal that catches a contract which reports running while
+	// its container never starts — the provider's status cannot see that, and
+	// the connection can.
+	EndpointStallLimit time.Duration
+
 	// HostIdleLimit is how long a reachable host may show no CPU, disk or
 	// network activity before LARRI says so. Zero means five minutes.
 	HostIdleLimit time.Duration

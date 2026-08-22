@@ -6,6 +6,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -60,13 +61,18 @@ func loading(msg string) core.Instance {
 // that was making steady progress pulling a 15 GB image, threw the partial
 // pull away, and started the same one on a fresh machine.
 func TestSlowButProgressingBootIsNotKilled(t *testing.T) {
+	// The final step advertises an endpoint that actually answers, because
+	// readiness is now decided by the connection rather than by the provider's
+	// label — a host that says "running" against a dead port is the failure
+	// TestAdvertisedEndpointThatNeverAnswersIsAHostFailure covers.
+	port := newLocalSSHIsh(t)
 	p := &bootProvider{steps: []core.Instance{
 		loading("Downloading vllm/vllm-openai 12%"),
 		loading("Downloading vllm/vllm-openai 34%"),
 		loading("Downloading vllm/vllm-openai 61%"),
 		loading("Downloading vllm/vllm-openai 88%"),
 		loading("Extracting layers"),
-		{InstanceID: "i", Status: "running", Running: true, SSHHost: "h", SSHPort: 22},
+		{InstanceID: "i", Status: "running", Running: true, SSHHost: "127.0.0.1", SSHPort: port},
 	}}
 	var events []string
 	ch := make(chan Event, 64)
@@ -228,4 +234,95 @@ func TestStallAppliesOnceTheProviderHasSpoken(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no progress") {
 		t.Fatalf("a host that spoke and then went quiet is stalled: %v", err)
 	}
+}
+
+// The failure a live run produced and neither earlier rule caught.
+//
+// The contract reported running for ten minutes, intended_status was running,
+// actual_status never arrived, status_msg stayed empty — and the advertised
+// endpoint refused every connection. The fixed deadline would have waited six
+// minutes for nothing; the stall clock could not fire because the provider had
+// never spoken; the cap would have billed for thirty. The connection knew all
+// along.
+func TestAdvertisedEndpointThatNeverAnswersIsAHostFailure(t *testing.T) {
+	// A port with nothing behind it, which is what the live instance was.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	p := &bootProvider{repeat: true, steps: []core.Instance{{
+		InstanceID: "i", Status: "contract running", // never "running"
+		SSHHost: "127.0.0.1", SSHPort: dead,
+	}}}
+	o := &Orchestrator{
+		Provider:           p,
+		BootPollInterval:   20 * time.Millisecond,
+		EndpointStallLimit: 500 * time.Millisecond,
+		BootCap:            30 * time.Second,
+		BootStallTimeout:   30 * time.Second,
+	}
+	rig := &core.Rig{Instance: &core.Instance{InstanceID: "i"}}
+	start := time.Now()
+	_, err = o.waitForSSH(context.Background(), rig)
+	if err == nil {
+		t.Fatal("an endpoint that never answers is a dead host")
+	}
+	if !errs.Is(err, errs.ClassHostFailure) {
+		t.Fatalf("class = %s, want host-failure so it earns a fallback", errs.ClassOf(err))
+	}
+	if !strings.Contains(err.Error(), "still not answering") {
+		t.Errorf("the error should name what was tried: %v", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Errorf("took %s; the point is to stop billing promptly", time.Since(start))
+	}
+}
+
+// The converse, and why the probe replaces the status check rather than
+// supplementing it: a reachable host is usable even when the provider has not
+// got round to relabelling it.
+func TestReachableEndpointWinsOverAnUnsetStatus(t *testing.T) {
+	srv := newLocalSSHIsh(t)
+	p := &bootProvider{repeat: true, steps: []core.Instance{{
+		InstanceID: "i",
+		Status:     "contract running", // Running is false; actual_status never arrived
+		SSHHost:    "127.0.0.1", SSHPort: srv,
+	}}}
+	o := &Orchestrator{
+		Provider: p, BootPollInterval: 20 * time.Millisecond,
+		EndpointStallLimit: 10 * time.Second, BootCap: 10 * time.Second,
+	}
+	rig := &core.Rig{Instance: &core.Instance{InstanceID: "i"}}
+	inst, err := o.waitForSSH(context.Background(), rig)
+	if err != nil {
+		t.Fatalf("a host that answers is usable regardless of its label: %v", err)
+	}
+	if inst == nil {
+		t.Fatal("should have returned the instance")
+	}
+}
+
+// newLocalSSHIsh starts a listener that sends an SSH banner, standing in for a
+// container whose sshd is up before the provider has noticed.
+func newLocalSSHIsh(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = c.Write([]byte("SSH-2.0-OpenSSH_9.6\r\n"))
+			c.Close()
+		}
+	}()
+	return ln.Addr().(*net.TCPAddr).Port
 }

@@ -26,6 +26,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -233,4 +234,43 @@ func ScanHostKey(ctx context.Context, host string, port int, timeout time.Durati
 			"host presented no key: %v", err)
 	}
 	return found, nil
+}
+
+// Probe reports whether an SSH server is actually answering at an address.
+//
+// It is the cheapest conclusive question available during a bring-up, and it
+// costs the provider nothing — no API call, no rate limit, no status field to
+// interpret. A provider can publish an endpoint the moment a contract starts
+// while the container behind it never comes up, so "the provider told me the
+// address" and "something is listening there" are different facts, and only
+// the second one is worth waiting on.
+//
+// It reads the banner rather than merely completing a TCP handshake, because a
+// proxy can accept a connection on behalf of a backend that is not there. A
+// server that speaks SSH sends its identification string immediately; silence
+// after an accepted connection is not an SSH server.
+func Probe(ctx context.Context, host string, port int, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = 15 * time.Second
+	}
+	addr := net.JoinHostPort(host, fmt.Sprint(port))
+	d := net.Dialer{Timeout: timeout}
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return errs.New(errs.ClassHostFailure, "sshx.Probe", err)
+	}
+	defer conn.Close()
+
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	buf := make([]byte, 64)
+	n, err := conn.Read(buf)
+	if err != nil || n == 0 {
+		return errs.Newf(errs.ClassHostFailure, "sshx.Probe",
+			"connected to %s but no SSH banner", addr)
+	}
+	if !strings.HasPrefix(string(buf[:n]), "SSH-") {
+		return errs.Newf(errs.ClassHostFailure, "sshx.Probe",
+			"%s answered but did not speak SSH", addr)
+	}
+	return nil
 }

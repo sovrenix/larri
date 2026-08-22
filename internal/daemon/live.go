@@ -233,11 +233,17 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 	if poll == 0 {
 		poll = 15 * time.Second
 	}
+	unreachable := o.EndpointStallLimit
+	if unreachable == 0 {
+		unreachable = 4 * time.Minute
+	}
 	var (
-		lastSeen  string
-		changedAt = time.Now()
-		deadline  = time.Now().Add(cap)
-		everSpoke bool
+		lastSeen    string
+		changedAt   = time.Now()
+		deadline    = time.Now().Add(cap)
+		everSpoke   bool
+		endpointAt  time.Time
+		announcedEP bool
 	)
 	for time.Now().Before(deadline) {
 		inst, err := o.Provider.Get(ctx, rig.Instance.InstanceID)
@@ -249,16 +255,42 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 		case inst == nil:
 			return nil, errs.Newf(errs.ClassProviderUnknownOutcome, "daemon.waitForSSH",
 				"instance %s vanished during boot", rig.Instance.InstanceID)
-		case inst.Running && inst.SSHHost != "" && inst.SSHPort > 0:
-			return inst, nil
+
+		case inst.SSHHost != "" && inst.SSHPort > 0:
+			// The endpoint is published. From here the provider's status is
+			// advisory and the connection is decisive: a live run watched a
+			// contract report "running" for ten minutes, with intended_status
+			// running and actual_status never set, against an address nothing
+			// was listening on. Asking the address costs the provider nothing
+			// and answers the only question that matters (§12.1 — resolve by
+			// evidence, not inference).
+			if endpointAt.IsZero() {
+				endpointAt = time.Now()
+			}
+			if !announcedEP {
+				o.emit("boot", "endpoint %s:%d published — probing", inst.SSHHost, inst.SSHPort)
+				announcedEP = true
+			}
+			if perr := sshx.Probe(ctx, inst.SSHHost, inst.SSHPort, 15*time.Second); perr == nil {
+				o.emit("boot", "sshd answering at %s:%d", inst.SSHHost, inst.SSHPort)
+				return inst, nil
+			} else if waited := time.Since(endpointAt); waited > unreachable {
+				return nil, errs.Newf(errs.ClassHostFailure, "daemon.waitForSSH",
+					"endpoint %s:%d advertised %s ago and still not answering: %v",
+					inst.SSHHost, inst.SSHPort, waited.Round(time.Second), shortErr(perr))
+			}
+			fallthrough
+
 		default:
-			if inst.StatusMsg != "" {
+			if inst != nil && inst.StatusMsg != "" {
 				everSpoke = true
 			}
-			if now := describeBoot(inst); now != lastSeen {
-				o.emit("boot", "%s", now)
-				lastSeen, changedAt = now, time.Now()
-				o.lastBootStatus = now
+			if inst != nil {
+				if now := describeBoot(inst); now != lastSeen {
+					o.emit("boot", "%s", now)
+					lastSeen, changedAt = now, time.Now()
+					o.lastBootStatus = now
+				}
 			}
 		}
 		// Stall detection needs something to detect a stall IN.
@@ -266,9 +298,10 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 		// Vast reports contract state immediately but often says nothing about
 		// the container for minutes — no status, no message — while an image
 		// pulls. Treating that silence as a stall would kill a host that is
-		// working, which is the same mistake the fixed deadline made, wearing
-		// a smarter disguise. So the stall clock only applies once the
-		// provider has actually shown progress; until then the cap governs.
+		// working, which is the same mistake the fixed deadline made wearing a
+		// smarter disguise. So the stall clock only applies once the provider
+		// has actually shown progress; the endpoint probe above is what
+		// catches a host that never comes up at all.
 		if everSpoke {
 			if idle := time.Since(changedAt); idle > stall {
 				return nil, errs.Newf(errs.ClassHostFailure, "daemon.waitForSSH",
