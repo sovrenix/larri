@@ -25,9 +25,15 @@ import (
 type Provider struct {
 	c *Client
 
-	// OnDrift is called when a response parses leniently but not strictly.
+	// OnDrift is called when a payload decodes but fails validation.
 	// Defaults to ignoring it; the daemon wires this to a WARN log.
 	OnDrift func(error)
+
+	// OnNotice reports a non-fatal condition the operator should see, such
+	// as a truncated result set. Ranking that cannot see a candidate is
+	// indistinguishable from ranking that rejected it, so the truncation has
+	// to surface rather than be inferred from a suspiciously round count.
+	OnNotice func(string)
 }
 
 var _ provider.Provider = (*Provider)(nil)
@@ -58,7 +64,7 @@ func asDrift(err error, out **ShapeDrift) bool {
 // Search returns offers satisfying the criteria.
 func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, error) {
 	req := searchRequest{
-		Limit: 500,
+		Limit: searchLimit,
 		Type:  "on-demand",
 		Order: [][]string{{"dph_total", "asc"}},
 		// Only offers that can actually be rented right now. A ranked list
@@ -106,6 +112,19 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 	p.drift(err)
 	if err != nil && !isDrift(err) {
 		return nil, err
+	}
+
+	// The API returns at most `limit` offers with no truncation flag, so a
+	// full page is the only available signal that more existed. Since the
+	// server sorts by price ascending, a truncated set is the *cheapest*
+	// matches — which is exactly the set a fit-weighted ranking most needs to
+	// see past (§8), and exactly where a host fishing for renters would sit
+	// (FR-SRCH-08).
+	if len(resp.Offers) >= searchLimit && p.OnNotice != nil {
+		p.OnNotice(fmt.Sprintf(
+			"search returned the maximum %d offers: the result set is truncated to the "+
+				"cheapest matches and ranking cannot see beyond them; narrow the criteria",
+			searchLimit))
 	}
 
 	out := make([]core.Offer, 0, len(resp.Offers))

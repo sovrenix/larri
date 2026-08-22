@@ -308,10 +308,36 @@ Normalization rules:
   the *class* requested and `Instance` carries what was actually placed. Ranking operates
   on the class; the sizing check re-runs against the placed instance before bootstrap.
 
-**Decoding discipline (R-02).** Strict decoding, unknown fields rejected in tests but
-tolerated at runtime with a warning. On a shape LARRI cannot parse, fail loudly. A
-mis-parsed price or VRAM figure is worse than an outright error, because it spends money
-on a wrong assumption.
+**Decoding discipline (R-02).** On a shape LARRI cannot parse, fail loudly: a mis-parsed
+price or VRAM figure is worse than an outright error, because it spends money on a wrong
+assumption.
+
+The obvious implementation is wrong, and the Vast adapter is where that became clear.
+Rejecting unknown fields sounds like the strict option; against an API whose offer payload
+carries over a hundred fields when LARRI models about fifteen, it flags every response and
+the signal is noise within a week. **Adding** a field is routine and harmless. The hazard is
+a field LARRI *depends on* being renamed, removed, or changed in unit.
+
+So the strictness is targeted: spend-relevant fields decode as pointers, so absence is
+distinguishable from zero, and normalisation range-checks them against physical plausibility.
+Vast's `gpu_ram` arrives in MiB — reading 81920 as gigabytes would present an A100 as an
+80 TB card, pass every sizing check, and OOM after the operator paid to boot it. A live run
+across 500 offers normalised with no violations, which is what makes the unit assumption
+verified rather than assumed.
+
+**Result sets are capped, and the cap does not announce itself.** Vast's search returns at
+most the requested limit with no truncation flag, sorted by price ascending. A full page is
+therefore the only available signal that more matched, and the offers dropped are the more
+expensive, better-fitting cards a value-weighted ranking most needs to weigh (§8). Adapters
+must report a full page as truncated rather than let a round number pass for a complete
+picture.
+
+**API versions differ per endpoint.** On Vast, search and create are `v0` while the instance
+listing is `v1`, and the listing is capped at 25 per page with keyset pagination — a change
+the provider itself flags as breaking. An adapter that assumed one version, or read one page,
+would miss every orphan past the twenty-fifth: R-01 arriving through a default rather than a
+mistake. `List` pages to exhaustion, applies no status filter, and each endpoint's version is
+stated separately.
 
 ---
 

@@ -38,6 +38,14 @@ const (
 // is "default 25, max 25". Asking for more does not raise it.
 const listPageMax = 25
 
+// searchLimit caps offers requested per search.
+//
+// The bundles endpoint returns at most this many with no "truncated" flag in
+// the response, so a full page is the only signal that more matched. Live runs
+// against a broad query hit this ceiling, which is why Search reports it
+// instead of letting a round number pass for a complete picture.
+const searchLimit = 500
+
 // listPageBudget bounds pagination so a paging bug cannot spin forever. 400
 // pages is 10,000 instances — far past any plausible account, and cheap
 // insurance against a next_token that never clears.

@@ -37,6 +37,7 @@ func liveProvider(t *testing.T) *Provider {
 	}
 	p := New(secret.New(key))
 	p.OnDrift = func(err error) { t.Errorf("SHAPE DRIFT: %v", err) }
+	p.OnNotice = func(m string) { t.Logf("notice: %s", m) }
 	return p
 }
 
@@ -205,5 +206,80 @@ func TestLiveCreateAndDestroy(t *testing.T) {
 	}
 	if !strings.EqualFold(got.Provider, "vastai") {
 		t.Errorf("provider = %q", got.Provider)
+	}
+}
+
+// Discovers the server's real ceiling on search results.
+//
+// A live run returned exactly 500 offers, which is the value LARRI asks for —
+// so it is unknown whether 500 is our cap or Vast's. That matters: ranking
+// weights fit at 0.20 to avoid over-paying for unusable VRAM, and it can only
+// weigh candidates it was given. Spends nothing.
+func TestLiveSearchCeiling(t *testing.T) {
+	p := liveProvider(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	for _, limit := range []int{100, 500, 1000, 5000} {
+		req := searchRequest{
+			Limit:    limit,
+			Type:     "on-demand",
+			Order:    [][]string{{"dph_total", "asc"}},
+			Rentable: &boolFilter{Eq: true},
+		}
+		var resp searchResponse
+		if err := p.c.do(ctx, "POST", pathSearch, req, &resp); err != nil {
+			t.Logf("limit %-5d -> error: %v", limit, err)
+			continue
+		}
+		got := len(resp.Offers)
+		note := ""
+		switch {
+		case got < limit:
+			note = "  <- full result set; this is every matching offer"
+		case got == limit:
+			note = "  <- capped at the requested limit"
+		}
+		t.Logf("limit %-5d -> %4d offers%s", limit, got, note)
+	}
+	t.Log("if the count stops rising, that plateau is the server ceiling and " +
+		"Search must report truncation above it")
+}
+
+// Confirms the pricing distribution FR-SRCH-08 is about.
+//
+// A live run showed a 32 GB V100 at $0.029/hr, roughly an order of magnitude
+// under market. Ranking weights price at 0.40, so scoring steers straight at
+// offers like these — which is also exactly where a host fishing for renters
+// would price. Spends nothing; prints the distribution rather than asserting,
+// since "anomalous" is a property of the market on the day.
+func TestLivePriceDistribution(t *testing.T) {
+	p := liveProvider(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	offers, err := p.Search(ctx, core.Criteria{GPUModel: []string{"RTX 4090"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(offers) < 5 {
+		t.Skipf("only %d offers; not enough to characterise", len(offers))
+	}
+	var sum float64
+	lo, hi := offers[0].PriceHr, offers[0].PriceHr
+	for _, o := range offers {
+		sum += o.PriceHr
+		if o.PriceHr < lo {
+			lo = o.PriceHr
+		}
+		if o.PriceHr > hi {
+			hi = o.PriceHr
+		}
+	}
+	mean := sum / float64(len(offers))
+	t.Logf("RTX 4090: n=%d  min=$%.3f  mean=$%.3f  max=$%.3f", len(offers), lo, mean, hi)
+	if lo < mean/4 {
+		t.Logf("cheapest is %.1fx below mean: the shape FR-SRCH-08 must flag "+
+			"rather than rank first", mean/lo)
 	}
 }

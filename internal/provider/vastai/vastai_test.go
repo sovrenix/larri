@@ -26,6 +26,7 @@ func testProvider(t *testing.T, h http.HandlerFunc) *Provider {
 	c.BaseURL = srv.URL
 	p := NewWithClient(c)
 	p.OnDrift = func(err error) { t.Logf("drift: %v", err) }
+	p.OnNotice = func(m string) { t.Logf("notice: %s", m) }
 	return p
 }
 
@@ -296,5 +297,52 @@ func TestSearchDefaultsToOnDemand(t *testing.T) {
 	}
 	if req.Rentable == nil || !req.Rentable.Eq {
 		t.Error("search should ask only for rentable offers")
+	}
+}
+
+// A live run returned exactly 500 offers for a broad query, which is the
+// request limit. The API carries no truncation flag, so a full page is the
+// only signal that more matched — and since the server sorts by price
+// ascending, the ones dropped are the more expensive, better-fitting cards a
+// value-weighted ranking most needs to consider.
+func TestSearchReportsTruncation(t *testing.T) {
+	var notices []string
+	full := make([]string, searchLimit)
+	for i := range full {
+		full[i] = fmt.Sprintf(
+			`{"id":%d,"gpu_name":"V100","num_gpus":1,"gpu_ram":32768,"dph_total":%f}`,
+			i, 0.02+float64(i)/10000)
+	}
+	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"offers":[%s]}`, strings.Join(full, ","))
+	})
+	p.OnNotice = func(m string) { notices = append(notices, m) }
+
+	offers, err := p.Search(context.Background(), core.Criteria{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(offers) != searchLimit {
+		t.Fatalf("got %d offers, want %d", len(offers), searchLimit)
+	}
+	if len(notices) == 0 {
+		t.Fatal("a full page must be reported as truncated, not passed off as complete")
+	}
+	if !strings.Contains(notices[0], "truncated") {
+		t.Errorf("notice should name the problem: %q", notices[0])
+	}
+}
+
+func TestSearchBelowLimitReportsNothing(t *testing.T) {
+	var notices []string
+	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"offers":[%s]}`, realisticOffer)
+	})
+	p.OnNotice = func(m string) { notices = append(notices, m) }
+	if _, err := p.Search(context.Background(), core.Criteria{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(notices) != 0 {
+		t.Errorf("a partial page is complete and must not warn: %v", notices)
 	}
 }
