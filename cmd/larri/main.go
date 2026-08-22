@@ -121,6 +121,7 @@ func cmdUp(ctx context.Context, args []string) error {
 	maxPrice := fs.Float64("max-price", 0, "ceiling in $/hr")
 	disk := fs.Int("disk", 60, "disk in GB")
 	minRel := fs.Float64("min-reliability", 0.90, "reliability floor")
+	port := fs.Int("port", 8000, "fixed local port clients are wired against")
 	yes := fs.Bool("yes", false, "do not prompt before spending")
 	dryRun := fs.Bool("dry-run", false, "search, size and select without spending")
 	_ = fs.Parse(args)
@@ -184,8 +185,9 @@ func cmdUp(ctx context.Context, args []string) error {
 			Ref: *model, Source: core.SourceHuggingFace, ServedName: name,
 			Quantization: *quant, ContextLen: *ctxLen,
 		},
-		DiskGB:  *disk,
-		HFToken: secret.New(os.Getenv("HF_TOKEN")),
+		DiskGB:    *disk,
+		HFToken:   secret.New(os.Getenv("HF_TOKEN")),
+		LocalPort: *port,
 	}
 	if *dryRun {
 		req.Confirm = func(o core.Offer, p core.SizingPlan) bool {
@@ -203,19 +205,39 @@ func cmdUp(ctx context.Context, args []string) error {
 		}
 	}
 
-	rig, err := o.Up(ctx, req)
-	if err != nil {
-		if rig != nil && rig.Instance != nil {
-			fmt.Fprintf(os.Stderr,
-				"\n  ! an instance may exist: %s — run 'larri down' or check the dashboard\n",
-				rig.Instance.InstanceID)
-		}
+	if *dryRun {
+		_, err := o.Up(ctx, req)
 		return err
 	}
-	fmt.Printf("\n  ✓ rig %s  instance %s  $%.3f/hr\n",
-		rig.ID, rig.Instance.InstanceID, rig.Offer.PriceHr)
+
+	live, err := o.UpAndServe(ctx, req)
+	if err != nil {
+		return err
+	}
+	rig := live.Rig
+	fmt.Printf("\n  ✓ rig %s READY   %s   model: %s\n",
+		rig.ID, live.Endpoint, rig.Model.ServedName)
+	fmt.Printf("    %s %s at $%.3f/hr\n",
+		rig.Offer.Provider, rig.Offer.GPUModel, rig.Offer.PriceHr)
+	fmt.Printf("    key: %s\n", live.ClientToken.Reveal())
 	fmt.Printf("\n  %s\n", daemon.PrivacyNotice(rig))
-	fmt.Printf("\n    tear down with: larri down %s\n", rig.ID)
+
+	// M1 has no daemon, so `up` holds the tunnel in the foreground. That is
+	// honest rather than convenient: a tunnel is a live process, and exiting
+	// while the rig bills would make `up` look successful and cost money.
+	fmt.Printf("\n  holding the tunnel — Ctrl-C to tear down and stop paying\n\n")
+	<-ctx.Done()
+
+	fmt.Printf("\n  interrupted; tearing down\n")
+	live.Close()
+	dctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if err := o.Down(dctx, rig, nil); err != nil {
+		return err
+	}
+	c := rig.End.Cost
+	fmt.Printf("\n  ✓ rig %s DESTROYED  ran %s  total $%.4f\n",
+		rig.ID, c.Ran.Round(time.Second), c.TotalUSD)
 	return nil
 }
 

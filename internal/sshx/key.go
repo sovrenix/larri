@@ -64,3 +64,12 @@ func (k *KeyPair) OnStartScript() string {
 		"echo '" + k.AuthorizedKey() + "' >> /root/.ssh/authorized_keys && " +
 		"chmod 600 /root/.ssh/authorized_keys"
 }
+
+// Fingerprint renders any public key's SHA256 fingerprint, for logs and the
+// journal. Safe to print: it identifies a key without disclosing it.
+func Fingerprint(k interface{ Marshal() []byte }) string {
+	if pk, ok := k.(ssh.PublicKey); ok {
+		return ssh.FingerprintSHA256(pk)
+	}
+	return ""
+}

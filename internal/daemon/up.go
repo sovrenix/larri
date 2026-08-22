@@ -47,6 +47,10 @@ type Orchestrator struct {
 	Deadline time.Duration
 
 	Events chan<- Event
+
+	// lastKeys carries the ephemeral identity from Up to Serve. Not
+	// persisted: FR-STATE-05 forbids private keys in state files.
+	lastKeys *sshx.KeyPair
 }
 
 func (o *Orchestrator) emit(phase, format string, args ...any) {
@@ -76,6 +80,11 @@ type UpRequest struct {
 	DiskGB   int
 	HFToken  secret.Secret
 	Confirm  func(offer core.Offer, plan core.SizingPlan) bool
+
+	// LocalPort is the fixed loopback port clients are wired against. Zero
+	// lets the kernel choose, which is only useful in tests: P3 depends on
+	// this being stable across the rig's life.
+	LocalPort int
 }
 
 // Up provisions a rig and returns it ready to serve.
@@ -186,7 +195,51 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 		return rig, err
 	}
 	o.emit("create", "instance %s", inst.InstanceID)
+	o.lastKeys = keys
 	return rig, nil
+}
+
+// UpAndServe provisions a rig and brings it all the way to serving.
+//
+// On any failure after the instance exists, the rig is torn down rather than
+// abandoned (FR-PROV-04). A half-provisioned rig that nobody destroys is the
+// exact outcome this product exists to prevent, so the cleanup runs even when
+// the caller is about to see an error.
+func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, error) {
+	rig, err := o.Up(ctx, req)
+	if err != nil {
+		if rig != nil && rig.Instance != nil {
+			o.warn("cleanup", "provisioning failed after the instance existed; tearing down")
+			o.teardownAfterFailure(rig, core.ReasonBootstrapFailed, err)
+		}
+		return nil, err
+	}
+	live, serr := o.Serve(ctx, rig, o.lastKeys, req.LocalPort, req.HFToken)
+	if serr != nil {
+		if live != nil {
+			_ = live.Close()
+		}
+		o.warn("cleanup", "bring-up failed; tearing down rather than leaving it billing")
+		o.teardownAfterFailure(rig, core.ReasonBootstrapFailed, serr)
+		return nil, serr
+	}
+	return live, nil
+}
+
+// teardownAfterFailure destroys a rig whose bring-up failed, on a fresh
+// context so that a cancelled or expired parent cannot prevent the cleanup
+// that stops the billing.
+func (o *Orchestrator) teardownAfterFailure(rig *core.Rig, code core.ReasonCode, cause error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	term := &core.Termination{
+		Actor: core.ActorFault, Code: code, At: time.Now().UTC(),
+		Summary:  "bring-up failed: " + shortErr(cause),
+		Evidence: map[string]string{"error": shortErr(cause)},
+	}
+	if err := o.Down(ctx, rig, term); err != nil {
+		o.warn("cleanup", "TEARDOWN UNCONFIRMED: %v — check the provider dashboard", err)
+	}
 }
 
 // Down tears a rig down and confirms absence.

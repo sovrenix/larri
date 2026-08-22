@@ -226,3 +226,55 @@ func TestPrivacyNoticeNamesTheHost(t *testing.T) {
 		t.Errorf("notice should state what the host can see: %s", n)
 	}
 }
+
+// FR-PROV-04: a bring-up that fails after the instance exists must destroy it,
+// not abandon it. A half-provisioned rig that nobody tears down is the exact
+// outcome this product exists to prevent.
+func TestFailedBringUpTearsDownRatherThanAbandoning(t *testing.T) {
+	o, p, st := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	// The instance is created; the host then never becomes reachable, which
+	// is what a dead sshd looks like.
+	o.Deadline = 3 * time.Second
+
+	_, err := o.UpAndServe(context.Background(), upReq())
+	if err == nil {
+		t.Fatal("bring-up should have failed")
+	}
+	if p.Count() != 0 {
+		t.Fatalf("instance left behind after a failed bring-up: %d still exist", p.Count())
+	}
+	// And the failure explains itself, from the journal, afterwards.
+	rigs, _ := st.List()
+	if len(rigs) == 0 {
+		t.Fatal("the attempt should be recorded")
+	}
+	last := rigs[0]
+	if last.End == nil {
+		t.Fatal("a rig destroyed by a fault must record why")
+	}
+	if last.End.Actor != core.ActorFault {
+		t.Errorf("actor = %s, want fault", last.End.Actor)
+	}
+	if !strings.Contains(last.End.Summary, "bring-up failed") {
+		t.Errorf("summary = %q", last.End.Summary)
+	}
+}
+
+// The cleanup must survive the caller's context being cancelled, or a Ctrl-C
+// during provisioning would leave the instance running.
+func TestTeardownRunsEvenWhenTheContextIsCancelled(t *testing.T) {
+	o, p, _ := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	o.Deadline = 2 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		cancel() // the operator hits Ctrl-C mid-boot
+	}()
+	if _, err := o.UpAndServe(ctx, upReq()); err == nil {
+		t.Fatal("a cancelled bring-up should fail")
+	}
+	if p.Count() != 0 {
+		t.Fatalf("cancellation left %d instances billing", p.Count())
+	}
+}

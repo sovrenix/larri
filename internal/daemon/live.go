@@ -1,0 +1,299 @@
+// Copyright (C) 2026 Sovrenix Inc.
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+package daemon
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"go.sovrenix.com/larri/internal/core"
+	"go.sovrenix.com/larri/internal/errs"
+	"go.sovrenix.com/larri/internal/runtime"
+	"go.sovrenix.com/larri/internal/secret"
+	"go.sovrenix.com/larri/internal/sizing"
+	"go.sovrenix.com/larri/internal/sshx"
+	"go.sovrenix.com/larri/internal/wire"
+)
+
+// Live is a rig that is serving, plus the machinery holding it open.
+//
+// None of this is persisted, and the ephemeral SSH key is why: FR-STATE-05
+// forbids private keys in state files. The consequence is worth naming — a
+// process restart cannot currently rebuild the tunnel, only tear the rig down.
+// Teardown is a provider API call and never depended on SSH (FR-SEC-18), so
+// that is a lost data plane rather than an unkillable bill. Restoring the
+// tunnel across a restart needs the key in the OS keyring, which is where
+// secrets resolve from anyway (FR-SEC-01).
+type Live struct {
+	Rig         *core.Rig
+	Endpoint    string
+	ClientToken secret.Secret
+
+	keys    *sshx.KeyPair
+	ssh     *sshx.Client
+	forward *sshx.Forward
+	proxy   *wire.Proxy
+	cancel  context.CancelFunc
+}
+
+// Close releases the tunnel and proxy. It does not destroy the instance —
+// that is Down's job, and conflating them would make a dropped connection look
+// like a teardown.
+func (l *Live) Close() error {
+	if l.cancel != nil {
+		l.cancel()
+	}
+	if l.forward != nil {
+		_ = l.forward.Close()
+	}
+	if l.ssh != nil {
+		_ = l.ssh.Close()
+	}
+	if l.proxy != nil {
+		_ = l.proxy.Close()
+	}
+	return nil
+}
+
+// Serve brings a provisioned rig up to READY: waits for sshd, pins the host
+// key, bootstraps, launches, opens the tunnel, and verifies a real completion.
+func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyPair,
+	localPort int, hfToken secret.Secret) (*Live, error) {
+
+	if rig.Instance == nil {
+		return nil, errs.Newf(errs.ClassModelFailure, "daemon.Serve", "rig has no instance")
+	}
+	live := &Live{Rig: rig, keys: keys}
+
+	// ---- wait for sshd ---------------------------------------------------
+	o.emit("boot", "waiting for the host to accept connections")
+	inst, err := o.waitForSSH(ctx, rig)
+	if err != nil {
+		return live, err
+	}
+	rig.Instance = inst
+	_ = o.Store.Save(rig)
+	o.emit("boot", "sshd at %s:%d", inst.SSHHost, inst.SSHPort)
+
+	// ---- pin the host key ------------------------------------------------
+	//
+	// FR-SEC-04. The TOFU window is narrow — the address came from the
+	// provider API over verified TLS moments ago — but it is not zero, and
+	// §15.8.2 explains why pinning cannot exclude the provider itself.
+	hostKey, err := sshx.ScanHostKey(ctx, inst.SSHHost, inst.SSHPort, 60*time.Second)
+	if err != nil {
+		return live, err
+	}
+	o.emit("boot", "host key pinned %s", sshFingerprint(hostKey))
+
+	client, err := sshx.Dial(ctx, sshx.Config{
+		Host: inst.SSHHost, Port: inst.SSHPort, User: "root",
+		Key: keys, HostKey: hostKey, Timeout: 60 * time.Second,
+	})
+	if err != nil {
+		return live, err
+	}
+	live.ssh = client
+	sess := client.Session()
+
+	// ---- re-verify sizing against the hardware actually placed -----------
+	//
+	// The offer described a class; this is the machine. A provider that
+	// placed something smaller must be caught before the weights download
+	// rather than by an OOM after them.
+	if err := o.verifyPlacedHardware(ctx, sess, rig); err != nil {
+		return live, err
+	}
+
+	// ---- bootstrap and launch -------------------------------------------
+	if err := o.Store.Transition(rig, core.StateBootstrapping, "image and weights"); err != nil {
+		return live, err
+	}
+	progress := make(chan runtime.Progress, 16)
+	go func() {
+		for p := range progress {
+			if p.BytesTotal > 0 {
+				o.emit("boot", "%s %.0f%% (%s of %s)", p.Phase, p.Percent,
+					sizing.HumanBytes(uint64(p.BytesDone)), sizing.HumanBytes(uint64(p.BytesTotal)))
+			} else if p.Message != "" {
+				o.emit("boot", "%s %s", p.Phase, p.Message)
+			}
+		}
+	}()
+	err = o.Runtime.Bootstrap(ctx, sess, rig.Model, rig.Plan, progress)
+	close(progress)
+	if err != nil {
+		return live, err
+	}
+
+	o.emit("launch", "starting %s", o.Runtime.Kind())
+	ep, err := o.Runtime.Launch(ctx, sess, rig.Model, rig.Plan)
+	if err != nil {
+		return live, err
+	}
+
+	// ---- tunnel ----------------------------------------------------------
+	//
+	// The listener binds before anything is declared healthy, so a port
+	// already in use is an error rather than a rig that reports READY while
+	// every client gets connection refused.
+	fwd, err := client.Listen(0, ep.Port) // 0: kernel-chosen, proxied below
+	if err != nil {
+		return live, err
+	}
+	live.forward = fwd
+	tctx, cancel := context.WithCancel(context.Background())
+	live.cancel = cancel
+	go fwd.Serve(tctx)
+
+	proxy := o.Proxy
+	if proxy == nil {
+		proxy, err = wire.NewProxy(localPort)
+		if err != nil {
+			cancel()
+			return live, err
+		}
+		go proxy.Serve(tctx)
+	}
+	live.proxy = proxy
+	proxy.SetUpstream(wire.Upstream{
+		Host: "127.0.0.1", Port: fwd.LocalPort(), Key: ep.Key,
+	})
+	token, err := secret.Generate(32)
+	if err != nil {
+		cancel()
+		return live, err
+	}
+	proxy.AddClient("larri-cli", token)
+	live.ClientToken = token
+	rig.LocalPort = proxy.LocalPort()
+	live.Endpoint = fmt.Sprintf("http://127.0.0.1:%d/v1", rig.LocalPort)
+	o.emit("tunnel", "%s → %s:%d", live.Endpoint, inst.SSHHost, ep.Port)
+
+	// ---- readiness, through the tunnel ----------------------------------
+	//
+	// Checked at the LOCAL end rather than on the host, so success proves the
+	// whole path: the forward carries traffic, the proxy substitutes the rig
+	// credential, and the model produces a token. A check run on the host
+	// would prove only that vLLM answers itself.
+	o.emit("ready", "waiting for a completion to round-trip")
+	if err := o.waitReady(ctx, rig, proxy.LocalPort(), token); err != nil {
+		return live, err
+	}
+	if err := o.Store.Transition(rig, core.StateReady, "completion round-trip verified"); err != nil {
+		return live, err
+	}
+	return live, nil
+}
+
+func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Instance, error) {
+	deadline := time.Now().Add(15 * time.Minute)
+	backoff := 5 * time.Second
+	for time.Now().Before(deadline) {
+		inst, err := o.Provider.Get(ctx, rig.Instance.InstanceID)
+		switch {
+		case err != nil:
+			// Unreachable is not absent; keep asking (FR-SUP-11).
+			o.warn("boot", "status query failed: %v", err)
+		case inst == nil:
+			return nil, errs.Newf(errs.ClassProviderUnknownOutcome, "daemon.waitForSSH",
+				"instance %s vanished during boot", rig.Instance.InstanceID)
+		case inst.Running && inst.SSHHost != "" && inst.SSHPort > 0:
+			return inst, nil
+		default:
+			o.emit("boot", "instance not serving yet")
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+		if backoff < 20*time.Second {
+			backoff += 5 * time.Second
+		}
+	}
+	return nil, errs.Newf(errs.ClassHostFailure, "daemon.waitForSSH",
+		"host never accepted connections")
+}
+
+// verifyPlacedHardware re-runs the fit check against the machine that was
+// actually provisioned.
+func (o *Orchestrator) verifyPlacedHardware(ctx context.Context, sess runtime.Session, rig *core.Rig) error {
+	out, err := sess.Run(ctx,
+		"nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null || true")
+	if err != nil || len(out) == 0 {
+		// Telemetry is subordinate (T1): failing to read the GPU must not
+		// fail a rig. The sizing plan already passed against the offer.
+		o.warn("boot", "could not read GPU memory to re-verify sizing")
+		return nil
+	}
+	totalMB := parseFirstInt(string(out))
+	if totalMB <= 0 {
+		return nil
+	}
+	haveBytes := uint64(totalMB) * 1024 * 1024
+	if haveBytes < rig.Plan.RequiredVRAMBytes {
+		return errs.Newf(errs.ClassHostFailure, "daemon.verifyPlacedHardware",
+			"placed hardware has %s but the plan needs %s",
+			sizing.HumanBytes(haveBytes), sizing.HumanBytes(rig.Plan.RequiredVRAMBytes))
+	}
+	o.emit("boot", "GPU reports %s, plan needs %s",
+		sizing.HumanBytes(haveBytes), sizing.HumanBytes(rig.Plan.RequiredVRAMBytes))
+	return nil
+}
+
+func (o *Orchestrator) waitReady(ctx context.Context, rig *core.Rig, port int, token secret.Secret) error {
+	deadline := time.Now().Add(20 * time.Minute)
+	var last error
+	attempts := 0
+	for time.Now().Before(deadline) {
+		attempts++
+		ep := runtime.Endpoint{Host: "127.0.0.1", Port: port, Model: rig.Model.ServedName, Key: token}
+		if err := o.Runtime.Ready(ctx, ep, rig.Model); err == nil {
+			o.emit("ready", "completion verified after %d attempts", attempts)
+			return nil
+		} else {
+			last = err
+		}
+		if attempts%6 == 0 {
+			o.emit("ready", "still loading (%v)", shortErr(last))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Second):
+		}
+	}
+	return errs.Newf(errs.ClassHostFailure, "daemon.waitReady",
+		"no completion returned before the deadline: %v", shortErr(last))
+}
+
+func parseFirstInt(s string) int {
+	n, seen := 0, false
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			n = n*10 + int(r-'0')
+			seen = true
+		} else if seen {
+			break
+		}
+	}
+	return n
+}
+
+func shortErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if len(s) > 160 {
+		s = s[:160]
+	}
+	return s
+}
+
+func sshFingerprint(k interface{ Marshal() []byte }) string {
+	return sshx.Fingerprint(k)
+}
