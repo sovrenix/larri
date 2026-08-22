@@ -56,8 +56,20 @@ func (s *stubAPI) handler(t *testing.T) http.HandlerFunc {
 
 		case strings.HasPrefix(r.URL.Path, "/api/v0/instances/"):
 			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v0/instances/"), "/")
-			delete(s.instances, id)
-			fmt.Fprint(w, `{"success":true}`)
+			if r.Method == http.MethodDelete {
+				delete(s.instances, id)
+				fmt.Fprint(w, `{"success":true}`)
+				return
+			}
+			// The single-instance read: one object, not an array.
+			inst, ok := s.instances[id]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				fmt.Fprint(w, `{"error":"no such instance"}`)
+				return
+			}
+			b, _ := json.Marshal(map[string]any{"instances": inst})
+			w.Write(b)
 
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)

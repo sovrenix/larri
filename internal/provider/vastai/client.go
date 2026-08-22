@@ -35,6 +35,7 @@ const (
 	pathSearch  = "/api/v0/bundles/"
 	pathCreate  = "/api/v0/asks/%s/"      // offer id
 	pathDestroy = "/api/v0/instances/%s/" // instance id
+	pathGet     = "/api/v0/instances/%s/" // instance id, single-instance read
 	pathList    = "/api/v1/instances/"
 )
 

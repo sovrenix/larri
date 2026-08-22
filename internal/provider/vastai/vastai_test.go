@@ -246,7 +246,8 @@ func TestCreateRequestsNoRuntimePortMapping(t *testing.T) {
 
 func TestGetAbsentInstanceReturnsNilNotError(t *testing.T) {
 	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"success":true,"instances":[],"next_token":null}`)
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"error":"no such instance"}`)
 	})
 	inst, err := p.Get(context.Background(), "14872213")
 	if err != nil {
@@ -254,6 +255,37 @@ func TestGetAbsentInstanceReturnsNilNotError(t *testing.T) {
 	}
 	if inst != nil {
 		t.Fatal("absent means nil, which is the only proof of destruction")
+	}
+}
+
+// The two routes disagree in shape, and the disagreement is load-bearing: the
+// list route returns an array under "instances", the single-instance route
+// returns one object under the same key. Confirmed against the live API rather
+// than assumed, because guessing here yields a decode error at exactly the
+// moment supervision needs an answer.
+func TestGetReadsTheSingleInstanceShape(t *testing.T) {
+	var path string
+	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		fmt.Fprint(w, `{"instances":{"id":14872213,"actual_status":"running",
+		  "dph_total":1.29,"storage_cost":0.01,"ssh_host":"ssh5.vast.ai",
+		  "ssh_port":25982,"label":"larri:01J9ZTESTRIGIDTESTRIGIDXX"}}`)
+	})
+	inst, err := p.Get(context.Background(), "14872213")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst == nil {
+		t.Fatal("should have found the instance")
+	}
+	if path != "/api/v0/instances/14872213/" {
+		t.Errorf("path = %s; Get must not enumerate the account", path)
+	}
+	if !inst.Running || inst.SSHHost != "ssh5.vast.ai" || inst.SSHPort != 25982 {
+		t.Errorf("instance not normalised: %+v", inst)
+	}
+	if id, ok := inst.RigID(); !ok || id != "01J9ZTESTRIGIDTESTRIGIDXX" {
+		t.Errorf("label not decoded: %q", id)
 	}
 }
 

@@ -202,6 +202,12 @@ type createResponse struct {
 
 // ---- list -----------------------------------------------------------------
 
+// getResponse is the single-instance read. Vast returns the instance under a
+// singular key here, not the array the list route uses.
+type getResponse struct {
+	Instances *wireInstance `json:"instances"`
+}
+
 type listResponse struct {
 	Success   bool           `json:"success"`
 	Instances []wireInstance `json:"instances"`

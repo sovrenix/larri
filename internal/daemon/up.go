@@ -272,7 +272,18 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 		if err == nil {
 			return live, nil
 		}
+		if rig == nil {
+			// Nothing was selected, so there is no machine to blame and
+			// nothing to fall back from.
+			return nil, err
+		}
 		lastErr = err
+		// Say WHY this machine failed, here, rather than only reporting the
+		// last error once every attempt is exhausted. A fallback that
+		// swallows its reasons turns three distinct failures into one
+		// unexplained one, and the operator is paying for each.
+		o.warn("attempt", "failed on %s %s: %v",
+			rig.Offer.Provider, rig.Offer.GPUModel, shortErr(err))
 		// A deadline that expired while waiting on a host is a statement
 		// about that host, so it earns a fallback like any other host
 		// failure. A cancelled parent context is not: the operator asked to

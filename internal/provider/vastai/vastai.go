@@ -199,17 +199,33 @@ func (p *Provider) Create(ctx context.Context, o core.Offer, spec provider.Creat
 }
 
 // Get returns one instance, running or not.
+//
+// It reads the single-instance route rather than enumerating the account.
+// Supervision polls this every few seconds during a boot, and routing each
+// poll through a paginated List of every instance is both wasteful and how a
+// live run earned an HTTP 429 while waiting for a host to come up — a rate
+// limit provoked entirely by asking the wrong question.
 func (p *Provider) Get(ctx context.Context, instanceID string) (*core.Instance, error) {
-	all, err := p.List(ctx)
+	var resp getResponse
+	err := p.c.do(ctx, "GET", fmt.Sprintf(pathGet, instanceID), nil, &resp)
 	if err != nil {
+		if isNotFound(err) {
+			return nil, nil // absent: the only proof of destruction
+		}
 		return nil, err
 	}
-	for i := range all {
-		if all[i].InstanceID == instanceID {
-			return &all[i], nil
-		}
+	if resp.Instances == nil {
+		return nil, nil
 	}
-	return nil, nil // absent: the only proof of destruction
+	inst, nerr := resp.Instances.normalise()
+	if nerr != nil {
+		return nil, nerr
+	}
+	return &inst, nil
+}
+
+func isNotFound(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "http 404")
 }
 
 // List returns every instance on the account, running or not, across all pages.
