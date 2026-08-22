@@ -11,6 +11,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"go.sovrenix.com/larri/internal/core"
@@ -73,9 +74,46 @@ type Session interface {
 	Close() error
 }
 
+// Requirements are hardware constraints that must be checked BEFORE renting.
+//
+// They exist because the alternative is paying to discover them. A live run
+// selected a GTX 1060 — the cheapest card whose VRAM held the model — and it
+// could never have served with vLLM at any price, because Pascal is below the
+// compute capability vLLM supports. VRAM fit answered the wrong question on
+// its own.
+type Requirements struct {
+	// MinComputeCapability is the architecture level times 100: 700 for
+	// Volta, 750 Turing, 800 Ampere, 890 Ada. Zero means no constraint.
+	MinComputeCapability int
+
+	// Why explains the constraint in the exclusion message, so an operator
+	// seeing a cheap card rejected knows it was not arbitrary.
+	Why string
+}
+
+// Satisfies reports whether hardware meets the requirement.
+//
+// An offer that does not report its capability is allowed through rather than
+// excluded: absence of data is not evidence of incompatibility, and failing
+// closed on a missing field would empty the market whenever a provider stopped
+// populating it.
+func (r Requirements) Satisfies(computeCapability int) (bool, string) {
+	if r.MinComputeCapability == 0 || computeCapability == 0 {
+		return true, ""
+	}
+	if computeCapability >= r.MinComputeCapability {
+		return true, ""
+	}
+	return false, fmt.Sprintf("compute capability %.1f below the %.1f %s requires",
+		float64(computeCapability)/100, float64(r.MinComputeCapability)/100, r.Why)
+}
+
 // Runtime is an inference engine.
 type Runtime interface {
 	Kind() core.RuntimeKind
+
+	// Requires reports hardware constraints to apply during selection.
+	Requires() Requirements
 
 	// Image returns the container image for this spec and plan. M1 uses a
 	// stock image; the pre-baked, digest-pinned matrix (§6.5) follows.

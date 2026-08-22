@@ -174,3 +174,6 @@ func (s *Session) Run(_ context.Context, cmd string) ([]byte, error) {
 
 func (s *Session) Dial(context.Context, int) (io.ReadWriteCloser, error) { return nil, nil }
 func (s *Session) Close() error                                          { return nil }
+
+// Requires reports no hardware floor by default.
+func (r *Runtime) Requires() runtime.Requirements { return runtime.Requirements{} }

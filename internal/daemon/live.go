@@ -4,9 +4,13 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/errs"
@@ -68,33 +72,29 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 	live := &Live{Rig: rig, keys: keys}
 
 	// ---- wait for sshd ---------------------------------------------------
-	o.emit("boot", "waiting for the host to accept connections")
+	// Reaching sshd is not the same as the host being ready. Vast answers
+	// through a shared proxy, so a connection succeeds — and a host key can
+	// be read — before the instance's own sshd is listening behind it. The
+	// phases below are separate for that reason: an endpoint being reported,
+	// a key settling, and a usable session are three different events.
+	o.emit("boot", "waiting for the provider to report an ssh endpoint")
 	inst, err := o.waitForSSH(ctx, rig)
 	if err != nil {
 		return live, err
 	}
 	rig.Instance = inst
 	_ = o.Store.Save(rig)
-	o.emit("boot", "sshd at %s:%d", inst.SSHHost, inst.SSHPort)
+	o.emit("boot", "endpoint %s:%d — settling the host key", inst.SSHHost, inst.SSHPort)
 
 	// ---- pin the host key ------------------------------------------------
-	//
-	// FR-SEC-04. The TOFU window is narrow — the address came from the
-	// provider API over verified TLS moments ago — but it is not zero, and
-	// §15.8.2 explains why pinning cannot exclude the provider itself.
-	hostKey, err := sshx.ScanHostKey(ctx, inst.SSHHost, inst.SSHPort, 60*time.Second)
+	hostKey, client, err := o.pinAndDial(ctx, inst, keys)
 	if err != nil {
 		return live, err
 	}
-	o.emit("boot", "host key pinned %s", sshFingerprint(hostKey))
+	rig.HostKeyFingerprint = sshx.Fingerprint(hostKey)
+	_ = o.Store.Save(rig)
+	o.emit("boot", "host key pinned %s", rig.HostKeyFingerprint)
 
-	client, err := sshx.Dial(ctx, sshx.Config{
-		Host: inst.SSHHost, Port: inst.SSHPort, User: "root",
-		Key: keys, HostKey: hostKey, Timeout: 60 * time.Second,
-	})
-	if err != nil {
-		return live, err
-	}
 	live.ssh = client
 	sess := client.Session()
 
@@ -189,7 +189,11 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 }
 
 func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Instance, error) {
-	deadline := time.Now().Add(15 * time.Minute)
+	// A machine that has not accepted a connection in a few minutes is
+	// usually not going to. Waiting longer costs money and delays the
+	// fallback that would actually work, so the window is short and the
+	// answer to a dead host is the next offer rather than more patience.
+	deadline := time.Now().Add(6 * time.Minute)
 	backoff := 5 * time.Second
 	for time.Now().Before(deadline) {
 		inst, err := o.Provider.Get(ctx, rig.Instance.InstanceID)
@@ -203,7 +207,7 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 		case inst.Running && inst.SSHHost != "" && inst.SSHPort > 0:
 			return inst, nil
 		default:
-			o.emit("boot", "instance not serving yet")
+			o.emit("boot", "instance not reporting an endpoint yet")
 		}
 		select {
 		case <-ctx.Done():
@@ -294,6 +298,82 @@ func shortErr(err error) string {
 	return s
 }
 
-func sshFingerprint(k interface{ Marshal() []byte }) string {
-	return sshx.Fingerprint(k)
+// pinAndDial establishes a host key and connects with it pinned.
+//
+// A live run exposed why this cannot be scan-once-then-dial. Vast reaches
+// instances through a shared proxy (`ssh6.vast.ai`), and the proxy answers
+// before the instance's own sshd is listening — so a single scan can capture
+// one key and the connection a second later present another, which arrives as
+// `host key mismatch` on a machine nobody has attacked.
+//
+// The resolution keeps the security property while accounting for the
+// handover: **the key must be observed twice, agreeing, before it is pinned**,
+// and a mismatch is tolerated *only* during initial bring-up, where it means
+// the far end changed hands rather than that someone intervened.
+//
+// This is honest about what it costs. It widens the trust-on-first-use window
+// from an instant to the seconds between scans, and §15.8.2 already states the
+// larger limit — the fingerprint comes from a path the provider controls, so
+// pinning cannot exclude the provider in any case. What it does buy is
+// unchanged: a third party on the network cannot substitute themselves, and
+// once a rig is serving, any key change is a compromise rather than a race.
+func (o *Orchestrator) pinAndDial(ctx context.Context, inst *core.Instance,
+	keys *sshx.KeyPair) (ssh.PublicKey, *sshx.Client, error) {
+
+	const attempts = 8
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		key, err := o.stableHostKey(ctx, inst)
+		if err != nil {
+			lastErr = err
+		} else {
+			client, derr := sshx.Dial(ctx, sshx.Config{
+				Host: inst.SSHHost, Port: inst.SSHPort, User: "root",
+				Key: keys, HostKey: key, Timeout: 60 * time.Second,
+			})
+			if derr == nil {
+				return key, client, nil
+			}
+			lastErr = derr
+			if !isHostKeyMismatch(derr) {
+				// Anything other than a mismatch is a real failure: a refused
+				// connection, a rejected credential, a broken host.
+				return nil, nil, derr
+			}
+			o.emit("boot", "host key changed during boot; re-pinning")
+		}
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-time.After(10 * time.Second):
+		}
+	}
+	return nil, nil, errs.Newf(errs.ClassHostFailure, "daemon.pinAndDial",
+		"host key never settled: %v", shortErr(lastErr))
+}
+
+// stableHostKey returns a key only once two consecutive observations agree.
+func (o *Orchestrator) stableHostKey(ctx context.Context, inst *core.Instance) (ssh.PublicKey, error) {
+	first, err := sshx.ScanHostKey(ctx, inst.SSHHost, inst.SSHPort, 45*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(3 * time.Second):
+	}
+	second, err := sshx.ScanHostKey(ctx, inst.SSHHost, inst.SSHPort, 45*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(first.Marshal(), second.Marshal()) {
+		return nil, errs.Newf(errs.ClassHostFailure, "daemon.stableHostKey",
+			"host key still changing")
+	}
+	return second, nil
+}
+
+func isHostKeyMismatch(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "host key mismatch")
 }

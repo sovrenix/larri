@@ -233,3 +233,38 @@ func TestFloorsAreOverridable(t *testing.T) {
 		t.Fatal("with the floors lowered the operator gets the cheap machine they asked for")
 	}
 }
+
+// The failure a live run actually produced: the cheapest card whose VRAM held
+// the model was a GTX 1060, which cannot serve with vLLM at any price because
+// Pascal is below the compute capability vLLM's kernels require. VRAM fit
+// answered the wrong question on its own.
+func TestHardwareTooOldForTheRuntimeIsExcluded(t *testing.T) {
+	pascal := offer("cheap", "GTX 1060", 0.017, 0.98, 6)
+	pascal.ComputeCapability = 610
+	volta := offer("works", "Tesla V100", 0.168, 0.98, 32)
+	volta.ComputeCapability = 700
+
+	// The FitFunc the orchestrator builds: capability first, then VRAM.
+	fits := func(o core.Offer) (bool, string) {
+		if o.ComputeCapability > 0 && o.ComputeCapability < 700 {
+			return false, "compute capability too low for vLLM"
+		}
+		return o.VRAMTotalGB() >= 5, "too small"
+	}
+	r := Select([]core.Offer{pascal, volta}, core.Criteria{}, fits, DefaultPolicy())
+	if r.Selected == nil || r.Selected.Offer.OfferID != "works" {
+		t.Fatalf("selected %v; a card the engine cannot use is not a bargain", r.Selected)
+	}
+	var ex *Candidate
+	for i := range r.Candidates {
+		if r.Candidates[i].Offer.OfferID == "cheap" {
+			ex = &r.Candidates[i]
+		}
+	}
+	if ex == nil || ex.Reason != ReasonVRAM {
+		t.Fatalf("the Pascal card must be excluded with a reason, got %v", ex)
+	}
+	if !strings.Contains(ex.Detail, "compute capability") {
+		t.Errorf("the reason should name the constraint, got %q", ex.Detail)
+	}
+}

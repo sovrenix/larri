@@ -10,6 +10,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -48,9 +49,18 @@ type Orchestrator struct {
 
 	Events chan<- Event
 
+	// MaxHostAttempts bounds how many machines a single `up` will try before
+	// giving up. Zero means three.
+	MaxHostAttempts int
+
 	// lastKeys carries the ephemeral identity from Up to Serve. Not
 	// persisted: FR-STATE-05 forbids private keys in state files.
 	lastKeys *sshx.KeyPair
+
+	// excluded holds offers already tried and found unusable this run, so
+	// fallback moves to a different machine rather than retrying the one that
+	// just failed.
+	excluded []string
 }
 
 func (o *Orchestrator) emit(phase, format string, args ...any) {
@@ -93,13 +103,6 @@ type UpRequest struct {
 // write before the create call, and the readiness check through the tunnel
 // rather than on the host.
 func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error) {
-	deadline := o.Deadline
-	if deadline == 0 {
-		deadline = 30 * time.Minute
-	}
-	ctx, cancel := context.WithTimeout(ctx, deadline)
-	defer cancel()
-
 	// ---- size before spending -------------------------------------------
 	o.emit("sizing", "resolving %s", req.Model.Ref)
 	facts, err := o.Resolver.Resolve(ctx, req.Model.Ref, req.Model.Revision)
@@ -124,7 +127,16 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 	}
 	o.emit("search", "%d offers satisfy the criteria", len(offers))
 
+	// Fit is two questions, not one. VRAM answers "does the model hold"; the
+	// runtime's requirements answer "can this hardware run the engine at
+	// all". A live run selected a GTX 1060 because it passed the first and
+	// nobody asked the second, and Pascal cannot serve with vLLM at any
+	// price.
+	reqs := o.Runtime.Requires()
 	fits := func(of core.Offer) (bool, string) {
+		if ok, why := reqs.Satisfies(of.ComputeCapability); !ok {
+			return false, why
+		}
 		avail := uint64(of.VRAMTotalGB()) * sizing.GiB
 		if avail >= plan.RequiredVRAMBytes {
 			return true, ""
@@ -132,18 +144,16 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 		return false, fmt.Sprintf("%s short",
 			sizing.HumanBytes(plan.RequiredVRAMBytes-avail))
 	}
+	if len(o.excluded) > 0 {
+		offers = withoutOffers(offers, o.excluded)
+	}
 	sel := rank.Select(offers, req.Criteria, fits, o.Policy)
 	if sel.Selected == nil {
 		short := sizing.Analyse(sizing.Request{Spec: req.Model, Facts: facts}, offers)
 		return nil, errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.Up", "%s", short.String())
 	}
 	chosen := sel.Selected.Offer
-	for _, ex := range sel.Excluded() {
-		if ex.Reason != rank.ReasonCostlier {
-			o.emit("excluded", "%s %dGB $%.3f/hr — %s",
-				ex.Offer.GPUModel, ex.Offer.VRAMTotalGB(), ex.Offer.PriceHr, ex.Detail)
-		}
-	}
+	o.reportExclusions(sel)
 	o.emit("select", "%s %s %dGB $%.3f/hr (reliability %.2f)",
 		chosen.Provider, chosen.GPUModel, chosen.VRAMTotalGB(), chosen.PriceHr, chosen.Reliability)
 
@@ -199,31 +209,83 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 	return rig, nil
 }
 
-// UpAndServe provisions a rig and brings it all the way to serving.
+// UpAndServe provisions a rig and brings it all the way to serving, falling
+// back to the next-ranked offer when a host proves unusable.
 //
-// On any failure after the instance exists, the rig is torn down rather than
-// abandoned (FR-PROV-04). A half-provisioned rig that nobody destroys is the
-// exact outcome this product exists to prevent, so the cleanup runs even when
-// the caller is about to see an error.
+// FR-PROV-05, and a live run showed why it is not optional. The cheapest
+// eligible machine — reliability 0.98 — never accepted a connection at all.
+// Without fallback that is fifteen minutes and a total failure; with it, it is
+// a warning and the next offer. The distinction that governs it is the error
+// class: a host failure means try elsewhere, while a model or config failure
+// means the next host fails identically and retrying only spends more.
 func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, error) {
+	attempts := o.MaxHostAttempts
+	if attempts <= 0 {
+		attempts = 3
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if attempt > 1 {
+			o.warn("fallback", "attempt %d of %d on the next-ranked offer", attempt, attempts)
+		}
+		live, rig, err := o.attempt(ctx, req)
+		if err == nil {
+			return live, nil
+		}
+		lastErr = err
+		// A deadline that expired while waiting on a host is a statement
+		// about that host, so it earns a fallback like any other host
+		// failure. A cancelled parent context is not: the operator asked to
+		// stop.
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			err = errs.Newf(errs.ClassHostFailure, "daemon.attempt",
+				"host did not finish coming up within the deadline")
+			lastErr = err
+		}
+		if rig != nil && rig.Instance != nil {
+			o.warn("cleanup", "tearing down rather than leaving it billing")
+			o.teardownAfterFailure(rig, core.ReasonHostFailure, err)
+			o.excluded = append(o.excluded, rig.Offer.OfferID)
+		}
+		// Only host-attributable failures are worth another machine.
+		if errs.ClassOf(err) != errs.ClassHostFailure {
+			return nil, err
+		}
+		if ctx.Err() != nil {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+// attempt runs one full provisioning cycle against the best remaining offer.
+//
+// FR-PROV-04 requires the WHOLE sequence under one deadline, and an earlier
+// version got this wrong in a way that only a hanging test revealed: Up owned
+// the timeout and cancelled it on return, so everything after the create —
+// waiting for sshd, pinning, bootstrap, launch, readiness — ran unbounded. A
+// host that never finished booting would have held the attempt open forever
+// while billing, which is the failure the deadline exists to prevent.
+func (o *Orchestrator) attempt(ctx context.Context, req UpRequest) (*Live, *core.Rig, error) {
+	deadline := o.Deadline
+	if deadline == 0 {
+		deadline = 30 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+
 	rig, err := o.Up(ctx, req)
 	if err != nil {
-		if rig != nil && rig.Instance != nil {
-			o.warn("cleanup", "provisioning failed after the instance existed; tearing down")
-			o.teardownAfterFailure(rig, core.ReasonBootstrapFailed, err)
-		}
-		return nil, err
+		return nil, rig, err
 	}
 	live, serr := o.Serve(ctx, rig, o.lastKeys, req.LocalPort, req.HFToken)
 	if serr != nil {
 		if live != nil {
 			_ = live.Close()
 		}
-		o.warn("cleanup", "bring-up failed; tearing down rather than leaving it billing")
-		o.teardownAfterFailure(rig, core.ReasonBootstrapFailed, serr)
-		return nil, serr
+		return nil, rig, serr
 	}
-	return live, nil
+	return live, rig, nil
 }
 
 // teardownAfterFailure destroys a rig whose bring-up failed, on a fresh
@@ -239,6 +301,63 @@ func (o *Orchestrator) teardownAfterFailure(rig *core.Rig, code core.ReasonCode,
 	}
 	if err := o.Down(ctx, rig, term); err != nil {
 		o.warn("cleanup", "TEARDOWN UNCONFIRMED: %v — check the provider dashboard", err)
+	}
+}
+
+// withoutOffers drops offers already tried this run, so a fallback lands on a
+// different machine instead of the one that just failed.
+func withoutOffers(offers []core.Offer, ids []string) []core.Offer {
+	skip := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		skip[id] = true
+	}
+	out := offers[:0:0]
+	for _, of := range offers {
+		if !skip[of.OfferID] {
+			out = append(out, of)
+		}
+	}
+	return out
+}
+
+// reportExclusions summarises why offers were rejected.
+//
+// A live run printed fifty consecutive "above the ceiling" lines, which is
+// noise rather than explanation: the operator needs to know each REASON that
+// applied and roughly how much it removed, not to read every instance of the
+// most common one. So the reasons are grouped, with a couple of examples each.
+func (o *Orchestrator) reportExclusions(sel rank.Result) {
+	type group struct {
+		count    int
+		examples []string
+	}
+	groups := map[rank.Reason]*group{}
+	var order []rank.Reason
+	for _, ex := range sel.Excluded() {
+		if ex.Reason == rank.ReasonCostlier {
+			continue
+		}
+		g, ok := groups[ex.Reason]
+		if !ok {
+			g = &group{}
+			groups[ex.Reason] = g
+			order = append(order, ex.Reason)
+		}
+		g.count++
+		if len(g.examples) < 2 {
+			g.examples = append(g.examples, fmt.Sprintf("%s %dGB $%.3f/hr — %s",
+				ex.Offer.GPUModel, ex.Offer.VRAMTotalGB(), ex.Offer.PriceHr, ex.Detail))
+		}
+	}
+	for _, reason := range order {
+		g := groups[reason]
+		o.emit("excluded", "%d offers: %s", g.count, reason)
+		for _, e := range g.examples {
+			o.emit("excluded", "    %s", e)
+		}
+		if g.count > len(g.examples) {
+			o.emit("excluded", "    ... and %d more", g.count-len(g.examples))
+		}
 	}
 }
 

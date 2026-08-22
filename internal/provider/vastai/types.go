@@ -81,6 +81,7 @@ type wireOffer struct {
 	Rentable      *bool    `json:"rentable"`
 	IsBid         *bool    `json:"is_bid"`
 	DriverVersion *string  `json:"driver_version"`
+	ComputeCap    *float64 `json:"compute_cap"`
 }
 
 // normalise converts a wire offer into LARRI's vocabulary, refusing anything
@@ -148,6 +149,9 @@ func (o wireOffer) normalise() (core.Offer, error) {
 	}
 	if o.DriverVersion != nil {
 		out.DriverVersion = *o.DriverVersion
+	}
+	if o.ComputeCap != nil {
+		out.ComputeCapability = int(*o.ComputeCap)
 	}
 	if o.IsBid != nil {
 		out.Interruptible = *o.IsBid

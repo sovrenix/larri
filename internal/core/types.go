@@ -64,23 +64,29 @@ type ModelSpec struct {
 
 // Offer is a normalised purchasable unit.
 type Offer struct {
-	Provider      string          `json:"provider"`
-	OfferID       string          `json:"offer_id"`
-	GPUModel      string          `json:"gpu_model"`
-	GPUCount      int             `json:"gpu_count"`
-	VRAMPerGPUGB  int             `json:"vram_per_gpu_gb"`
-	CPUCores      int             `json:"cpu_cores"`
-	RAMGB         int             `json:"ram_gb"`
-	DiskGB        int             `json:"disk_gb"`
-	Region        string          `json:"region"`
-	PriceHr       float64         `json:"price_hr"`
-	Interruptible bool            `json:"interruptible"`
-	Reliability   float64         `json:"reliability"`   // normalised 0..1
-	NetDownMbps   float64         `json:"net_down_mbps"` // download time is billed time
-	CUDAVersion   string          `json:"cuda_version,omitempty"`
-	DriverVersion string          `json:"driver_version,omitempty"`
-	Certified     bool            `json:"certified,omitempty"`
-	Raw           json.RawMessage `json:"-"` // provider payload, for debugging only
+	Provider      string  `json:"provider"`
+	OfferID       string  `json:"offer_id"`
+	GPUModel      string  `json:"gpu_model"`
+	GPUCount      int     `json:"gpu_count"`
+	VRAMPerGPUGB  int     `json:"vram_per_gpu_gb"`
+	CPUCores      int     `json:"cpu_cores"`
+	RAMGB         int     `json:"ram_gb"`
+	DiskGB        int     `json:"disk_gb"`
+	Region        string  `json:"region"`
+	PriceHr       float64 `json:"price_hr"`
+	Interruptible bool    `json:"interruptible"`
+	Reliability   float64 `json:"reliability"`   // normalised 0..1
+	NetDownMbps   float64 `json:"net_down_mbps"` // download time is billed time
+	CUDAVersion   string  `json:"cuda_version,omitempty"`
+
+	// ComputeCapability is the GPU architecture level times 100 — 610 for
+	// Pascal, 700 for Volta, 890 for Ada. It is a *selection* input, not a
+	// diagnostic: vLLM will not run below 700, so renting a Pascal card to
+	// serve with vLLM buys hardware that cannot work at any price.
+	ComputeCapability int             `json:"compute_capability,omitempty"`
+	DriverVersion     string          `json:"driver_version,omitempty"`
+	Certified         bool            `json:"certified,omitempty"`
+	Raw               json.RawMessage `json:"-"` // provider payload, for debugging only
 }
 
 // VRAMTotalGB is the aggregate VRAM an offer provides.
@@ -170,10 +176,16 @@ type Rig struct {
 	Instance  *Instance      `json:"instance,omitempty"` // nil until CREATING resolves
 	Plan      SizingPlan     `json:"plan"`
 	LocalPort int            `json:"local_port"`
-	Wiring    []WiringRecord `json:"wiring,omitempty"`
-	History   []Transition   `json:"history,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
-	End       *Termination   `json:"end,omitempty"` // nil while the rig lives
+
+	// HostKeyFingerprint is the SSH host key pinned at bring-up. A public
+	// fingerprint, so persisting it discloses nothing, and persisting it is
+	// what lets a later change be recognised as a change rather than as a
+	// first sight (FR-SEC-04).
+	HostKeyFingerprint string         `json:"host_key_fingerprint,omitempty"`
+	Wiring             []WiringRecord `json:"wiring,omitempty"`
+	History            []Transition   `json:"history,omitempty"`
+	CreatedAt          time.Time      `json:"created_at"`
+	End                *Termination   `json:"end,omitempty"` // nil while the rig lives
 }
 
 // Billable reports whether this rig currently costs money.

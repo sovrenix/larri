@@ -264,3 +264,16 @@ func (r *Runtime) Stop(ctx context.Context, sess runtime.Session) error {
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// Requires reports vLLM's hardware floor.
+//
+// vLLM's CUDA kernels need Volta or newer. A Pascal card will pull the image,
+// download the weights, and fail at engine init — after the operator has paid
+// for all of it. Checking during selection turns twenty minutes and a bill
+// into a line of output.
+func (r *Runtime) Requires() runtime.Requirements {
+	return runtime.Requirements{
+		MinComputeCapability: 700,
+		Why:                  "vLLM",
+	}
+}

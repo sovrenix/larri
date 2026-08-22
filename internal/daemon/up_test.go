@@ -278,3 +278,73 @@ func TestTeardownRunsEvenWhenTheContextIsCancelled(t *testing.T) {
 		t.Fatalf("cancellation left %d instances billing", p.Count())
 	}
 }
+
+// FR-PROV-05, and the behaviour a live run showed was missing. The cheapest
+// eligible machine — reliability 0.98 — never accepted a connection. Without
+// fallback that is a total failure; with it, a warning and the next offer.
+func TestHostFailureFallsBackToTheNextOffer(t *testing.T) {
+	o, p, _ := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	o.Deadline = 2 * time.Second
+	o.MaxHostAttempts = 3
+
+	_, err := o.UpAndServe(context.Background(), upReq())
+	if err == nil {
+		t.Fatal("every host is dead in this fake, so it should fail overall")
+	}
+	// Three machines tried, and none left behind.
+	creates := 0
+	for _, c := range p.Calls {
+		if c == "Create" {
+			creates++
+		}
+	}
+	if creates < 2 {
+		t.Errorf("only %d creates; a host failure must move to another machine", creates)
+	}
+	if p.Count() != 0 {
+		t.Fatalf("%d instances left billing after fallback exhausted", p.Count())
+	}
+}
+
+// The other half of FR-PROV-05: a model-attributable failure fails identically
+// everywhere, so retrying elsewhere only spends more.
+func TestModelFailureDoesNotRetryElsewhere(t *testing.T) {
+	o, p, _ := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{OOMAtLoad: true})
+	o.Deadline = 5 * time.Second
+	o.MaxHostAttempts = 3
+	// Reach Serve by making the fake host immediately usable.
+	o.Provider = p
+
+	_, err := o.UpAndServe(context.Background(), upReq())
+	if err == nil {
+		t.Fatal("an OOM at load should fail the bring-up")
+	}
+	if p.Count() != 0 {
+		t.Fatalf("%d instances left billing", p.Count())
+	}
+}
+
+// A fallback must land on a different machine, not retry the one that just
+// failed.
+func TestFallbackSkipsTheOfferThatFailed(t *testing.T) {
+	o, _, _ := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	o.Deadline = time.Second
+	o.MaxHostAttempts = 2
+
+	first, err := o.Up(context.Background(), upReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.excluded = append(o.excluded, first.Offer.OfferID)
+
+	second, err := o.Up(context.Background(), upReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Offer.OfferID == first.Offer.OfferID {
+		t.Fatal("fallback re-selected the offer that just failed")
+	}
+	if second.Offer.PriceHr < first.Offer.PriceHr {
+		t.Error("the fallback should be the next cheapest, not a cheaper one")
+	}
+}
