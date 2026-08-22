@@ -79,6 +79,25 @@ type Orchestrator struct {
 	// the connection can.
 	EndpointStallLimit time.Duration
 
+	// ColdStartLimit is how long the runtime may produce NO output at all
+	// before the host is judged dead. Short on purpose: before there is a
+	// single log line there is nothing to be patient about. Zero means four
+	// minutes.
+	ColdStartLimit time.Duration
+
+	// WarmStallLimit is how long a runtime that HAS produced output may go
+	// quiet, with the hardware also idle, before it is judged stalled.
+	// Generous on purpose: a weight download is legitimately slow. Zero means
+	// twelve minutes.
+	WarmStallLimit time.Duration
+
+	// ReadyCap bounds the whole readiness wait. Zero means thirty minutes.
+	ReadyCap time.Duration
+
+	// ReadyPollInterval is how often readiness is retried. Zero means ten
+	// seconds.
+	ReadyPollInterval time.Duration
+
 	// HostIdleLimit is how long a reachable host may show no CPU, disk or
 	// network activity before LARRI says so. Zero means five minutes.
 	HostIdleLimit time.Duration

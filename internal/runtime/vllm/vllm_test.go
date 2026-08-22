@@ -64,18 +64,13 @@ func plan() core.SizingPlan {
 // written explicitly on both sides of the mapping.
 func TestLaunchPublishesOnLoopbackOnly(t *testing.T) {
 	r := New()
+	r.launcher = "vllm serve"
 	ep := runtime.Endpoint{Host: runtime.Loopback, Port: RemotePort,
 		Model: "qwen3-coder", Key: secret.New("rig-token")}
 	cmd := r.launchCommand(spec(), plan(), ep)
 
-	if !strings.Contains(cmd, "-p 127.0.0.1:8000:8000") {
-		t.Errorf("docker must publish to loopback only:\n%s", cmd)
-	}
-	if strings.Contains(cmd, "-p 8000:8000") {
-		t.Error("a bare -p publishes on every interface")
-	}
 	if !strings.Contains(cmd, "--host '127.0.0.1'") {
-		t.Errorf("vllm must bind loopback inside the container too:\n%s", cmd)
+		t.Errorf("vllm must bind loopback:\n%s", cmd)
 	}
 	if strings.Contains(cmd, "0.0.0.0") {
 		t.Error("no routable bind address may appear anywhere in the launch")
@@ -84,6 +79,7 @@ func TestLaunchPublishesOnLoopbackOnly(t *testing.T) {
 
 func TestLaunchCarriesPlanAndKey(t *testing.T) {
 	r := New()
+	r.launcher = "vllm serve"
 	ep := runtime.Endpoint{Host: runtime.Loopback, Port: RemotePort,
 		Model: "qwen3-coder", Key: secret.New("rig-token")}
 	cmd := r.launchCommand(spec(), plan(), ep)
@@ -93,7 +89,10 @@ func TestLaunchCarriesPlanAndKey(t *testing.T) {
 		"--gpu-memory-utilization '0.86'",
 		"--served-model-name 'qwen3-coder'",
 		"--api-key 'rig-token'",
-		"--model 'Qwen/Qwen3-Coder-30B'",
+		// `vllm serve` takes the model positionally; only the module
+		// entrypoint wants --model, which is why the launcher is discovered
+		// rather than assumed.
+		"vllm serve 'Qwen/Qwen3-Coder-30B'",
 	} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("launch missing %q:\n%s", want, cmd)
@@ -147,15 +146,20 @@ func TestHostileModelRefStaysOneArgument(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no shell available")
 	}
+	r := New()
+	r.launcher = "vllm serve"
 	evil := spec()
 	evil.Ref = `x'; touch /tmp/larri-pwned; echo '`
-	cmd := New().launchCommand(evil, plan(), runtime.Endpoint{
+	cmd := r.launchCommand(evil, plan(), runtime.Endpoint{
 		Host: runtime.Loopback, Port: RemotePort, Key: secret.New("k")})
 
-	// Replace docker with a printf that echoes its arguments one per line, so
-	// the real argument boundaries are observable.
-	probe := strings.Replace(cmd, "docker run", `printf '%s\n'`, 1)
+	// Replace the launcher with a printf that echoes its arguments one per
+	// line, so the real argument boundaries are observable.
+	probe := strings.Replace(cmd, "nohup vllm serve", `printf '%s\n'`, 1)
 	probe = probe[strings.Index(probe, "printf"):]
+	if i := strings.Index(probe, " >"); i > 0 {
+		probe = probe[:i] // drop the redirect and backgrounding
+	}
 	out, err := exec.Command("sh", "-c", probe).Output()
 	if err != nil {
 		t.Fatalf("probe failed: %v", err)
@@ -180,6 +184,7 @@ func TestHostileModelRefStaysOneArgument(t *testing.T) {
 // than a missing flag.
 func TestToolCallingIsALaunchFlag(t *testing.T) {
 	r := New()
+	r.launcher = "vllm serve"
 	ep := runtime.Endpoint{Host: runtime.Loopback, Port: RemotePort, Key: secret.New("k")}
 
 	off := r.launchCommand(spec(), plan(), ep)
@@ -246,13 +251,59 @@ func TestReadyPropagatesServerErrors(t *testing.T) {
 	}
 }
 
-func TestStopRemovesTheContainer(t *testing.T) {
+func TestStopHaltsTheServerProcess(t *testing.T) {
 	s := &recSession{}
 	if err := New().Stop(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(s.last(), "docker rm -f "+containerName) {
+	if !strings.Contains(s.last(), "pkill") {
 		t.Errorf("stop = %q", s.last())
+	}
+	if strings.Contains(s.last(), "docker") {
+		t.Error("a Vast instance IS the container; there is no docker inside it")
+	}
+}
+
+// The design error that failed every live bring-up: a Vast instance is the
+// container, so `docker pull` inside it is docker-in-docker against no daemon.
+// It surfaced as `docker: command not found`, which reads like a network
+// problem until you notice the instance was never a VM.
+func TestNothingSpeaksDockerOnTheHost(t *testing.T) {
+	r := New()
+	r.launcher = "vllm serve"
+	cmd := r.launchCommand(spec(), plan(), runtime.Endpoint{
+		Host: runtime.Loopback, Port: RemotePort, Key: secret.New("k")})
+	if strings.Contains(cmd, "docker") {
+		t.Errorf("launch still speaks docker:\n%s", cmd)
+	}
+	// The server has to outlive the SSH exec channel that started it.
+	if !strings.Contains(cmd, "nohup") {
+		t.Errorf("launch must detach, or the server dies with the session:\n%s", cmd)
+	}
+	if !strings.Contains(cmd, LogPath) {
+		t.Errorf("launch must capture output for diagnosis:\n%s", cmd)
+	}
+	// Re-launching must not leave two servers fighting for one GPU.
+	if !strings.Contains(cmd, "pkill") {
+		t.Errorf("launch should be idempotent:\n%s", cmd)
+	}
+}
+
+// Images package vLLM differently, so the launcher is discovered rather than
+// assumed. Assuming one shape is how a bring-up fails on a host that was fine.
+func TestLauncherIsDiscoveredNotAssumed(t *testing.T) {
+	r := New()
+	r.launcher = "python3 -m vllm.entrypoints.openai.api_server --model"
+	cmd := r.launchCommand(spec(), plan(), runtime.Endpoint{
+		Host: runtime.Loopback, Port: RemotePort, Key: secret.New("k")})
+	if !strings.Contains(cmd, "python3 -m vllm.entrypoints.openai.api_server --model '") {
+		t.Errorf("module entrypoint not honoured:\n%s", cmd)
+	}
+	r.launcher = "vllm serve"
+	cmd = r.launchCommand(spec(), plan(), runtime.Endpoint{
+		Host: runtime.Loopback, Port: RemotePort, Key: secret.New("k")})
+	if !strings.Contains(cmd, "vllm serve '") {
+		t.Errorf("console script not honoured:\n%s", cmd)
 	}
 }
 

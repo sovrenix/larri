@@ -36,15 +36,15 @@ const DefaultImage = "vllm/vllm-openai:latest"
 // RemotePort is where vLLM listens on the host's loopback interface.
 const RemotePort = 8000
 
-// containerName is fixed so logs and teardown can find the process without
-// bookkeeping that a crash could lose.
-const containerName = "larri-vllm"
-
 // Runtime is the vLLM adapter.
 type Runtime struct {
 	// ImageRef is the container image. Named to leave Image() free for the
 	// interface method.
 	ImageRef string
+
+	// launcher is how vLLM starts on this host, discovered during bootstrap
+	// rather than assumed, because images package it differently.
+	launcher string
 
 	// Progress reporting granularity for weight download.
 	PollInterval time.Duration
@@ -67,11 +67,22 @@ func (r *Runtime) Image(core.ModelSpec, core.SizingPlan) string {
 	return r.ImageRef
 }
 
-// Bootstrap pulls the image and the weights.
+// LogPath is where the server's output lands on the host, so a launch that
+// failed before answering can still be diagnosed.
+const LogPath = "/var/log/larri-vllm.log"
+
+// Bootstrap verifies the runtime is present and usable.
 //
-// Weights are the one genuinely large download and the operator is paying for
-// every second of it, so progress is reported in bytes rather than as a phase
-// that could be mistaken for a hang (FR-RT-06).
+// It does NOT pull an image, and the obvious design being wrong here is worth
+// recording. A Vast instance **is** the container: the image named in
+// CreateSpec is what the instance runs, onstart executes inside it, and SSH
+// connects into it. Running `docker pull` from there is docker-in-docker
+// inside a container with no docker daemon, which failed every live bring-up
+// with `docker: command not found` while reading like a network problem.
+//
+// The image therefore arrives with the instance, and bootstrap's job is to
+// confirm what turned up. Weights are still fetched by vLLM at launch, where
+// their progress is observable in the log.
 func (r *Runtime) Bootstrap(ctx context.Context, sess runtime.Session,
 	spec core.ModelSpec, plan core.SizingPlan, progress chan<- runtime.Progress) error {
 
@@ -81,26 +92,40 @@ func (r *Runtime) Bootstrap(ctx context.Context, sess runtime.Session,
 		}
 		select {
 		case progress <- p:
-		case <-ctx.Done():
-		default: // never block bootstrap on a slow consumer
+		default:
 		}
 	}
+	send(runtime.Progress{Phase: runtime.PhaseImagePull,
+		Message: "image supplied by the provider; verifying the runtime"})
 
-	send(runtime.Progress{Phase: runtime.PhaseImagePull, Message: r.Image(spec, plan)})
-	if _, err := sess.Run(ctx, "docker pull "+shellQuote(r.Image(spec, plan))); err != nil {
-		return errs.Newf(errs.ClassHostFailure, "vllm.Bootstrap", "image pull: %v", err)
+	out, err := sess.Run(ctx, findRuntimeCmd)
+	if err != nil && len(out) == 0 {
+		return errs.Newf(errs.ClassHostFailure, "vllm.Bootstrap",
+			"could not inspect the host: %v", err)
 	}
-	send(runtime.Progress{Phase: runtime.PhaseImagePull, Percent: 100})
-
-	// vLLM downloads weights itself on first launch, into the HF cache. Doing
-	// it as a separate step would double the disk usage for no benefit, so
-	// the download is observed during launch rather than performed here.
-	send(runtime.Progress{
-		Phase:   runtime.PhaseWeightsDownload,
-		Message: "weights download begins at launch and is reported from the container log",
-	})
+	launcher := strings.TrimSpace(string(out))
+	if launcher == "" || strings.Contains(launcher, "NOTFOUND") {
+		// The image is what the operator asked the provider for, so a missing
+		// runtime is a configuration problem rather than a bad machine: the
+		// next host runs the same image and fails identically (FR-PROV-05).
+		return errs.Newf(errs.ClassModelFailure, "vllm.Bootstrap",
+			"no vllm entrypoint in image %s", r.Image(spec, plan))
+	}
+	r.launcher = launcher
+	send(runtime.Progress{Phase: runtime.PhaseImagePull, Percent: 100,
+		Message: "runtime found (" + launcher + ")"})
+	send(runtime.Progress{Phase: runtime.PhaseWeightsDownload,
+		Message: "weights are fetched at launch; progress appears in the runtime log"})
 	return nil
 }
+
+// findRuntimeCmd locates a way to start vLLM, because images package it
+// differently and assuming one shape is how a bring-up fails on a host that
+// was fine.
+const findRuntimeCmd = `if command -v vllm >/dev/null 2>&1; then echo "vllm serve"; ` +
+	`elif python3 -c "import vllm" >/dev/null 2>&1; then echo "python3 -m vllm.entrypoints.openai.api_server --model"; ` +
+	`elif python -c "import vllm" >/dev/null 2>&1; then echo "python -m vllm.entrypoints.openai.api_server --model"; ` +
+	`else echo NOTFOUND; fi`
 
 // Launch starts vLLM bound to loopback and returns its endpoint.
 func (r *Runtime) Launch(ctx context.Context, sess runtime.Session,
@@ -140,12 +165,9 @@ func (r *Runtime) Launch(ctx context.Context, sess runtime.Session,
 // — so the bind address is written explicitly on both sides of the mapping.
 func (r *Runtime) launchCommand(spec core.ModelSpec, plan core.SizingPlan, ep runtime.Endpoint) string {
 	// Flag names are literals LARRI controls; values may come from a model
-	// reference an operator pasted. Only the values are quoted, which keeps
-	// the command readable in logs while still neutralising the half that
-	// could carry an injection.
+	// reference an operator pasted. Only the values are quoted.
 	type flag struct{ name, value string }
 	flags := []flag{
-		{"--model", spec.Ref},
 		{"--host", runtime.Loopback},
 		{"--port", strconv.Itoa(RemotePort)},
 		{"--served-model-name", spec.ServedName},
@@ -159,36 +181,40 @@ func (r *Runtime) launchCommand(spec core.ModelSpec, plan core.SizingPlan, ep ru
 			strconv.FormatFloat(plan.GPUMemUtilization, 'f', 2, 64)})
 	}
 	if plan.TensorParallelSize > 1 {
-		flags = append(flags, flag{"--tensor-parallel-size",
-			strconv.Itoa(plan.TensorParallelSize)})
+		flags = append(flags, flag{"--tensor-parallel-size", strconv.Itoa(plan.TensorParallelSize)})
 	}
 	if spec.Quantization != "" && !isUnquantised(spec.Quantization) {
 		flags = append(flags, flag{"--quantization", spec.Quantization})
 	}
-	// §6.6: tool calling is a launch-time property. A runtime started without
-	// it accepts tools[] and answers in prose, which looks like a bad model
-	// rather than a missing flag.
 	toolCalling := spec.ToolCalling != core.Forbid && spec.ToolParser != ""
 	if toolCalling {
 		flags = append(flags, flag{"--tool-call-parser", spec.ToolParser})
 	}
 
+	launcher, modelFlag := r.launcher, ""
+	if launcher == "" {
+		launcher = "vllm serve"
+	}
+	if rest, ok := strings.CutSuffix(launcher, " --model"); ok {
+		launcher, modelFlag = rest, " --model"
+	}
+
 	var b strings.Builder
-	b.WriteString("docker rm -f " + containerName + " >/dev/null 2>&1; ")
-	b.WriteString("docker run -d --name " + containerName + " --gpus all --restart no ")
-	// Docker's -p defaults to every interface. On a host with a routable
-	// address that would publish an unauthenticated inference server to
-	// anyone who scans for it, so the bind address is explicit on both sides.
-	b.WriteString(fmt.Sprintf("-p %s:%d:%d ", runtime.Loopback, RemotePort, RemotePort))
-	b.WriteString("-v /root/.cache/huggingface:/root/.cache/huggingface ")
-	b.WriteString("-e HF_TOKEN ") // inherited from the session, never written to disk
-	b.WriteString(shellQuote(r.Image(spec, plan)))
+	// Idempotent: a re-launch must not leave two servers fighting for the GPU.
+	b.WriteString("pkill -f 'vllm.entrypoints.openai' >/dev/null 2>&1; ")
+	b.WriteString("pkill -f 'vllm serve' >/dev/null 2>&1; sleep 1; ")
+	b.WriteString(": > " + LogPath + "; ")
+	// The server must outlive this exec channel. Without nohup and a detached
+	// redirect it dies with the SSH session and readiness chases a process
+	// that was never going to be there.
+	b.WriteString("nohup " + launcher + modelFlag + " " + shellQuote(spec.Ref))
 	for _, f := range flags {
 		b.WriteString(" " + f.name + " " + shellQuote(f.value))
 	}
 	if toolCalling {
 		b.WriteString(" --enable-auto-tool-choice")
 	}
+	fmt.Fprintf(&b, " >%s 2>&1 & echo started", LogPath)
 	return b.String()
 }
 
@@ -229,28 +255,35 @@ func (r *Runtime) Ready(ctx context.Context, ep runtime.Endpoint, spec core.Mode
 	return nil
 }
 
-// Logs streams the container log.
+// Logs streams the runtime log.
+//
+// This is the only window into a launch that failed before the server ever
+// answered — an OOM at load, a missing weight file, an unsupported
+// quantisation — so it reads the file the launch redirected into rather than
+// questioning a process that may no longer exist.
 func (r *Runtime) Logs(ctx context.Context, sess runtime.Session, tail int) (io.ReadCloser, error) {
-	n := "all"
+	n := "200"
 	if tail > 0 {
 		n = strconv.Itoa(tail)
 	}
-	s, ok := sess.(interface {
+	cmd := fmt.Sprintf("tail -n %s %s 2>/dev/null || echo '(no runtime log yet)'", n, LogPath)
+	if st, ok := sess.(interface {
 		Stream(context.Context, string) (io.ReadCloser, error)
-	})
-	if !ok {
-		out, err := sess.Run(ctx, fmt.Sprintf("docker logs --tail %s %s 2>&1", n, containerName))
-		if err != nil {
-			return nil, err
-		}
-		return io.NopCloser(strings.NewReader(string(out))), nil
+	}); ok {
+		return st.Stream(ctx, cmd)
 	}
-	return s.Stream(ctx, fmt.Sprintf("docker logs -f --tail %s %s 2>&1", n, containerName))
+	out, err := sess.Run(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(strings.NewReader(string(out))), nil
 }
 
-// Stop halts the container.
+// Stop halts the server.
 func (r *Runtime) Stop(ctx context.Context, sess runtime.Session) error {
-	if _, err := sess.Run(ctx, "docker rm -f "+containerName); err != nil {
+	_, err := sess.Run(ctx, "pkill -f 'vllm serve' >/dev/null 2>&1; "+
+		"pkill -f 'vllm.entrypoints.openai' >/dev/null 2>&1; true")
+	if err != nil {
 		return errs.Newf(errs.ClassHostFailure, "vllm.Stop", "%v", err)
 	}
 	return nil

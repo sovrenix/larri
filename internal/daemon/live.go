@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/errs"
 	"go.sovrenix.com/larri/internal/runtime"
+	"go.sovrenix.com/larri/internal/runtime/vllm"
 	"go.sovrenix.com/larri/internal/secret"
 	"go.sovrenix.com/larri/internal/sizing"
 	"go.sovrenix.com/larri/internal/sshx"
@@ -192,7 +194,7 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 	// credential, and the model produces a token. A check run on the host
 	// would prove only that vLLM answers itself.
 	o.emit("ready", "waiting for a completion to round-trip")
-	if err := o.waitReady(ctx, rig, proxy.LocalPort(), token); err != nil {
+	if err := o.waitReady(ctx, sess, rig, proxy.LocalPort(), token); err != nil {
 		return live, err
 	}
 	if err := o.Store.Transition(rig, core.StateReady, "completion round-trip verified"); err != nil {
@@ -371,30 +373,151 @@ func (o *Orchestrator) verifyPlacedHardware(ctx context.Context, sess runtime.Se
 	return nil
 }
 
-func (o *Orchestrator) waitReady(ctx context.Context, rig *core.Rig, port int, token secret.Secret) error {
-	deadline := time.Now().Add(20 * time.Minute)
-	var last error
-	attempts := 0
+// waitReady waits for a real completion, in two regimes.
+//
+// Once SSH is up LARRI has far better control than the provider's status text
+// allowed, and the wait should reflect that. Before the runtime has produced a
+// single line of output there is nothing to be patient about: either the
+// process died on launch or the host is doing nothing, and both are answered
+// in minutes by the log being empty and the hardware idle. Once output starts,
+// the calculus inverts — a weight download is legitimately slow, so patience
+// should be generous while the log keeps growing or the disk keeps moving.
+//
+// The signals are independent on purpose. A log that is growing proves work
+// even if the counters are quiet; hardware that is busy proves work even
+// through a phase that logs nothing. Requiring both would reproduce the
+// single-signal blindness that has already cost four bring-ups.
+func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
+	rig *core.Rig, port int, token secret.Secret) error {
+
+	cold := o.ColdStartLimit
+	if cold == 0 {
+		cold = 4 * time.Minute
+	}
+	warm := o.WarmStallLimit
+	if warm == 0 {
+		warm = 12 * time.Minute
+	}
+	deadline := time.Now().Add(o.readyCap())
+
+	var (
+		logBytes   int64
+		lastGrowth = time.Now()
+		everLogged bool
+		prevCount  = readCounters(ctx, sess)
+		attempts   int
+		lastErr    error
+	)
 	for time.Now().Before(deadline) {
 		attempts++
-		ep := runtime.Endpoint{Host: "127.0.0.1", Port: port, Model: rig.Model.ServedName, Key: token}
+		ep := runtime.Endpoint{Host: "127.0.0.1", Port: port,
+			Model: rig.Model.ServedName, Key: token}
 		if err := o.Runtime.Ready(ctx, ep, rig.Model); err == nil {
-			o.emit("ready", "completion verified after %d attempts", attempts)
+			o.emit("ready", "completion verified after %s",
+				time.Since(deadline.Add(-o.readyCap())).Round(time.Second))
 			return nil
 		} else {
-			last = err
+			lastErr = err
 		}
-		if attempts%6 == 0 {
-			o.emit("ready", "still loading (%v)", shortErr(last))
+
+		size, tail := o.readLogState(ctx, sess)
+		cur := readCounters(ctx, sess)
+		act := cur.since(prevCount)
+		prevCount = cur
+
+		if size > logBytes {
+			if !everLogged {
+				o.emit("ready", "runtime started producing output")
+			}
+			everLogged = true
+			logBytes = size
+			lastGrowth = time.Now()
+			if tail != "" {
+				o.emit("ready", "%s", tail)
+			}
+		} else if act.Moving {
+			// The log can go quiet mid-phase while the machine is plainly
+			// working: loading a checkpoint into VRAM writes nothing.
+			lastGrowth = time.Now()
+		}
+		if attempts%4 == 0 {
+			o.emit("ready", "log %s · %s", humanSize(logBytes), act)
+		}
+
+		idle := time.Since(lastGrowth)
+		switch {
+		case !everLogged && idle > cold:
+			return errs.Newf(errs.ClassHostFailure, "daemon.waitReady",
+				"runtime produced no output in %s and the host is idle (%s): %v",
+				idle.Round(time.Second), act, shortErr(lastErr))
+		case everLogged && idle > warm:
+			return errs.Newf(errs.ClassHostFailure, "daemon.waitReady",
+				"runtime stalled: no log growth or activity for %s (%s)",
+				idle.Round(time.Second), act)
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(10 * time.Second):
+		case <-time.After(o.readyPoll()):
 		}
 	}
+	// Out of time: show what the runtime last said, because that is where the
+	// answer usually is.
+	if _, tail := o.readLogState(ctx, sess); tail != "" {
+		o.warn("ready", "last from the runtime: %s", tail)
+	}
 	return errs.Newf(errs.ClassHostFailure, "daemon.waitReady",
-		"no completion returned before the deadline: %v", shortErr(last))
+		"no completion before the deadline: %v", shortErr(lastErr))
+}
+
+func (o *Orchestrator) readyPoll() time.Duration {
+	if o.ReadyPollInterval > 0 {
+		return o.ReadyPollInterval
+	}
+	return 10 * time.Second
+}
+
+func (o *Orchestrator) readyCap() time.Duration {
+	if o.ReadyCap > 0 {
+		return o.ReadyCap
+	}
+	return 30 * time.Minute
+}
+
+// readLogState returns the runtime log's size and its last meaningful line.
+//
+// Size rather than mtime: a file touched but not written has not progressed,
+// and growth is the only claim worth trusting.
+func (o *Orchestrator) readLogState(ctx context.Context, sess runtime.Session) (int64, string) {
+	out, err := sess.Run(ctx, "stat -c %s "+vllm.LogPath+" 2>/dev/null || echo 0; "+
+		"tail -n 3 "+vllm.LogPath+" 2>/dev/null | tr -d '\r' | grep -v '^$' | tail -n 1")
+	if err != nil && len(out) == 0 {
+		return 0, ""
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(lines) == 0 {
+		return 0, ""
+	}
+	size, _ := strconv.ParseInt(strings.TrimSpace(lines[0]), 10, 64)
+	var tail string
+	if len(lines) > 1 {
+		tail = strings.TrimSpace(lines[len(lines)-1])
+		if len(tail) > 160 {
+			tail = tail[:160]
+		}
+	}
+	return size, tail
+}
+
+func humanSize(b int64) string {
+	switch {
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(b)/(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.0f KB", float64(b)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
 }
 
 func parseFirstInt(s string) int {

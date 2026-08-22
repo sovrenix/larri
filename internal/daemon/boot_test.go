@@ -6,6 +6,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -15,6 +16,8 @@ import (
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/errs"
 	"go.sovrenix.com/larri/internal/provider"
+	rfake "go.sovrenix.com/larri/internal/runtime/fake"
+	"go.sovrenix.com/larri/internal/secret"
 )
 
 // bootProvider reports a scripted sequence of statuses, so the wait can be
@@ -325,4 +328,86 @@ func newLocalSSHIsh(t *testing.T) int {
 		}
 	}()
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// logSession scripts a runtime log and host counters, so the two readiness
+// regimes can be tested against how a bring-up actually behaves.
+type logSession struct {
+	mu      sync.Mutex
+	size    int64
+	growBy  int64
+	cpuBusy uint64
+	calls   int
+}
+
+func (s *logSession) Run(_ context.Context, cmd string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	switch {
+	case strings.Contains(cmd, "stat -c"):
+		s.size += s.growBy
+		return []byte(fmt.Sprintf("%d\nloading weights\n", s.size)), nil
+	case strings.Contains(cmd, "/proc/stat"):
+		s.cpuBusy += 10
+		return []byte(fmt.Sprintf("cpu 1000 900\ndisk 0 0\nnet 0 0\n")), nil
+	}
+	return nil, nil
+}
+func (s *logSession) Dial(context.Context, int) (io.ReadWriteCloser, error) { return nil, nil }
+func (s *logSession) Close() error                                          { return nil }
+
+// A runtime that produces nothing and a host that does nothing is answered
+// quickly: before there is a single log line there is nothing to be patient
+// about.
+func TestColdStartGivesUpQuickly(t *testing.T) {
+	o := &Orchestrator{
+		Runtime:           rfake.New(rfake.Behaviour{NeverReady: true}),
+		ColdStartLimit:    300 * time.Millisecond,
+		WarmStallLimit:    time.Hour, // must not be what fires
+		ReadyCap:          20 * time.Second,
+		ReadyPollInterval: 50 * time.Millisecond,
+	}
+	rig := &core.Rig{Model: core.ModelSpec{ServedName: "m"}}
+	sess := &logSession{growBy: 0} // log never grows
+
+	start := time.Now()
+	err := o.waitReady(context.Background(), sess, rig, 1, secret.New("t"))
+	if err == nil {
+		t.Fatal("a silent runtime on an idle host should fail")
+	}
+	if !strings.Contains(err.Error(), "no output") {
+		t.Errorf("the error should say the runtime never spoke: %v", err)
+	}
+	if time.Since(start) > 15*time.Second {
+		t.Errorf("took %s; the cold regime exists to stop billing early", time.Since(start))
+	}
+}
+
+// Once output starts the calculus inverts: a weight download is legitimately
+// slow, and killing it wastes everything already transferred.
+func TestWarmRegimeIsPatientWhileTheLogGrows(t *testing.T) {
+	o := &Orchestrator{
+		Runtime:           rfake.New(rfake.Behaviour{NeverReady: true}),
+		ColdStartLimit:    100 * time.Millisecond, // would fire instantly if it applied
+		WarmStallLimit:    30 * time.Second,
+		ReadyCap:          2500 * time.Millisecond,
+		ReadyPollInterval: 50 * time.Millisecond,
+	}
+	rig := &core.Rig{Model: core.ModelSpec{ServedName: "m"}}
+	sess := &logSession{growBy: 4096} // steadily writing
+
+	start := time.Now()
+	err := o.waitReady(context.Background(), sess, rig, 1, secret.New("t"))
+	if err == nil {
+		t.Fatal("it should eventually hit the cap")
+	}
+	// It must have waited for the cap, not the much shorter cold limit.
+	if time.Since(start) < 2*time.Second {
+		t.Errorf("gave up after %s; a growing log means work is happening",
+			time.Since(start).Round(time.Millisecond))
+	}
+	if strings.Contains(err.Error(), "no output") {
+		t.Error("a runtime that produced output was reported as silent")
+	}
 }

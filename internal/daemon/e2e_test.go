@@ -88,11 +88,18 @@ func TestE2ERentServeDestroy(t *testing.T) {
 
 	o := &Orchestrator{
 		Store: st, Provider: p, Runtime: vllm.New(),
-		Resolver:    sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
-		Policy:      rank.DefaultPolicy(),
-		Deadline:    35 * time.Minute,
-		Events:      events,
-		LabelSealer: sealer,
+		Resolver: sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
+		Policy:   rank.DefaultPolicy(),
+		Deadline: 20 * time.Minute,
+		// Live runs put the host failure rate on the cheap tier well above
+		// what three attempts covers: dead containers behind live contracts,
+		// hosts that never boot, image pulls that never start. Reliability
+		// scores did not predict any of it — every failed machine scored 0.98
+		// or better. So the answer is more attempts, each cheap because the
+		// endpoint probe now ends a bad one in minutes rather than tens.
+		MaxHostAttempts: 6,
+		Events:          events,
+		LabelSealer:     sealer,
 	}
 
 	// Registered before anything can fail. A create that returns an error may
