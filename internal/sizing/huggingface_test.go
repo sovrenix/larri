@@ -195,3 +195,65 @@ func TestCacheIsKeyedByCommit(t *testing.T) {
 		t.Errorf("cache did not reduce fetches: %d then %d", first, calls)
 	}
 }
+
+// A GGUF repository holds quantised weight files and no config.json, so
+// without following base_model every llama.cpp model is unsizable — and
+// llama.cpp is what makes the cheap Pascal cards usable at all. Verified
+// against the real API: bartowski/Qwen2.5-1.5B-Instruct-GGUF declares
+// base_model "Qwen/Qwen2.5-1.5B-Instruct" and carries no config.json.
+func TestGGUFRepoIsSizedThroughItsBaseModel(t *testing.T) {
+	const ggufInfo = `{"sha":"abc","siblings":[{"rfilename":"model.Q4_K_M.gguf"}],
+	  "cardData":{"base_model":"meta-llama/Llama-3.1-8B"}}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "config.json"):
+			// Only the base model has one; the GGUF repo does not. Matched on
+			// the owner, because the two names share a suffix.
+			if strings.HasPrefix(r.URL.Path, "/meta-llama/") {
+				fmt.Fprint(w, configJSON)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		case strings.Contains(r.URL.Path, "GGUF"):
+			fmt.Fprint(w, ggufInfo)
+		case strings.HasPrefix(r.URL.Path, "/api/models/"):
+			fmt.Fprint(w, infoJSON)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	r := &HFResolver{Endpoint: srv.URL, HTTP: srv.Client(), CacheDir: t.TempDir()}
+
+	f, err := r.Resolve(context.Background(), "bartowski/Llama-3.1-8B-GGUF", "main")
+	if err != nil {
+		t.Fatalf("a gguf repo could not be sized: %v", err)
+	}
+	if f.Layers != 32 || f.HiddenSize != 4096 {
+		t.Errorf("architecture did not come from the base model: %+v", f)
+	}
+	// Reported under the name the operator typed, so nothing downstream has
+	// to know the indirection happened.
+	if f.Ref != "bartowski/Llama-3.1-8B-GGUF" {
+		t.Errorf("ref = %q, want the repository the operator named", f.Ref)
+	}
+}
+
+// A repository with no config.json and no base_model is genuinely unsizable,
+// and the original miss is the more useful error to report.
+func TestRepoWithNeitherConfigNorBaseModelStillFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/models/") {
+			fmt.Fprint(w, `{"sha":"abc","siblings":[{"rfilename":"model.safetensors"}]}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	r := &HFResolver{Endpoint: srv.URL, HTTP: srv.Client(), CacheDir: t.TempDir()}
+
+	if _, err := r.Resolve(context.Background(), "org/nothing", "main"); err == nil {
+		t.Fatal("an unsizable repository was accepted")
+	}
+}

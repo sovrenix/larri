@@ -56,6 +56,32 @@ type modelInfo struct {
 	Siblings []struct {
 		Filename string `json:"rfilename"`
 	} `json:"siblings"`
+
+	// CardData carries the base model a derived repository was built from.
+	// A GGUF repository holds quantised weight files and no config.json, so
+	// this is the only route from "the thing the operator named" to the
+	// architecture facts sizing needs.
+	CardData struct {
+		BaseModel any `json:"base_model"` // string, or a list of them
+	} `json:"cardData"`
+}
+
+// baseModel returns the repository this one was derived from, if it says.
+//
+// Hugging Face allows either a string or a list here, and a quantised
+// repository derived from several is rare enough that the first is the answer.
+func (m *modelInfo) baseModel() string {
+	switch v := m.CardData.BaseModel.(type) {
+	case string:
+		return v
+	case []any:
+		for _, e := range v {
+			if s, ok := e.(string); ok && s != "" {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 // modelConfig is the subset of config.json LARRI reads.
@@ -97,7 +123,25 @@ func (h *HFResolver) Resolve(ctx context.Context, ref, revision string) (Facts, 
 	}
 	cfg, err := h.fetchConfig(ctx, ref, info.SHA)
 	if err != nil {
-		return Facts{}, err
+		// A repository with no config.json is not necessarily unsizable: a
+		// GGUF repository holds quantised weights and points at the model it
+		// was built from. Following that is what makes llama.cpp usable at
+		// all, since every GGUF repo looks like this.
+		//
+		// Only one hop. Base models that name base models are a chain this
+		// has no business walking, and one step covers the case that exists.
+		base := info.baseModel()
+		if base == "" || base == ref {
+			return Facts{}, err
+		}
+		f, berr := h.Resolve(ctx, base, "")
+		if berr != nil {
+			return Facts{}, err // the original miss is the more useful one
+		}
+		// Reported under the ref the operator named, so nothing downstream
+		// has to know the indirection happened.
+		f.Ref = ref
+		return f, nil
 	}
 	f, err := factsFrom(ref, info, cfg)
 	if err != nil {

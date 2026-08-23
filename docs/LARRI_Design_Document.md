@@ -2522,6 +2522,31 @@ GPL-3.0-or-later`), and dependency licences are audited for GPL-3.0 compatibilit
 | **M4** | Surfaces | Daemon API + SSE, tool registry, MCP server, TUI, web UI (console + chat panes, separate origins), client config writers, preemption recovery | AC-4.1 … AC-4.5, AC-4.15 |
 | **M5** | Observability | OTel SDK wiring, lifecycle traces with cost attribution, host/runtime/proxy collectors, persisted metric store, console graphs, optional OTLP and Prometheus export | AC-5.1 … AC-5.4 |
 
+### 20.0 Where the Implementation Actually Is
+
+Recorded here rather than in a changelog, because a milestone table that reads as a plan
+after the plan has partly happened is the same drift this document exists to prevent.
+
+| M | State |
+|---|---|
+| **M0** | Done |
+| **M1** | Done, verified on live hardware across repeated paid runs |
+| **M2** | Mostly done — reconciliation, orphan sweep, `STOPPED` semantics, idle reclamation, budget ceilings, health checks, restart adoption (§11.4). Crash injection and preemption recovery outstanding |
+| **M3** | Partial — llama.cpp and Ollama implemented and unit-tested but not yet run on live hardware; `offers` and `--dry-run` done. **RunPod not started**, so the provider abstraction has never been proven against a second provider |
+| **M4** | Partial — tool registry, MCP server and TUI done. Daemon API, web UI, chat pane and client config writers outstanding |
+| **M5** | Not started |
+
+Two of these are worth naming as risks rather than as remaining work:
+
+- **The provider abstraction is unproven.** One adapter is not an abstraction, it is an
+  interface shaped like the thing behind it. Whatever RunPod turns out to need is the real
+  test of §5, and some of it will be a change to the interface rather than to the adapter.
+- **Two runtimes are untested against reality.** llama.cpp and Ollama pass their unit tests,
+  which proves the command lines are built as intended and nothing more. Every live-only
+  bug in vLLM's bring-up — the image variants, the launcher discovery, the self-matching
+  process pattern, the container counters that lie — was invisible until a paid run found
+  it, and there is no reason to expect these two to be different.
+
 ### 20.1 Why M1 Is Large
 
 M1 looks heavier than "one provider, one runtime" implies, and the reason is that **cost

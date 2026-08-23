@@ -94,25 +94,18 @@ func cmdOffers(ctx context.Context, args []string) error {
 	}
 
 	fmt.Printf("\n  %-4s %-18s %-6s %-10s %-6s %s\n", "", "gpu", "vram", "$/hr", "rel", "provider")
-	shown := 0
-	for i, c := range sv.Selection.Candidates {
-		if c.Reason != rank.ReasonEligible {
-			continue
-		}
-		if shown >= *top {
-			break
-		}
+	rows := eligibleTop(sv.Selection, *top)
+	for i, c := range rows {
 		mark := "  "
-		if i == 0 || (sv.Selection.Selected != nil && c.Offer.OfferID == sv.Selection.Selected.Offer.OfferID) {
+		if sv.Selection.Selected != nil && c.Offer.OfferID == sv.Selection.Selected.Offer.OfferID {
 			mark = "→ " // what `up` would rent right now
 		}
 		fmt.Printf("  %s%-2d %-18s %-6s $%-9.3f %-6.2f %s\n",
-			mark, shown+1, c.Offer.GPUModel,
+			mark, i+1, c.Offer.GPUModel,
 			fmt.Sprintf("%dGB", c.Offer.VRAMTotalGB()),
 			c.Offer.PriceHr, c.Offer.Reliability, c.Offer.Provider)
-		shown++
 	}
-	if shown == 0 {
+	if len(rows) == 0 {
 		fmt.Println("\n  no offer satisfies the criteria")
 	}
 	fmt.Printf("\n  nothing was spent — 'larri up' with the same flags rents the marked offer\n")
@@ -202,4 +195,25 @@ func cmdOrphans(ctx context.Context, args []string) error {
 	n, err := o.SweepOrphans(dctx)
 	fmt.Printf("\n  destroyed %d of %d, absence confirmed\n", n, len(orphans))
 	return err
+}
+
+// eligibleTop returns the offers worth showing, cheapest first.
+//
+// Candidate.Eligible() rather than a bare ReasonEligible test: the ranking
+// marks the cheapest offer ReasonEligible and every runner-up ReasonCostlier,
+// so testing for the former alone renders exactly one row and presents it as
+// the whole market. That is what this did until a live run against 1376 offers
+// returned a single line.
+func eligibleTop(sel rank.Result, n int) []rank.Candidate {
+	out := make([]rank.Candidate, 0, n)
+	for _, c := range sel.Candidates {
+		if !c.Eligible() {
+			continue
+		}
+		if len(out) >= n {
+			break
+		}
+		out = append(out, c)
+	}
+	return out
 }

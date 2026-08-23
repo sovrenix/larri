@@ -25,8 +25,8 @@
 *Rent a GPU. Serve a model. Stop paying. Two commands.*
 
 [![Licence: GPL v3](https://img.shields.io/badge/Licence-GPLv3-blue.svg)](LICENSE)
-[![Status: design](https://img.shields.io/badge/Status-design%20stage-orange.svg)](#status)
-[![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8.svg)](https://go.dev)
+[![Status: alpha](https://img.shields.io/badge/Status-alpha-yellow.svg)](#status)
+[![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8.svg)](https://go.dev)
 
 </div>
 
@@ -46,17 +46,30 @@
 
 ## Status
 
-**This project is at the design stage. There is no working code yet.**
+**Alpha. It rents real GPUs and serves real models — against Vast.ai only.**
 
-What exists today is a complete, reviewed specification: a [Requirements
-Specification](docs/LARRI_Requirements_Specification.md) and a [Design
-Document](docs/LARRI_Design_Document.md) covering architecture, the provider and runtime
-abstractions, VRAM sizing mathematics, cost-safety invariants, observability, and a full
-threat model with attack-surface analysis. Every open design question has been resolved and
-recorded with its reasoning.
+The core lifecycle works and has been verified on live hardware, repeatedly and at cost:
+search, rank, rent, bootstrap, serve, tunnel, supervise, reconnect after a restart, and tear
+down with absence confirmed at the provider.
 
-The commands shown below describe the intended interface. They do not run yet. Milestone M1
-is the first implementation step.
+| Area | State |
+|---|---|
+| Lifecycle: `up` · `down` · `status` · `resume` · `offers` · `orphans` | **Working, live-verified** |
+| Providers | **Vast.ai.** RunPod is not implemented |
+| Runtimes | **vLLM live-verified.** llama.cpp and Ollama implemented, not yet exercised on live hardware |
+| Cost safety: journal, orphan sweep, idle timeout, budget ceiling, health checks | **Working** |
+| Surfaces: `mcp` (Model Context Protocol) · `tui` (dashboard) | **Working** |
+| Client config writers (Continue.dev, VS Code, LibreChat) | **Not implemented** — configure clients by hand for now |
+| Web UI, chat pane, OpenTelemetry | **Not implemented** |
+
+What is not built is marked as such below rather than described as if it were. The
+[Requirements Specification](docs/LARRI_Requirements_Specification.md) and [Design
+Document](docs/LARRI_Design_Document.md) cover the whole system — architecture, the provider
+and runtime abstractions, VRAM sizing mathematics, cost-safety invariants, and a full threat
+model — including the parts that are still specification.
+
+Treat it as alpha in the way that matters: **it spends money.** Run `larri orphans` if a
+session ever ends in a way you did not expect.
 
 ---
 
@@ -71,8 +84,9 @@ criteria → search offers across providers → rank → provision → bootstrap
         → supervise → destroy on command
 ```
 
-Providers are **Vast.ai** and **RunPod**. Runtimes are **vLLM**, **llama.cpp**, and
-**Ollama**. The whole thing is a single static Go binary with no runtime dependencies.
+The provider is **Vast.ai** (RunPod is designed for but not built). Runtimes are **vLLM**,
+**llama.cpp**, and **Ollama**. The whole thing is a single static Go binary with no runtime
+dependencies.
 
 ### The problem
 
@@ -103,8 +117,6 @@ that matters is the second one.
 
 ## How to use
 
-> Not yet implemented — this is the intended interface.
-
 ### Bring up a rig
 
 ```bash
@@ -133,14 +145,16 @@ larri up --model Qwen/Qwen3-Coder-30B \
 
 | Command | Does |
 |---|---|
-| `larri up` | Search, rank, provision, bootstrap, wire clients |
+| `larri up` | Search, rank, provision, bootstrap, serve, supervise |
 | `larri status` | State, price, elapsed time, accrued cost — and why a past rig ended |
-| `larri down` | Revert wiring, destroy, **confirm absence**, report total cost |
+| `larri down` | Destroy, **confirm absence**, report total cost |
 | `larri resume` | Rebuild the tunnel to a rig that outlived the last process |
 | `larri offers` | Search and rank without spending anything |
 | `larri orphans` | Find and destroy resources that local state does not account for |
-| `larri ui` | Web console: live KPIs, GPU/VRAM graphs, accrued cost, chat pane |
+| `larri tui` | The same lifecycle under a live dashboard: cost, idle, health, `d` to destroy |
 | `larri mcp` | Expose the lifecycle as MCP tools for Claude Code and other agents |
+
+A web console with graphs and a chat pane is designed (§14.4) but not built.
 
 ### Not spending money by accident
 
@@ -148,6 +162,11 @@ larri up --model Qwen/Qwen3-Coder-30B \
 larri up --idle-timeout 30m --idle-action destroy   # default
 larri up --budget 5.00                              # destroys on breach, after warning
 ```
+
+Both are enforced by a supervisor that runs for as long as `larri up` (or `larri tui`) does.
+Idleness counts **operator inference only** — LARRI's own health checks are excluded, or the
+timer would reset every thirty seconds and never fire. The budget counts storage as well as
+GPU time, because a `STOPPED` rig keeps billing for the former after the latter stops.
 
 Both explain themselves afterwards:
 
@@ -157,17 +176,38 @@ Both explain themselves afterwards:
     last request 13:51:04 · inspect with: larri status 01J9Z…
 ```
 
-### Your tools, configured once
+### Driving LARRI from Claude Code and other agents
 
-LARRI writes the stable loopback endpoint into clients it detects, backs them up first, and
-reverts them exactly on `down`:
+`larri mcp` serves the lifecycle as MCP tools over stdio. The read-only tools
+(`larri_status`, `larri_plan`, `larri_search_offers`, `larri_logs`, `larri_orphans`) are safe
+to call freely; the ones that spend or destroy (`larri_up`, `larri_down`,
+`larri_orphan_destroy`) are marked destructive and state the cost implication in their own
+description, so the agent reports it before acting rather than after.
 
-| Client | Covers |
+```jsonc
+// ~/.claude.json  →  "mcpServers"
+"larri": { "command": "larri", "args": ["mcp"] }
+```
+
+### Your tools, configured by hand
+
+> **Not implemented yet.** LARRI serves an OpenAI-compatible endpoint on a fixed loopback
+> port; point clients at it yourself for now. Automatic config writing — detect, back up,
+> and revert on `down` — is designed (§10.2) and is the next surface to land.
+
+Any OpenAI-compatible client works. Use the endpoint and key `larri up` prints:
+
+```
+base URL   http://127.0.0.1:8000/v1
+api key    (printed at bring-up)
+model      the --served-name you chose
+```
+
+| Client | Where it goes |
 |---|---|
-| **Continue.dev** | VS Code **and** JetBrains, from one config file |
-| **VS Code** | Native Copilot Chat BYOK |
-| **LibreChat** | Primary chat target |
-| **Open WebUI**, **AnythingLLM** | Supported with caveats |
+| **Continue.dev** | `~/.continue/config.yaml` — covers VS Code **and** JetBrains |
+| **VS Code** | Copilot Chat BYOK, OpenAI-compatible provider |
+| **LibreChat**, **Open WebUI**, **AnythingLLM** | Custom OpenAI endpoint |
 
 ---
 
@@ -213,15 +253,18 @@ Three planes, deliberately separated:
 
 ```
 cmd/larri/            CLI entrypoint and subcommands
-internal/provider/    Provider interface + vastai/, runpod/
+internal/provider/    Provider interface + vastai/          (runpod/ planned)
 internal/runtime/     Runtime interface + vllm/, llamacpp/, ollama/
 internal/sizing/      VRAM / KV-cache / context mathematics
 internal/rank/        Offer scoring
 internal/state/       Durable store, journal, reconciliation
-internal/wire/        Tunnel, proxy, client config writers
-internal/daemon/      Orchestrator, supervisor, cost accountant, API
-internal/telemetry/   OpenTelemetry, collectors, metrics store
-internal/webui/       Embedded chat pane + KPI console
+internal/sshx/        In-process SSH: ephemeral keys, pinned host keys, forwards
+internal/wire/        Tunnel proxy and the credential boundary
+internal/daemon/      Orchestrator, supervisor, cost accountant, adoption
+internal/tools/       Canonical tool registry — one definition, many drivers
+internal/mcpsrv/      MCP adapter over stdio
+internal/tui/         Terminal dashboard
+                      (internal/telemetry/ and internal/webui/ are planned)
 ```
 
 Full detail in the [Design Document](docs/LARRI_Design_Document.md).
