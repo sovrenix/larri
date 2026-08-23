@@ -63,6 +63,10 @@ down with absence confirmed at the provider.
 | Client config writers (Continue.dev, VS Code, LibreChat) | **Not implemented** — configure clients by hand for now |
 | Web UI, chat pane, OpenTelemetry | **Not implemented** |
 
+**[PROJECT_STATE.md](docs/PROJECT_STATE.md)** tracks all 161 requirements — 63% implemented —
+with the specific gap named behind every partial one, and separates "passes its tests" from
+"proven on real hardware".
+
 The [Requirements Specification](docs/LARRI_Requirements_Specification.md) and [Design
 Document](docs/LARRI_Design_Document.md) cover the whole system — architecture, the provider
 and runtime abstractions, VRAM sizing mathematics, cost-safety invariants, and a full threat

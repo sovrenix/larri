@@ -204,18 +204,33 @@ is unknown. Conclude nothing, act on nothing, and keep supervising.
 
 ## 7. Functional Requirements
 
+Every requirement carries a **Status**. The vocabulary is deliberately small, and the
+distinction that matters most is the first one: this project has repeatedly found that code
+which passes its unit tests still fails against real hardware, so "implemented" and "shown to
+work" are not the same claim.
+
+| Status | Means |
+|---|---|
+| `live` | Implemented **and** exercised against real hardware or a real provider API |
+| `done` | Implemented and unit-tested |
+| `part` | Partially implemented — the gap is stated in [PROJECT_STATE.md](PROJECT_STATE.md) |
+| `plan` | Specified, not started |
+
+A per-area summary, and the specific gap behind every `part`, is in
+[PROJECT_STATE.md](PROJECT_STATE.md).
+
 Priority: **M** = MUST (v1), **S** = SHOULD, **C** = COULD (post-v1).
 
 ### 7.1 Criteria and Model Specification (FR-CRIT)
 
-| ID | Pri | Requirement |
-|---|---|---|
-| FR-CRIT-01 | M | Accept hardware criteria: GPU model (e.g. `A100`, `4090`, `H100`), GPU count, minimum VRAM per GPU and in aggregate, CPU cores, RAM, disk. |
-| FR-CRIT-02 | M | Accept commercial criteria: maximum $/hr, on-demand vs interruptible, minimum provider reliability score, allowed/blocked regions, allowed providers. |
-| FR-CRIT-03 | M | Accept a `ModelSpec`: model identity (Hugging Face repo, Ollama tag, or local path), quantization, and required context length. |
-| FR-CRIT-04 | M | Derive hardware requirements from the `ModelSpec` when the operator has not specified them, so that `larri up --model <name>` alone is a valid invocation. |
-| FR-CRIT-05 | S | Persist **named** criteria profiles (e.g. `--profile coding-rig`) for reuse, saved on explicit request. A profile named `default` may apply to a bare `larri up` **only if the whole profile is echoed** — model, filters and ceilings — before anything is searched or spent. *Amended:* this requirement originally forbade any reuse on a bare invocation, to stop a command reapplying what was typed a fortnight ago. The hazard was silence, not reuse; echoing the applied profile in full removes it, and FR-CFG-08 covers the settings that spend. There is still no implicit last-used slot. |
-| FR-CRIT-06 | M | Reject a request at submit time — before any spend — when the `ModelSpec` cannot fit any offer satisfying the criteria, and explain the shortfall in VRAM terms. |
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-CRIT-01 | M | `done` | Accept hardware criteria: GPU model (e.g. `A100`, `4090`, `H100`), GPU count, minimum VRAM per GPU and in aggregate, CPU cores, RAM, disk. |
+| FR-CRIT-02 | M | `done` | Accept commercial criteria: maximum $/hr, on-demand vs interruptible, minimum provider reliability score, allowed/blocked regions, allowed providers. |
+| FR-CRIT-03 | M | `live` | Accept a `ModelSpec`: model identity (Hugging Face repo, Ollama tag, or local path), quantization, and required context length. |
+| FR-CRIT-04 | M | `live` | Derive hardware requirements from the `ModelSpec` when the operator has not specified them, so that `larri up --model <name>` alone is a valid invocation. |
+| FR-CRIT-05 | S | `done` | Persist **named** criteria profiles (e.g. `--profile coding-rig`) for reuse, saved on explicit request. A profile named `default` may apply to a bare `larri up` **only if the whole profile is echoed** — model, filters and ceilings — before anything is searched or spent. *Amended:* this requirement originally forbade any reuse on a bare invocation, to stop a command reapplying what was typed a fortnight ago. The hazard was silence, not reuse; echoing the applied profile in full removes it, and FR-CFG-08 covers the settings that spend. There is still no implicit last-used slot. |
+| FR-CRIT-06 | M | `done` | Reject a request at submit time — before any spend — when the `ModelSpec` cannot fit any offer satisfying the criteria, and explain the shortfall in VRAM terms. |
 
 **Interruptible default (Q-04, resolved): opt-in.** `Criteria.Interruptible` defaults to
 `forbid`; bid and spot offers are used only when the operator asks. The original design
@@ -229,29 +244,29 @@ which is precisely the condition `--interruptible` expresses.
 
 ### 7.2 Discovery and Ranking (FR-SRCH)
 
-| ID | Pri | Requirement |
-|---|---|---|
-| FR-SRCH-01 | M | Query all enabled providers concurrently and normalize results into a single `Offer` type. |
-| FR-SRCH-02 | M | Filter offers by both the operator's criteria and the computed VRAM requirement from §7.1. |
-| FR-SRCH-03 | M | **Select the cheapest offer that meets the criteria and passes the safety floors.** Criteria are a hard filter; fit is a filter, not a scoring term — once the model is known to run, VRAM headroom has no further business competing with price. Every exclusion records a typed reason and evidence, and the selection prints what it rejected alongside what it chose: an operator asking "why not the cheap one" gets the reason, not a score. |
-| FR-SRCH-09 | M | Apply a reliability floor and a price-outlier floor before selecting on price. Both are configurable and both are overridable, but neither may be bypassed by accident: selecting on price alone steers toward exactly what a host harvesting prompts would list. |
-| FR-SRCH-10 | M | Break ties deterministically, so the same market yields the same selection and a choice can be reproduced in a bug report. |
-| FR-SRCH-04 | M | Present ranked candidates with per-offer price, specs, provider, and score before purchase when run interactively. |
-| FR-SRCH-05 | S | Support `--dry-run`: full search, rank, and plan output with zero spend. |
-| FR-SRCH-06 | M | Degrade gracefully when one provider errors or rate-limits — continue with the rest and report the omission explicitly rather than silently narrowing the search. |
-| FR-SRCH-07 | C | Watch mode: poll until an offer meeting criteria appears below a target price. |
-| FR-SRCH-08 | M | Treat a price anomalously low for the hardware class as a signal rather than a bargain, measured against the **class median** with a robust spread and a minimum sample size — never against the mean, which a long tail of overpriced listings renders meaningless. Exclude and report; never silently drop, and never silently select. |
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-SRCH-01 | M | `part` | Query all enabled providers concurrently and normalize results into a single `Offer` type. |
+| FR-SRCH-02 | M | `live` | Filter offers by both the operator's criteria and the computed VRAM requirement from §7.1. |
+| FR-SRCH-03 | M | `live` | **Select the cheapest offer that meets the criteria and passes the safety floors.** Criteria are a hard filter; fit is a filter, not a scoring term — once the model is known to run, VRAM headroom has no further business competing with price. Every exclusion records a typed reason and evidence, and the selection prints what it rejected alongside what it chose: an operator asking "why not the cheap one" gets the reason, not a score. |
+| FR-SRCH-09 | M | `live` | Apply a reliability floor and a price-outlier floor before selecting on price. Both are configurable and both are overridable, but neither may be bypassed by accident: selecting on price alone steers toward exactly what a host harvesting prompts would list. |
+| FR-SRCH-10 | M | `done` | Break ties deterministically, so the same market yields the same selection and a choice can be reproduced in a bug report. |
+| FR-SRCH-04 | M | `live` | Present ranked candidates with per-offer price, specs, provider, and score before purchase when run interactively. |
+| FR-SRCH-05 | S | `live` | Support `--dry-run`: full search, rank, and plan output with zero spend. |
+| FR-SRCH-06 | M | `part` | Degrade gracefully when one provider errors or rate-limits — continue with the rest and report the omission explicitly rather than silently narrowing the search. |
+| FR-SRCH-07 | C | `plan` | Watch mode: poll until an offer meeting criteria appears below a target price. |
+| FR-SRCH-08 | M | `live` | Treat a price anomalously low for the hardware class as a signal rather than a bargain, measured against the **class median** with a robust spread and a minimum sample size — never against the mean, which a long tail of overpriced listings renders meaningless. Exclude and report; never silently drop, and never silently select. |
 
 ### 7.3 Provisioning (FR-PROV)
 
-| ID | Pri | Requirement |
-|---|---|---|
-| FR-PROV-01 | M | Write the create **intent** to durable state before issuing the provider create call. |
-| FR-PROV-02 | M | Provision with an image appropriate to the chosen runtime and inject the operator's SSH public key. |
-| FR-PROV-03 | M | Treat create as possibly-succeeded on timeout or transport error: reconcile against the provider before retrying, never blind-retry. |
-| FR-PROV-04 | M | Enforce an overall provisioning deadline; on expiry, tear down what was created and report `FAILED` with the reason. |
-| FR-PROV-05 | S | On provisioning failure attributable to the host (not the model or config), fall back to the next-ranked offer, up to a bounded number of attempts, and report every attempt and its cost. |
-| FR-PROV-06 | M | Never create a second rig while one is live unless the operator explicitly asks for multiple. |
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-PROV-01 | M | `live` | Write the create **intent** to durable state before issuing the provider create call. |
+| FR-PROV-02 | M | `live` | Provision with an image appropriate to the chosen runtime and inject the operator's SSH public key. |
+| FR-PROV-03 | M | `done` | Treat create as possibly-succeeded on timeout or transport error: reconcile against the provider before retrying, never blind-retry. |
+| FR-PROV-04 | M | `live` | Enforce an overall provisioning deadline; on expiry, tear down what was created and report `FAILED` with the reason. |
+| FR-PROV-05 | S | `live` | On provisioning failure attributable to the host (not the model or config), fall back to the next-ranked offer, up to a bounded number of attempts, and report every attempt and its cost. |
+| FR-PROV-06 | M | `done` | Never create a second rig while one is live unless the operator explicitly asks for multiple. |
 
 **Concurrency (Q-05, resolved).** v1 permits **one rig at a time**, enforced as a
 configuration limit (`max_concurrent_rigs: 1`) rather than as an architectural assumption.
@@ -262,196 +277,196 @@ client — the thing P3 exists to prevent.
 
 ### 7.4 Runtime Bootstrap (FR-RT)
 
-| ID | Pri | Requirement |
-|---|---|---|
-| FR-RT-01 | M | Support llama.cpp, Ollama, and vLLM as interchangeable runtimes behind one interface. |
-| FR-RT-02 | M | Select the runtime automatically from the `ModelSpec` when unspecified (e.g. GGUF → llama.cpp; safetensors + large VRAM → vLLM), and allow explicit override. |
-| FR-RT-03 | M | Acquire weights on the remote host, supporting gated repositories via an operator-supplied token that is never persisted to disk on the remote. |
-| FR-RT-04 | M | Launch the runtime with an OpenAI-compatible HTTP surface and a **stable served-model name** independent of the upstream repo path. |
-| FR-RT-05 | M | Compute and apply runtime launch parameters from the sizing engine: context length, GPU memory utilization, tensor-parallel degree, offload layers. |
-| FR-RT-06 | M | Stream bootstrap progress (image pull, weight download percentage, server start) to the operator; a multi-GB download must not look like a hang. |
-| FR-RT-07 | M | Declare readiness only after a real completion request returns a valid response. TCP reachability and `/health` are necessary but not sufficient. |
-| FR-RT-08 | S | Surface remote runtime logs on demand for diagnosis without requiring the operator to SSH in manually. |
-| FR-RT-09 | S | Launch the runtime with tool calling enabled when the model supports it, selecting the runtime-specific parser automatically. Tool calling is a launch-time property; a runtime started without it accepts `tools[]` and silently answers in prose. |
-| FR-RT-10 | S | When the operator requires a control-capable rig and tool-calling support cannot be established for the model, reject before the create call rather than after paying to boot. |
-| FR-RT-11 | M | Use project-maintained, pre-baked runtime images pinned by content digest rather than composing stock images at boot. Select the image variant against the host's reported driver/CUDA version as a **search filter**, so an incompatible host is excluded before it is rented, not discovered after. Fall back to a stock image with a warning when no compatible variant exists. |
-| FR-RT-12 | M | Resolve model facts by live fetch of the model's `config.json` from Hugging Face, cached by resolved commit; operator override wins, and unresolvable facts are a hard error before spend, never a guess. Gated repositories exercise the Hugging Face token during sizing, so a bad token fails before anything is billed. |
-| FR-RT-13 | M | End a readiness wait as soon as the runtime process is found **absent**, rather than waiting out a stall timeout sized for a model loading in silence. Consult process liveness only when neither log growth nor hardware activity indicates work, and only after the runtime has produced output: evidence of work must outrank absence of a pid, since a runtime may fork, re-exec, or run under an unmatched name. The failure must carry the runtime's own log tail. |
-| FR-RT-14 | M | Obtain the runtime's log location **from the runtime**, never by assuming one engine's path. A daemon that watches the wrong file sees no output and kills a working host on the cold-start limit. |
-| FR-RT-15 | M | Measure every bring-up deadline as time since the last observed **change**, not as elapsed time since a phase began. Fixed deadlines punish slow hardware for being slow, and the cheap hardware LARRI exists to make usable is the slow hardware. A host that has stopped trying stops changing, so stall-based limits still catch it. |
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-RT-01 | M | `live` | Support llama.cpp, Ollama, and vLLM as interchangeable runtimes behind one interface. |
+| FR-RT-02 | M | `live` | Select the runtime automatically from the `ModelSpec` when unspecified (e.g. GGUF → llama.cpp; safetensors + large VRAM → vLLM), and allow explicit override. |
+| FR-RT-03 | M | `live` | Acquire weights on the remote host, supporting gated repositories via an operator-supplied token that is never persisted to disk on the remote. |
+| FR-RT-04 | M | `live` | Launch the runtime with an OpenAI-compatible HTTP surface and a **stable served-model name** independent of the upstream repo path. |
+| FR-RT-05 | M | `live` | Compute and apply runtime launch parameters from the sizing engine: context length, GPU memory utilization, tensor-parallel degree, offload layers. |
+| FR-RT-06 | M | `live` | Stream bootstrap progress (image pull, weight download percentage, server start) to the operator; a multi-GB download must not look like a hang. |
+| FR-RT-07 | M | `live` | Declare readiness only after a real completion request returns a valid response. TCP reachability and `/health` are necessary but not sufficient. |
+| FR-RT-08 | S | `live` | Surface remote runtime logs on demand for diagnosis without requiring the operator to SSH in manually. |
+| FR-RT-09 | S | `done` | Launch the runtime with tool calling enabled when the model supports it, selecting the runtime-specific parser automatically. Tool calling is a launch-time property; a runtime started without it accepts `tools[]` and silently answers in prose. |
+| FR-RT-10 | S | `part` | When the operator requires a control-capable rig and tool-calling support cannot be established for the model, reject before the create call rather than after paying to boot. |
+| FR-RT-11 | M | `plan` | Use project-maintained, pre-baked runtime images pinned by content digest rather than composing stock images at boot. Select the image variant against the host's reported driver/CUDA version as a **search filter**, so an incompatible host is excluded before it is rented, not discovered after. Fall back to a stock image with a warning when no compatible variant exists. |
+| FR-RT-12 | M | `live` | Resolve model facts by live fetch of the model's `config.json` from Hugging Face, cached by resolved commit; operator override wins, and unresolvable facts are a hard error before spend, never a guess. Gated repositories exercise the Hugging Face token during sizing, so a bad token fails before anything is billed. |
+| FR-RT-13 | M | `live` | End a readiness wait as soon as the runtime process is found **absent**, rather than waiting out a stall timeout sized for a model loading in silence. Consult process liveness only when neither log growth nor hardware activity indicates work, and only after the runtime has produced output: evidence of work must outrank absence of a pid, since a runtime may fork, re-exec, or run under an unmatched name. The failure must carry the runtime's own log tail. |
+| FR-RT-14 | M | `done` | Obtain the runtime's log location **from the runtime**, never by assuming one engine's path. A daemon that watches the wrong file sees no output and kills a working host on the cold-start limit. |
+| FR-RT-15 | M | `live` | Measure every bring-up deadline as time since the last observed **change**, not as elapsed time since a phase began. Fixed deadlines punish slow hardware for being slow, and the cheap hardware LARRI exists to make usable is the slow hardware. A host that has stopped trying stops changing, so stall-based limits still catch it. |
 
 ### 7.5 Endpoint Wiring (FR-WIRE)
 
-| ID | Pri | Requirement |
-|---|---|---|
-| FR-WIRE-01 | M | Expose the remote runtime at a **fixed local address** (`http://127.0.0.1:<port>/v1`) that is stable across rig replacement. |
-| FR-WIRE-02 | M | Support SSH local port-forwarding as the default transport, and direct provider host/port mapping as an alternative. |
-| FR-WIRE-03 | M | Re-establish the tunnel automatically on transport failure without changing the local port or requiring client reconfiguration. |
-| FR-WIRE-04 | M | Configure local clients (IDE and chat) to target the local endpoint, writing config idempotently and backing up any file before modification. |
-| FR-WIRE-05 | M | Revert client configuration to its pre-`up` state on `down`, so a torn-down rig never leaves an IDE pointed at a dead endpoint. |
-| FR-WIRE-06 | M | Never write the ephemeral provider host or port into client configuration. |
-| FR-WIRE-07 | S | Support swapping the instance behind a live local port (migration, preemption recovery) with no client-visible change beyond a brief unavailability. |
-| FR-WIRE-08 | S | Require an API key on the local endpoint and refuse to bind to anything other than loopback unless explicitly overridden. |
-| FR-WIRE-09 | M | Route the fixed local port by **served-model name**, so that multiple rigs are reachable through one endpoint clients were configured against once. With a single rig this is a pass-through; the requirement exists so that adding a rig later adds a model entry rather than a reconfiguration. |
-| FR-WIRE-10 | M | Declare a **writability tier** per client: (A) plain-text config, written idempotently with backup and byte-exact revert; (B) app-owned datastore or live process state, never written directly — use the application's own API or demote; (C) guided manual configuration, with the exact values presented. A writer that cannot promise byte-exact revert must not claim tier A. |
-| FR-WIRE-11 | M | Wire, in v1 — IDEs: **Continue.dev** for VS Code and JetBrains (one `~/.continue/config.yaml` serves both) and **VS Code native Copilot Chat BYOK**. Chat: **LibreChat** as the primary target (`librechat.yaml`, `endpoints.custom[]`), **Open WebUI** (tier A only where persistent config is disabled, otherwise via its admin API), and **AnythingLLM** — self-hosted by file, desktop guided, never by writing its database. |
-| FR-WIRE-12 | M | Do not integrate clients that require the endpoint to be reachable from a third-party backend. Cursor routes model traffic through its own servers, so a loopback endpoint is unreachable and support would require publicly exposing the rig — contradicting FR-SEC-03 and the out-of-scope exclusion of public endpoints. |
-| FR-WIRE-13 | M | Determine the tier from **observed reload behaviour**, not from the presence of a config mechanism. An application that reads an environment variable once and snapshots it into its own datastore is tier B despite appearing file-configurable — a writer that assumes otherwise succeeds on a fresh install and silently does nothing thereafter. |
-| FR-WIRE-14 | M | Verify wiring by probing after writing, in every tier. Configuration written correctly but not yet loaded — an application that reads its config only at startup — must be reported as needing a restart, never as success. |
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-WIRE-01 | M | `live` | Expose the remote runtime at a **fixed local address** (`http://127.0.0.1:<port>/v1`) that is stable across rig replacement. |
+| FR-WIRE-02 | M | `live` | Support SSH local port-forwarding as the default transport, and direct provider host/port mapping as an alternative. |
+| FR-WIRE-03 | M | `plan` | Re-establish the tunnel automatically on transport failure without changing the local port or requiring client reconfiguration. |
+| FR-WIRE-04 | M | `plan` | Configure local clients (IDE and chat) to target the local endpoint, writing config idempotently and backing up any file before modification. |
+| FR-WIRE-05 | M | `plan` | Revert client configuration to its pre-`up` state on `down`, so a torn-down rig never leaves an IDE pointed at a dead endpoint. |
+| FR-WIRE-06 | M | `plan` | Never write the ephemeral provider host or port into client configuration. |
+| FR-WIRE-07 | S | `plan` | Support swapping the instance behind a live local port (migration, preemption recovery) with no client-visible change beyond a brief unavailability. |
+| FR-WIRE-08 | S | `live` | Require an API key on the local endpoint and refuse to bind to anything other than loopback unless explicitly overridden. |
+| FR-WIRE-09 | M | `part` | Route the fixed local port by **served-model name**, so that multiple rigs are reachable through one endpoint clients were configured against once. With a single rig this is a pass-through; the requirement exists so that adding a rig later adds a model entry rather than a reconfiguration. |
+| FR-WIRE-10 | M | `plan` | Declare a **writability tier** per client: (A) plain-text config, written idempotently with backup and byte-exact revert; (B) app-owned datastore or live process state, never written directly — use the application's own API or demote; (C) guided manual configuration, with the exact values presented. A writer that cannot promise byte-exact revert must not claim tier A. |
+| FR-WIRE-11 | M | `plan` | Wire, in v1 — IDEs: **Continue.dev** for VS Code and JetBrains (one `~/.continue/config.yaml` serves both) and **VS Code native Copilot Chat BYOK**. Chat: **LibreChat** as the primary target (`librechat.yaml`, `endpoints.custom[]`), **Open WebUI** (tier A only where persistent config is disabled, otherwise via its admin API), and **AnythingLLM** — self-hosted by file, desktop guided, never by writing its database. |
+| FR-WIRE-12 | M | `plan` | Do not integrate clients that require the endpoint to be reachable from a third-party backend. Cursor routes model traffic through its own servers, so a loopback endpoint is unreachable and support would require publicly exposing the rig — contradicting FR-SEC-03 and the out-of-scope exclusion of public endpoints. |
+| FR-WIRE-13 | M | `plan` | Determine the tier from **observed reload behaviour**, not from the presence of a config mechanism. An application that reads an environment variable once and snapshots it into its own datastore is tier B despite appearing file-configurable — a writer that assumes otherwise succeeds on a fresh install and silently does nothing thereafter. |
+| FR-WIRE-14 | M | `plan` | Verify wiring by probing after writing, in every tier. Configuration written correctly but not yet loaded — an application that reads its config only at startup — must be reported as needing a restart, never as success. |
 
 ### 7.6 Supervision (FR-SUP)
 
-| ID | Pri | Requirement |
-|---|---|---|
-| FR-SUP-01 | M | Health-check the rig on a configurable interval using a real inference call, not a liveness ping. |
-| FR-SUP-02 | M | Classify a rig that stops serving by **evidence, not inference**, across at least: absent (provider reports not found), stopped (exists, not running, still billing storage), reachable-but-runtime-down, reachable-but-wedged, and provider-unreachable (state unknown). Each has a distinct correct response; collapsing them loses money or abandons a recoverable rig. |
-| FR-SUP-03 | M | Never re-provision automatically at a higher price than the original without explicit operator consent. |
-| FR-SUP-04 | M | Track and display accrued cost for the current rig and elapsed runtime. |
-| FR-SUP-05 | M | Support a budget ceiling (absolute $ or duration), per rig and globally across all rigs, defaulting to **destroy** on breach after a warning with usable lead time. The ceiling must count storage accrued by `STOPPED` rigs, not GPU time alone. Breach records why, with evidence (FR-DEL-08). |
-| FR-SUP-06 | M | Support an idle timeout — no operator inference for N minutes triggers the configured action, which defaults to `destroy`. Configurable per rig and by default (`--idle-timeout 30m` with `--idle-action` of `destroy` or `warn`). Reclamation records why it fired (FR-DEL-08), because a rig that disappears while the operator is away is the case where an unexplained destruction is least acceptable. |
-| FR-SUP-07 | M | Continue to hold the rig if the supervisor itself crashes; a dead daemon must never imply a destroyed instance, and restart must recover ownership from state. |
-| FR-SUP-13 | M | On restart, rebuild the data plane for a rig still running at the provider: install a **newly minted** SSH key on the running instance through the provider API, reconnect, re-attach to the running server, and republish the endpoint **on the same local port** so wired clients recover without reconfiguration. The lost key must be superseded, never retrieved from storage (FR-STATE-05). |
-| FR-SUP-14 | M | Recover the rig's API credential from the running server rather than by relaunching it. Relaunching evicts resident weights and pays the model-load cost again to solve a bookkeeping problem. A server found running without a LARRI-issued credential must be **refused**, not adopted: tunnelling to an unauthenticated endpoint and reporting the rig recovered is worse than failing to recover. |
-| FR-SUP-15 | M | On adoption, verify the host key against the recorded fingerprint and **refuse on mismatch**, classified as a security failure rather than a host failure. Re-pinning is correct only while a host is still settling during boot; after a rig has served, a changed key means the endpoint leads elsewhere, and falling back to another machine would discard the only evidence of it. |
-| FR-SUP-16 | M | Report a rig that cannot be reconnected as **destroyable but not reconnectable**, naming its ongoing hourly cost. A failed resume must never read as a command that changed nothing. |
-| FR-SUP-17 | M | Arm the **host** to stop *serving* when LARRI stops checking in, so an abandoned rig stops answering prompts even after the local process dies. Halting the container is attempted but is **not established to end billing** on Vast (§12.4.1); nothing may describe it as a teardown. It must act on evidence of idleness — GPU, connections to the runtime, log growth, network — and not on elapsed time alone: a missed heartbeat means the operator is gone, not that a weight download or a generation in flight is finished. The host deadline must always exceed the local idle timeout so the better-informed supervisor acts first. |
-| FR-SUP-18 | M | **Never place a provider credential on a rented host.** The host may only stop the runtime; a marketplace container cannot end its own billing — `CAP_SYS_BOOT` is not in its capability bound and signalling PID 1 achieves nothing (measured, §12.4.1). No surface may describe the watchdog as a teardown. Ending the bill is a provider call from the operator's machine (FR-SEC-18), and `larri orphans` is the remedy for a rig orphaned by a crash. |
-| FR-SUP-08 | M | Count only **operator-attributable inference** as activity for the idle timer. LARRI's own health probes (FR-SUP-01) must be excluded, or the timer resets every interval and never fires. Model listings and other non-inference endpoints do not count; a request still streaming does. |
-| FR-SUP-09 | M | Warn before acting on an idle or budget deadline, on every surface, with enough lead time to cancel or extend. Reclaiming a rig the operator was about to use must be preventable, not merely explicable afterwards. |
-| FR-SUP-10 | M | Treat a `STOPPED` rig as billable and unresolved: continue to supervise it, surface it in every surface, and either destroy it or — on explicit operator choice — wait for resume. A stopped interruptible instance may resume by itself; if LARRI has provisioned a replacement, that resume produces two billing instances and must be detected and surfaced. |
-| FR-SUP-11 | M | Never conclude a rig is gone from a failure to reach the provider. Provider-unreachable is an unknown state, and unknown states are held, not resolved. |
-| FR-SUP-12 | S | Detect a host whose GPU has become unavailable while the instance still runs — a distinct failure from a crashed runtime, and one that no amount of restarting in place will fix. |
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-SUP-01 | M | `done` | Health-check the rig on a configurable interval using a real inference call, not a liveness ping. |
+| FR-SUP-02 | M | `done` | Classify a rig that stops serving by **evidence, not inference**, across at least: absent (provider reports not found), stopped (exists, not running, still billing storage), reachable-but-runtime-down, reachable-but-wedged, and provider-unreachable (state unknown). Each has a distinct correct response; collapsing them loses money or abandons a recoverable rig. |
+| FR-SUP-03 | M | `part` | Never re-provision automatically at a higher price than the original without explicit operator consent. |
+| FR-SUP-04 | M | `live` | Track and display accrued cost for the current rig and elapsed runtime. |
+| FR-SUP-05 | M | `part` | Support a budget ceiling (absolute $ or duration), per rig and globally across all rigs, defaulting to **destroy** on breach after a warning with usable lead time. The ceiling must count storage accrued by `STOPPED` rigs, not GPU time alone. Breach records why, with evidence (FR-DEL-08). |
+| FR-SUP-06 | M | `done` | Support an idle timeout — no operator inference for N minutes triggers the configured action, which defaults to `destroy`. Configurable per rig and by default (`--idle-timeout 30m` with `--idle-action` of `destroy` or `warn`). Reclamation records why it fired (FR-DEL-08), because a rig that disappears while the operator is away is the case where an unexplained destruction is least acceptable. |
+| FR-SUP-07 | M | `live` | Continue to hold the rig if the supervisor itself crashes; a dead daemon must never imply a destroyed instance, and restart must recover ownership from state. |
+| FR-SUP-13 | M | `live` | On restart, rebuild the data plane for a rig still running at the provider: install a **newly minted** SSH key on the running instance through the provider API, reconnect, re-attach to the running server, and republish the endpoint **on the same local port** so wired clients recover without reconfiguration. The lost key must be superseded, never retrieved from storage (FR-STATE-05). |
+| FR-SUP-14 | M | `live` | Recover the rig's API credential from the running server rather than by relaunching it. Relaunching evicts resident weights and pays the model-load cost again to solve a bookkeeping problem. A server found running without a LARRI-issued credential must be **refused**, not adopted: tunnelling to an unauthenticated endpoint and reporting the rig recovered is worse than failing to recover. |
+| FR-SUP-15 | M | `done` | On adoption, verify the host key against the recorded fingerprint and **refuse on mismatch**, classified as a security failure rather than a host failure. Re-pinning is correct only while a host is still settling during boot; after a rig has served, a changed key means the endpoint leads elsewhere, and falling back to another machine would discard the only evidence of it. |
+| FR-SUP-16 | M | `done` | Report a rig that cannot be reconnected as **destroyable but not reconnectable**, naming its ongoing hourly cost. A failed resume must never read as a command that changed nothing. |
+| FR-SUP-17 | M | `live` | Arm the **host** to stop *serving* when LARRI stops checking in, so an abandoned rig stops answering prompts even after the local process dies. Halting the container is attempted but is **not established to end billing** on Vast (§12.4.1); nothing may describe it as a teardown. It must act on evidence of idleness — GPU, connections to the runtime, log growth, network — and not on elapsed time alone: a missed heartbeat means the operator is gone, not that a weight download or a generation in flight is finished. The host deadline must always exceed the local idle timeout so the better-informed supervisor acts first. |
+| FR-SUP-18 | M | `live` | **Never place a provider credential on a rented host.** The host may only stop the runtime; a marketplace container cannot end its own billing — `CAP_SYS_BOOT` is not in its capability bound and signalling PID 1 achieves nothing (measured, §12.4.1). No surface may describe the watchdog as a teardown. Ending the bill is a provider call from the operator's machine (FR-SEC-18), and `larri orphans` is the remedy for a rig orphaned by a crash. |
+| FR-SUP-08 | M | `done` | Count only **operator-attributable inference** as activity for the idle timer. LARRI's own health probes (FR-SUP-01) must be excluded, or the timer resets every interval and never fires. Model listings and other non-inference endpoints do not count; a request still streaming does. |
+| FR-SUP-09 | M | `part` | Warn before acting on an idle or budget deadline, on every surface, with enough lead time to cancel or extend. Reclaiming a rig the operator was about to use must be preventable, not merely explicable afterwards. |
+| FR-SUP-10 | M | `part` | Treat a `STOPPED` rig as billable and unresolved: continue to supervise it, surface it in every surface, and either destroy it or — on explicit operator choice — wait for resume. A stopped interruptible instance may resume by itself; if LARRI has provisioned a replacement, that resume produces two billing instances and must be detected and surfaced. |
+| FR-SUP-11 | M | `done` | Never conclude a rig is gone from a failure to reach the provider. Provider-unreachable is an unknown state, and unknown states are held, not resolved. |
+| FR-SUP-12 | S | `plan` | Detect a host whose GPU has become unavailable while the instance still runs — a distinct failure from a crashed runtime, and one that no amount of restarting in place will fix. |
 
 ### 7.7 Teardown and Cost Safety (FR-DEL)
 
-| ID | Pri | Requirement |
-|---|---|---|
-| FR-DEL-01 | M | `larri down` destroys the rig, reverts client wiring, closes the tunnel, and reports total cost. |
-| FR-DEL-02 | M | Teardown is idempotent — safe to invoke repeatedly and from any state including `FAILED` and `ORPHANED`. |
-| FR-DEL-03 | M | Confirm destruction by re-querying the provider. A successful API response is not proof of deletion, and neither is a stopped, exited, or paused instance — **only absence from the provider's inventory ends billing**. The reconciliation listing must therefore include non-running resources; a `List` that returns only running instances would report a storage-billing container as destroyed. |
-| FR-DEL-04 | M | On unconfirmed destruction, retry with backoff and escalate to a loud, persistent warning naming the provider, instance ID, and hourly rate. |
-| FR-DEL-05 | M | On daemon start, list live resources at every configured provider and reconcile against local state; report every orphan. |
-| FR-DEL-06 | M | Provide `larri orphans` to list and destroy unaccounted-for resources across all configured providers. |
-| FR-DEL-07 | S | Offer a "panic" operation that destroys every LARRI-created resource across all providers with a single confirmation. |
-| FR-DEL-08 | M | Record a **typed termination reason** for every rig that stops existing, resolved at the moment of the decision and journalled with the teardown intent — never reconstructed afterwards. It must carry the deciding actor (operator, configured policy, provider, or LARRI fault), the reason code, and the evidence behind it. A reason without evidence is not an explanation. |
-| FR-DEL-09 | M | Retain terminated rigs so the operator can inspect why one ended, long after it ended. `larri status` shows the reason for recent rigs and `larri status --all` the full retained set; snapshot retention is bounded by count and age, while the append-only journal remains the permanent record. |
-| FR-DEL-10 | M | Surface the termination reason in every surface — CLI status and the exit output of `larri down`, the event stream, the TUI, the console pane, and the `larri_status` tool result — subject to FR-SEC-06 redaction on the path that returns to the served model. |
-| FR-DEL-11 | M | **Refuse to provision while a rig is already billing**, naming that rig, its hourly cost, and both ways out (`larri resume` to reconnect, `larri down` to destroy). The check reads local state rather than the provider, so an unreachable provider can never become a reason to spend. It refuses rather than warns: a warning printed above a bring-up that proceeds anyway is read after the money is gone. |
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-DEL-01 | M | `part` | `larri down` destroys the rig, reverts client wiring, closes the tunnel, and reports total cost. |
+| FR-DEL-02 | M | `done` | Teardown is idempotent — safe to invoke repeatedly and from any state including `FAILED` and `ORPHANED`. |
+| FR-DEL-03 | M | `live` | Confirm destruction by re-querying the provider. A successful API response is not proof of deletion, and neither is a stopped, exited, or paused instance — **only absence from the provider's inventory ends billing**. The reconciliation listing must therefore include non-running resources; a `List` that returns only running instances would report a storage-billing container as destroyed. |
+| FR-DEL-04 | M | `done` | On unconfirmed destruction, retry with backoff and escalate to a loud, persistent warning naming the provider, instance ID, and hourly rate. |
+| FR-DEL-05 | M | `done` | On daemon start, list live resources at every configured provider and reconcile against local state; report every orphan. |
+| FR-DEL-06 | M | `live` | Provide `larri orphans` to list and destroy unaccounted-for resources across all configured providers. |
+| FR-DEL-07 | S | `part` | Offer a "panic" operation that destroys every LARRI-created resource across all providers with a single confirmation. |
+| FR-DEL-08 | M | `live` | Record a **typed termination reason** for every rig that stops existing, resolved at the moment of the decision and journalled with the teardown intent — never reconstructed afterwards. It must carry the deciding actor (operator, configured policy, provider, or LARRI fault), the reason code, and the evidence behind it. A reason without evidence is not an explanation. |
+| FR-DEL-09 | M | `done` | Retain terminated rigs so the operator can inspect why one ended, long after it ended. `larri status` shows the reason for recent rigs and `larri status --all` the full retained set; snapshot retention is bounded by count and age, while the append-only journal remains the permanent record. |
+| FR-DEL-10 | M | `part` | Surface the termination reason in every surface — CLI status and the exit output of `larri down`, the event stream, the TUI, the console pane, and the `larri_status` tool result — subject to FR-SEC-06 redaction on the path that returns to the served model. |
+| FR-DEL-11 | M | `done` | **Refuse to provision while a rig is already billing**, naming that rig, its hourly cost, and both ways out (`larri resume` to reconnect, `larri down` to destroy). The check reads local state rather than the provider, so an unreachable provider can never become a reason to spend. It refuses rather than warns: a warning printed above a bring-up that proceeds anyway is read after the money is gone. |
 
 ### 7.8 State (FR-STATE)
 
-| ID | Pri | Requirement |
-|---|---|---|
-| FR-STATE-01 | M | Persist rig state durably: provider, instance ID, offer terms, hourly price, created-at, model, runtime, ports, PIDs, and current lifecycle state. |
-| FR-STATE-02 | M | Write state atomically; a crash mid-write must leave the previous valid state intact. |
-| FR-STATE-03 | M | Record state transitions as an append-only history for cost accounting and post-mortems. |
-| FR-STATE-04 | M | Tag every provider-side resource with a LARRI marker so orphans are attributable to LARRI and distinguishable from the operator's manually created instances. |
-| FR-STATE-05 | M | Never persist API keys, SSH private keys, or Hugging Face tokens in state files. |
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-STATE-01 | M | `live` | Persist rig state durably: provider, instance ID, offer terms, hourly price, created-at, model, runtime, ports, PIDs, and current lifecycle state. |
+| FR-STATE-02 | M | `done` | Write state atomically; a crash mid-write must leave the previous valid state intact. |
+| FR-STATE-03 | M | `live` | Record state transitions as an append-only history for cost accounting and post-mortems. |
+| FR-STATE-04 | M | `live` | Tag every provider-side resource with a LARRI marker so orphans are attributable to LARRI and distinguishable from the operator's manually created instances. |
+| FR-STATE-05 | M | `live` | Never persist API keys, SSH private keys, or Hugging Face tokens in state files. |
 
 ### 7.9 Surfaces (FR-UI)
 
 All four surfaces are clients of one daemon API. No lifecycle logic lives in a surface.
 
-| ID | Pri | Requirement |
-|---|---|---|
-| FR-UI-01 | M | **CLI** — `up`, `down`, `status`, `logs`, `offers`, `orphans`, `daemon`. Scriptable, with machine-readable `--json` output. |
-| FR-UI-02 | M | **Daemon** — a long-lived local process owning all state and supervision, exposing an API over a loopback socket. |
-| FR-UI-03 | M | **MCP server** — expose the lifecycle as tools so Claude Code and other agents can drive it. Consequential operations (create, destroy) must be explicitly confirmable and must report cost implications in their results. |
-| FR-UI-04 | S | **TUI** — live dashboard: candidate offers, provisioning progress, health, throughput, accrued cost. |
-| FR-UI-05 | S | **Web chat pane** — a local browser front-end that talks to the stable local `/v1` as an ordinary client. Minimal as a chat client; its purpose is FR-UI-09, not message rendering. Wiring full-featured clients (FR-WIRE) remains the higher-value path for chat itself. |
-| FR-UI-06 | M | Every surface reflects the same state within one health-check interval; no surface may hold private lifecycle state. |
-| FR-UI-07 | S | **Web console pane** — live KPIs and graphs for a running rig: accrued and projected cost, GPU utilisation, VRAM used against the sizing plan's requirement, host CPU/RAM/disk/network, and inference throughput and latency. Consumes the daemon API, not `/v1`. |
-| FR-UI-08 | M | The browser-facing listener binds loopback only, requires a per-invocation session token on every daemon-API request, and validates `Origin` and `Host`. Serving a browser surface must not weaken the access control the unix socket provided. |
-| FR-UI-09 | S | **Chat-driven control** — the chat pane advertises LARRI's tools to the served model and executes the calls it emits, so the operator can inspect and debug the rig by talking to it. |
-| FR-UI-10 | M | Expose LARRI's operations through **one canonical tool registry**, adapted per driver: MCP for external agents (Claude Code and similar), OpenAI `tools[]` for the served model. One definition, never two — a tool must not mean different things to different drivers. |
-| FR-UI-11 | M | The chat pane advertises only tools that cannot spend, destroy, or rewire. Consequential tools are excluded by default; where enabled, each call requires explicit operator confirmation stating the operation and its cost implication, and auto-execution is never permitted. |
-| FR-UI-12 | M | Bound the chat pane's tool loop: maximum call depth per turn and maximum result size. A model emitting tool calls without terminating must exhaust a budget, not the daemon. |
-| FR-UI-13 | S | When no rig is serving, the chat pane states that plainly. The console pane and the MCP surface must remain fully functional, since they do not depend on the rig. |
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-UI-01 | M | `part` | **CLI** — `up`, `down`, `status`, `logs`, `offers`, `orphans`, `daemon`. Scriptable, with machine-readable `--json` output. |
+| FR-UI-02 | M | `plan` | **Daemon** — a long-lived local process owning all state and supervision, exposing an API over a loopback socket. |
+| FR-UI-03 | M | `live` | **MCP server** — expose the lifecycle as tools so Claude Code and other agents can drive it. Consequential operations (create, destroy) must be explicitly confirmable and must report cost implications in their results. |
+| FR-UI-04 | S | `done` | **TUI** — live dashboard: candidate offers, provisioning progress, health, throughput, accrued cost. |
+| FR-UI-05 | S | `plan` | **Web chat pane** — a local browser front-end that talks to the stable local `/v1` as an ordinary client. Minimal as a chat client; its purpose is FR-UI-09, not message rendering. Wiring full-featured clients (FR-WIRE) remains the higher-value path for chat itself. |
+| FR-UI-06 | M | `part` | Every surface reflects the same state within one health-check interval; no surface may hold private lifecycle state. |
+| FR-UI-07 | S | `plan` | **Web console pane** — live KPIs and graphs for a running rig: accrued and projected cost, GPU utilisation, VRAM used against the sizing plan's requirement, host CPU/RAM/disk/network, and inference throughput and latency. Consumes the daemon API, not `/v1`. |
+| FR-UI-08 | M | `plan` | The browser-facing listener binds loopback only, requires a per-invocation session token on every daemon-API request, and validates `Origin` and `Host`. Serving a browser surface must not weaken the access control the unix socket provided. |
+| FR-UI-09 | S | `plan` | **Chat-driven control** — the chat pane advertises LARRI's tools to the served model and executes the calls it emits, so the operator can inspect and debug the rig by talking to it. |
+| FR-UI-10 | M | `done` | Expose LARRI's operations through **one canonical tool registry**, adapted per driver: MCP for external agents (Claude Code and similar), OpenAI `tools[]` for the served model. One definition, never two — a tool must not mean different things to different drivers. |
+| FR-UI-11 | M | `part` | The chat pane advertises only tools that cannot spend, destroy, or rewire. Consequential tools are excluded by default; where enabled, each call requires explicit operator confirmation stating the operation and its cost implication, and auto-execution is never permitted. |
+| FR-UI-12 | M | `plan` | Bound the chat pane's tool loop: maximum call depth per turn and maximum result size. A model emitting tool calls without terminating must exhaust a budget, not the daemon. |
+| FR-UI-13 | S | `plan` | When no rig is serving, the chat pane states that plainly. The console pane and the MCP surface must remain fully functional, since they do not depend on the rig. |
 
 ### 7.10 Secrets and Security (FR-SEC)
 
-| ID | Pri | Requirement |
-|---|---|---|
-| FR-SEC-01 | M | Read provider API keys from environment or OS keyring. Never from the repository, never written to state. |
-| FR-SEC-02 | M | Redact secrets in all logs, TUI output, MCP tool results, and error messages. |
-| FR-SEC-03 | M | Default the local endpoint to loopback-only binding. |
-| FR-SEC-04 | M | Verify the SSH host key on first connect and pin it for the rig's lifetime, in a LARRI-owned `known_hosts` separate from the operator's. Never emit `StrictHostKeyChecking=no` or `UserKnownHostsFile=/dev/null`. A host key that changes mid-rig is treated as compromise, not inconvenience: do not reconnect, mark the rig `DEGRADED`, and tell the operator. |
-| FR-SEC-05 | M | Treat the rented host as untrusted: it is a third party's hardware. Send only what the workload requires, and document that inference traffic leaves the local machine. |
-| FR-SEC-06 | M | Redact and minimise tool results before returning them to the served model. A tool result is appended to the conversation and posted to the untrusted host on the next turn; `larri_logs` output in particular may echo a token that must not travel back to the host it was withheld from. |
-| FR-SEC-07 | M | Treat tool calls originating from the served model as untrusted input. A compromised host, an injected instruction in pasted content, and an ordinary hallucination are indistinguishable on the wire, and all three are handled by FR-UI-11 rather than by attempting to tell them apart. |
-| FR-SEC-08 | M | Bind the runtime to loopback **on the rented host**, never to all interfaces, and run it with its own API key. The bind address is computed by the runtime implementation and is **not configurable**: no flag, no config key, and a non-loopback value is rejected at launch rather than warned about. An inference server on a routable port is unauthenticated access to hardware the operator is paying for — on shared-IP providers, on an address other tenants also answer on. |
-| FR-SEC-09 | M | Require an API key on the local `/v1` listener and validate the `Host` header. Loopback is not a per-user boundary, and a page in the operator's browser can issue requests at loopback ports — for LARRI, a request that fires is a request that spends. |
-| FR-SEC-10 | M | Verify TLS certificates on every provider API call, with no option to disable. Send API keys in headers, never in query strings. |
-| FR-SEC-11 | M | Keep the daemon socket at `0600` inside a `0700` directory and refuse to start on wider permissions rather than silently correcting them. |
-| FR-SEC-12 | S | Default provider direct port-mapping to off. It is plaintext on a routable port; where an operator enables it deliberately, record the choice and treat the runtime API key as load-bearing rather than defence in depth. |
-| FR-SEC-13 | S | Scope credentials sent to a rented host to least privilege — read-only, repository-scoped, short-lived Hugging Face tokens, never reused across rigs. Provider API keys must never reach a host at all. |
-| FR-SEC-14 | M | Rate-limit and cap concurrency on the local endpoint, and cap per-request token counts. For LARRI, denial of service is a financial attack; the endpoint's throughput ceiling is a spend ceiling. |
-| FR-SEC-15 | M | Request a provider port mapping for SSH only. A container port that was never mapped is unreachable regardless of what listens on it, which makes this the primary network control — provider-enforced, needing no privilege inside the instance and immune to a mistake in a bootstrap script. |
-| FR-SEC-16 | M | Carry all traffic to the rented host over SSH, spoken **in-process**. Agent forwarding, X11 forwarding, remote forwarding, and password authentication are not implemented rather than disabled by option, and the operator's `~/.ssh/config` is never read — a control that cannot be switched on cannot be switched on by someone else's configuration file. Bind the local forward before declaring readiness, so a failed forward cannot masquerade as a healthy tunnel. |
-| FR-SEC-17 | M | Authenticate to each rig with an **ephemeral keypair generated for that rig**, never the operator's long-lived identity. Discard it at teardown, so revocation is automatic and access cannot outlive the rig. |
-| FR-SEC-18 | M | Never make teardown depend on SSH. Destruction is a provider API call, so a host that has become unreachable — including by LARRI's own firewall rules — can still be destroyed, verified absent, and costed. |
-| FR-SEC-19 | M | Never declare a port that the provider would publish. On RunPod a declared HTTP port is automatically served through a public proxy protected only by Pod-ID obscurity; declaring the runtime port there would publish an inference endpoint to the internet. |
-| FR-SEC-20 | S | Prefer a provider-proxied SSH path that requires no public port at all, so a rig can run with zero port mappings. Determine empirically whether that path carries port forwarding and record the result, falling back to a mapped SSH port where it does not. |
-| FR-SEC-21 | M | Authenticate inference requests at **both** ends of the tunnel with distinct LARRI-generated credentials: a client token guarding the local listener and a rig token guarding the runtime. Neither is operator-supplied. The rig token is regenerated per rig and on every instance replacement; the client token is stable across rigs, because rotating it would rewrite every client config on every teardown and defeat the stable-endpoint guarantee. |
-| FR-SEC-22 | M | Strip the client's `Authorization` header at the proxy and substitute the rig's. A client credential must never reach a rented host, and a rig credential must never be visible to a client. Forwarding headers unchanged — the default behaviour of most reverse proxies — would send the token shared by every wired client to untrusted hardware. |
-| FR-SEC-23 | S | Issue a distinct token per wired client rather than one shared secret, so that a single client can be revoked without rewiring the others, a leaked config burns one credential, and inference cost can be attributed per client in the console. |
-| FR-SEC-24 | M | Never expose an inference credential to browser JavaScript. The chat pane's requests are authenticated server-side by the UI listener's proxy. |
-| FR-SEC-25 | M | Generate credentials as high-entropy random values, compare them in constant time, type them so redaction is structural, keep them out of the journal, and remove them from client configuration on revert. |
-| FR-SEC-26 | M | Write any file containing a credential with `0600` permissions and verify the result. Client configuration files are commonly world-readable by default, which on a shared machine discloses the token to every local account. |
-| FR-SEC-27 | M | Do not leave the web UI session token in the address bar. Exchange it for a cookie on first load and strip it from the URL, since URLs reach browser history and referrer headers. |
-| FR-SEC-28 | M | Open client configuration files with symlink-following disabled and verify the target before writing. A path LARRI writes on the operator's behalf must not be redirectable by anything that can create a symlink. |
-| FR-SEC-29 | M | Refuse model weight formats that execute code on load. Require `safetensors`; reject PyTorch pickle checkpoints. Pin the resolved repository commit so the artefact verified is the artefact loaded. |
-| FR-SEC-30 | S | Sign published runtime images and verify the signature before use. A content digest proves which image was pulled, not that the project produced it. |
-| FR-SEC-31 | M | Treat model output as untrusted **content**, not only as untrusted tool calls. Render it as a safe markdown subset, escaped by default and never as raw HTML; serve the UI under a strict Content-Security-Policy; and serve the chat pane and the console pane on **separate origins**, so script execution in the pane that renders untrusted content cannot reach the pane that holds control-plane access. |
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-SEC-01 | M | `part` | Read provider API keys from environment or OS keyring. Never from the repository, never written to state. |
+| FR-SEC-02 | M | `done` | Redact secrets in all logs, TUI output, MCP tool results, and error messages. |
+| FR-SEC-03 | M | `live` | Default the local endpoint to loopback-only binding. |
+| FR-SEC-04 | M | `live` | Verify the SSH host key on first connect and pin it for the rig's lifetime, in a LARRI-owned `known_hosts` separate from the operator's. Never emit `StrictHostKeyChecking=no` or `UserKnownHostsFile=/dev/null`. A host key that changes mid-rig is treated as compromise, not inconvenience: do not reconnect, mark the rig `DEGRADED`, and tell the operator. |
+| FR-SEC-05 | M | `live` | Treat the rented host as untrusted: it is a third party's hardware. Send only what the workload requires, and document that inference traffic leaves the local machine. |
+| FR-SEC-06 | M | `plan` | Redact and minimise tool results before returning them to the served model. A tool result is appended to the conversation and posted to the untrusted host on the next turn; `larri_logs` output in particular may echo a token that must not travel back to the host it was withheld from. |
+| FR-SEC-07 | M | `plan` | Treat tool calls originating from the served model as untrusted input. A compromised host, an injected instruction in pasted content, and an ordinary hallucination are indistinguishable on the wire, and all three are handled by FR-UI-11 rather than by attempting to tell them apart. |
+| FR-SEC-08 | M | `live` | Bind the runtime to loopback **on the rented host**, never to all interfaces, and run it with its own API key. The bind address is computed by the runtime implementation and is **not configurable**: no flag, no config key, and a non-loopback value is rejected at launch rather than warned about. An inference server on a routable port is unauthenticated access to hardware the operator is paying for — on shared-IP providers, on an address other tenants also answer on. |
+| FR-SEC-09 | M | `live` | Require an API key on the local `/v1` listener and validate the `Host` header. Loopback is not a per-user boundary, and a page in the operator's browser can issue requests at loopback ports — for LARRI, a request that fires is a request that spends. |
+| FR-SEC-10 | M | `done` | Verify TLS certificates on every provider API call, with no option to disable. Send API keys in headers, never in query strings. |
+| FR-SEC-11 | M | `plan` | Keep the daemon socket at `0600` inside a `0700` directory and refuse to start on wider permissions rather than silently correcting them. |
+| FR-SEC-12 | S | `done` | Default provider direct port-mapping to off. It is plaintext on a routable port; where an operator enables it deliberately, record the choice and treat the runtime API key as load-bearing rather than defence in depth. |
+| FR-SEC-13 | S | `part` | Scope credentials sent to a rented host to least privilege — read-only, repository-scoped, short-lived Hugging Face tokens, never reused across rigs. Provider API keys must never reach a host at all. |
+| FR-SEC-14 | M | `plan` | Rate-limit and cap concurrency on the local endpoint, and cap per-request token counts. For LARRI, denial of service is a financial attack; the endpoint's throughput ceiling is a spend ceiling. |
+| FR-SEC-15 | M | `done` | Request a provider port mapping for SSH only. A container port that was never mapped is unreachable regardless of what listens on it, which makes this the primary network control — provider-enforced, needing no privilege inside the instance and immune to a mistake in a bootstrap script. |
+| FR-SEC-16 | M | `live` | Carry all traffic to the rented host over SSH, spoken **in-process**. Agent forwarding, X11 forwarding, remote forwarding, and password authentication are not implemented rather than disabled by option, and the operator's `~/.ssh/config` is never read — a control that cannot be switched on cannot be switched on by someone else's configuration file. Bind the local forward before declaring readiness, so a failed forward cannot masquerade as a healthy tunnel. |
+| FR-SEC-17 | M | `live` | Authenticate to each rig with an **ephemeral keypair generated for that rig**, never the operator's long-lived identity. Discard it at teardown, so revocation is automatic and access cannot outlive the rig. |
+| FR-SEC-18 | M | `live` | Never make teardown depend on SSH. Destruction is a provider API call, so a host that has become unreachable — including by LARRI's own firewall rules — can still be destroyed, verified absent, and costed. |
+| FR-SEC-19 | M | `done` | Never declare a port that the provider would publish. On RunPod a declared HTTP port is automatically served through a public proxy protected only by Pod-ID obscurity; declaring the runtime port there would publish an inference endpoint to the internet. |
+| FR-SEC-20 | S | `live` | Prefer a provider-proxied SSH path that requires no public port at all, so a rig can run with zero port mappings. Determine empirically whether that path carries port forwarding and record the result, falling back to a mapped SSH port where it does not. |
+| FR-SEC-21 | M | `live` | Authenticate inference requests at **both** ends of the tunnel with distinct LARRI-generated credentials: a client token guarding the local listener and a rig token guarding the runtime. Neither is operator-supplied. The rig token is regenerated per rig and on every instance replacement; the client token is stable across rigs, because rotating it would rewrite every client config on every teardown and defeat the stable-endpoint guarantee. |
+| FR-SEC-22 | M | `live` | Strip the client's `Authorization` header at the proxy and substitute the rig's. A client credential must never reach a rented host, and a rig credential must never be visible to a client. Forwarding headers unchanged — the default behaviour of most reverse proxies — would send the token shared by every wired client to untrusted hardware. |
+| FR-SEC-23 | S | `done` | Issue a distinct token per wired client rather than one shared secret, so that a single client can be revoked without rewiring the others, a leaked config burns one credential, and inference cost can be attributed per client in the console. |
+| FR-SEC-24 | M | `plan` | Never expose an inference credential to browser JavaScript. The chat pane's requests are authenticated server-side by the UI listener's proxy. |
+| FR-SEC-25 | M | `done` | Generate credentials as high-entropy random values, compare them in constant time, type them so redaction is structural, keep them out of the journal, and remove them from client configuration on revert. |
+| FR-SEC-26 | M | `done` | Write any file containing a credential with `0600` permissions and verify the result. Client configuration files are commonly world-readable by default, which on a shared machine discloses the token to every local account. |
+| FR-SEC-27 | M | `plan` | Do not leave the web UI session token in the address bar. Exchange it for a cookie on first load and strip it from the URL, since URLs reach browser history and referrer headers. |
+| FR-SEC-28 | M | `plan` | Open client configuration files with symlink-following disabled and verify the target before writing. A path LARRI writes on the operator's behalf must not be redirectable by anything that can create a symlink. |
+| FR-SEC-29 | M | `done` | Refuse model weight formats that execute code on load. Require `safetensors`; reject PyTorch pickle checkpoints. Pin the resolved repository commit so the artefact verified is the artefact loaded. |
+| FR-SEC-30 | S | `plan` | Sign published runtime images and verify the signature before use. A content digest proves which image was pulled, not that the project produced it. |
+| FR-SEC-31 | M | `plan` | Treat model output as untrusted **content**, not only as untrusted tool calls. Render it as a safe markdown subset, escaped by default and never as raw HTML; serve the UI under a strict Content-Security-Policy; and serve the chat pane and the console pane on **separate origins**, so script execution in the pane that renders untrusted content cannot reach the pane that holds control-plane access. |
 
 ### 7.11 Configuration (FR-CFG)
 
-| ID | Pri | Requirement |
-|---|---|---|
-| FR-CFG-01 | M | Operate fully with no configuration file. Values resolve flags → named profile → config file → built-in defaults, and every layer is optional. Configuration is an optimisation over defaults, never a prerequisite (FR-CRIT-04). |
-| FR-CFG-02 | M | **Never block on interactive input unless interactivity has been detected.** Prompt only when stdin and stderr are both terminals, no non-interactive flag or environment variable is set, and the process is not the daemon, the MCP server, or a machine-readable invocation. `larri_up` is an MCP tool, so a prompt on that path is a hang an agent cannot answer. |
-| FR-CFG-03 | M | Print the destructive defaults — idle reclamation and budget action — on any run that creates a configuration, **whether or not the run is interactive**. A default that destroys and was never mentioned is a trap regardless of how well it is reasoned. |
-| FR-CFG-04 | M | Create configuration in core, not in a surface. A surface may drive configuration creation; it may not own it (P5). |
-| FR-CFG-05 | S | Report what was assumed whenever defaults were used in place of configuration, so a non-interactive run is auditable after the fact. |
-| FR-CFG-06 | S | Allow the TUI to explore offers and save the criteria converged upon as a named profile, via the daemon API rather than by writing configuration directly. |
-| FR-CFG-07 | M | Validate resolvable provider credentials at configuration time without spending. A key that cannot authenticate must surface before it is needed, not during provisioning. |
-| FR-CFG-08 | M | Disclose every **spending or destructive** setting that came from a file rather than a flag, on each run that uses it. FR-CFG-03 covers creation; this covers use, because both directions of a stale limit are harmful: a low ceiling fails as "no offer satisfies the criteria" — which reads as a market problem — and a high one silently removes a guard the operator believes is active. |
-| FR-CFG-09 | M | Create configuration **without prompting**. First run may write a defaults file and must say that it did; it must never open a form. A surface that blocked here would hang every non-interactive caller, and the MCP server worst of all, where a terminal prompt yields a protocol stream that never speaks again. |
-| FR-CFG-10 | S | Offer criteria editing in its own command rather than on the spending path. `larri up` must not interview an operator who asked to rent hardware, and an interrupted form must not leave them wondering what was written. |
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-CFG-01 | M | `done` | Operate fully with no configuration file. Values resolve flags → named profile → config file → built-in defaults, and every layer is optional. Configuration is an optimisation over defaults, never a prerequisite (FR-CRIT-04). |
+| FR-CFG-02 | M | `done` | **Never block on interactive input unless interactivity has been detected.** Prompt only when stdin and stderr are both terminals, no non-interactive flag or environment variable is set, and the process is not the daemon, the MCP server, or a machine-readable invocation. `larri_up` is an MCP tool, so a prompt on that path is a hang an agent cannot answer. |
+| FR-CFG-03 | M | `done` | Print the destructive defaults — idle reclamation and budget action — on any run that creates a configuration, **whether or not the run is interactive**. A default that destroys and was never mentioned is a trap regardless of how well it is reasoned. |
+| FR-CFG-04 | M | `done` | Create configuration in core, not in a surface. A surface may drive configuration creation; it may not own it (P5). |
+| FR-CFG-05 | S | `part` | Report what was assumed whenever defaults were used in place of configuration, so a non-interactive run is auditable after the fact. |
+| FR-CFG-06 | S | `done` | Allow the TUI to explore offers and save the criteria converged upon as a named profile, via the daemon API rather than by writing configuration directly. |
+| FR-CFG-07 | M | `plan` | Validate resolvable provider credentials at configuration time without spending. A key that cannot authenticate must surface before it is needed, not during provisioning. |
+| FR-CFG-08 | M | `done` | Disclose every **spending or destructive** setting that came from a file rather than a flag, on each run that uses it. FR-CFG-03 covers creation; this covers use, because both directions of a stale limit are harmful: a low ceiling fails as "no offer satisfies the criteria" — which reads as a market problem — and a high one silently removes a guard the operator believes is active. |
+| FR-CFG-09 | M | `done` | Create configuration **without prompting**. First run may write a defaults file and must say that it did; it must never open a form. A surface that blocked here would hang every non-interactive caller, and the MCP server worst of all, where a terminal prompt yields a protocol stream that never speaks again. |
+| FR-CFG-10 | S | `done` | Offer criteria editing in its own command rather than on the spending path. `larri up` must not interview an operator who asked to rent hardware, and an interrupted form must not leave them wondering what was written. |
 
 ### 7.12 Observability (FR-OBS)
 
-| ID | Pri | Requirement |
-|---|---|---|
-| FR-OBS-01 | M | Instrument the daemon with the OpenTelemetry API: traces for the rig lifecycle, metrics for cost, host, runtime, and proxy signals. |
-| FR-OBS-02 | M | Function fully with no telemetry backend configured. Export to OTLP or Prometheus is opt-in and off by default; with no SDK registered, instrumentation is a no-op. |
-| FR-OBS-03 | M | Telemetry collection, buffering, and export must never fail a rig, block readiness, delay a state transition, or influence a supervision decision. Collectors drop samples rather than apply backpressure. |
-| FR-OBS-04 | M | Cost, state transitions, and the audit trail derive from the journal, never from telemetry. Telemetry is sampled and optional; the journal is neither. |
-| FR-OBS-05 | M | Never emit prompt or completion content in any telemetry signal. No configuration option enables it. Token counts are permitted; token contents are not. |
-| FR-OBS-06 | M | Attribute every provisioning span below the create call with the cost accrued during it, so a trace shows where the money went. |
-| FR-OBS-07 | S | Collect GPU utilisation, VRAM, temperature, power, and host CPU/RAM/disk/network from the rented host without requiring anything a stock CUDA image does not already provide. |
-| FR-OBS-08 | S | Collect inference throughput, latency, queue depth, and KV-cache utilisation for every runtime, including runtimes that expose no metrics endpoint of their own. |
-| FR-OBS-09 | M | Redact secrets in span and metric attributes by the same structural mechanism used for logs (FR-SEC-02). |
-| FR-OBS-10 | M | Persist collected metrics across daemon restarts, downsampled as they age, retained in step with terminated-rig retention (FR-DEL-09) so a post-mortem shows both why a rig ended and the series leading up to it. Persistence is best-effort and subordinate (FR-OBS-03): a failed or corrupt write yields a truncated graph, never a startup failure or a state change. |
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-OBS-01 | M | `plan` | Instrument the daemon with the OpenTelemetry API: traces for the rig lifecycle, metrics for cost, host, runtime, and proxy signals. |
+| FR-OBS-02 | M | `plan` | Function fully with no telemetry backend configured. Export to OTLP or Prometheus is opt-in and off by default; with no SDK registered, instrumentation is a no-op. |
+| FR-OBS-03 | M | `plan` | Telemetry collection, buffering, and export must never fail a rig, block readiness, delay a state transition, or influence a supervision decision. Collectors drop samples rather than apply backpressure. |
+| FR-OBS-04 | M | `done` | Cost, state transitions, and the audit trail derive from the journal, never from telemetry. Telemetry is sampled and optional; the journal is neither. |
+| FR-OBS-05 | M | `plan` | Never emit prompt or completion content in any telemetry signal. No configuration option enables it. Token counts are permitted; token contents are not. |
+| FR-OBS-06 | M | `plan` | Attribute every provisioning span below the create call with the cost accrued during it, so a trace shows where the money went. |
+| FR-OBS-07 | S | `plan` | Collect GPU utilisation, VRAM, temperature, power, and host CPU/RAM/disk/network from the rented host without requiring anything a stock CUDA image does not already provide. |
+| FR-OBS-08 | S | `plan` | Collect inference throughput, latency, queue depth, and KV-cache utilisation for every runtime, including runtimes that expose no metrics endpoint of their own. |
+| FR-OBS-09 | M | `plan` | Redact secrets in span and metric attributes by the same structural mechanism used for logs (FR-SEC-02). |
+| FR-OBS-10 | M | `plan` | Persist collected metrics across daemon restarts, downsampled as they age, retained in step with terminated-rig retention (FR-DEL-09) so a post-mortem shows both why a rig ended and the series leading up to it. Persistence is best-effort and subordinate (FR-OBS-03): a failed or corrupt write yields a truncated graph, never a startup failure or a state change. |
 
 ---
 
 ## 8. Non-Functional Requirements
 
-| ID | Category | Requirement |
-|---|---|---|
-| NFR-01 | Cost safety | No code path may leave a billable resource unrecorded. This is the highest-priority non-functional property; when it conflicts with any other, it wins. |
-| NFR-02 | Reliability | Every provider call is idempotent or reconcilable. Retries must never risk double-provisioning. |
-| NFR-03 | Latency | Search across providers returns within 10 s. `larri status` returns within 200 ms from cached state. |
-| NFR-04 | Latency | `larri down` confirms destruction within 60 s under normal provider behaviour. |
-| NFR-05 | Truthfulness | Progress and readiness reporting reflects verified reality. `READY` implies a completion has round-tripped. |
-| NFR-06 | Portability | Single static Go binary. Linux and macOS. **No runtime dependencies at all** — SSH is spoken in-process rather than by driving an external client, so there is nothing to install and nothing to be missing. |
-| NFR-07 | Extensibility | A new provider or runtime is added by implementing one interface, with no changes to core, ranking, wiring, or state code. |
-| NFR-08 | Observability | Structured logs with a rig-scoped correlation ID; every provider request/response recorded at debug level with secrets redacted. OpenTelemetry traces and metrics cover the lifecycle, with export opt-in and the self-contained path requiring no external service. |
-| NFR-09 | Testability | The full lifecycle is exercisable against fakes with zero spend. No test issues a real create. |
-| NFR-10 | Licensing | GPL-3.0-or-later, copyright Sovrenix Inc. Every source file carries an SPDX short-form header. Dependencies must be GPL-3.0-compatible, audited before entering `go.mod`. |
-| NFR-11 | Usability | The failure message for the most common error (no offer fits the model) states the VRAM required, the VRAM found, and the cheapest offer that would fit. |
-| NFR-12 | Observability | The telemetry plane is subordinate to the control and data planes. No telemetry failure may affect provisioning, supervision, teardown, or cost accounting. |
+| ID | Category | Status | Requirement |
+|---|---|---|---|
+| NFR-01 | Cost safety | `live` | No code path may leave a billable resource unrecorded. This is the highest-priority non-functional property; when it conflicts with any other, it wins. |
+| NFR-02 | Reliability | `done` | Every provider call is idempotent or reconcilable. Retries must never risk double-provisioning. |
+| NFR-03 | Latency | `live` | Search across providers returns within 10 s. `larri status` returns within 200 ms from cached state. |
+| NFR-04 | Latency | `live` | `larri down` confirms destruction within 60 s under normal provider behaviour. |
+| NFR-05 | Truthfulness | `live` | Progress and readiness reporting reflects verified reality. `READY` implies a completion has round-tripped. |
+| NFR-06 | Portability | `done` | Single static Go binary. Linux and macOS. **No runtime dependencies at all** — SSH is spoken in-process rather than by driving an external client, so there is nothing to install and nothing to be missing. |
+| NFR-07 | Extensibility | `part` | A new provider or runtime is added by implementing one interface, with no changes to core, ranking, wiring, or state code. |
+| NFR-08 | Observability | `part` | Structured logs with a rig-scoped correlation ID; every provider request/response recorded at debug level with secrets redacted. OpenTelemetry traces and metrics cover the lifecycle, with export opt-in and the self-contained path requiring no external service. |
+| NFR-09 | Testability | `live` | The full lifecycle is exercisable against fakes with zero spend. No test issues a real create. |
+| NFR-10 | Licensing | `done` | GPL-3.0-or-later, copyright Sovrenix Inc. Every source file carries an SPDX short-form header. Dependencies must be GPL-3.0-compatible, audited before entering `go.mod`. |
+| NFR-11 | Usability | `live` | The failure message for the most common error (no offer fits the model) states the VRAM required, the VRAM found, and the cheapest offer that would fit. |
+| NFR-12 | Observability | `plan` | The telemetry plane is subordinate to the control and data planes. No telemetry failure may affect provisioning, supervision, teardown, or cost accounting. |
 
 ---
 
