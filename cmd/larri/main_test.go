@@ -4,12 +4,15 @@
 package main
 
 import (
+	"context"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"go.sovrenix.com/larri/internal/config"
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/rank"
 	"go.sovrenix.com/larri/internal/state"
@@ -178,5 +181,33 @@ func TestSpendingCommandsNeverOpenAForm(t *testing.T) {
 		if strings.Contains(string(src), "tui.NewEditor") {
 			t.Errorf("%s opens the criteria editor; editing belongs in `larri config`", f)
 		}
+	}
+}
+
+// `up` and `config` must agree on which profiles exist. They did not: `up
+// --profile codr` errored while `config --profile codr` silently created a
+// phantom, so a typo produced a profile that only revealed itself as missing
+// from the other command.
+func TestConfigRefusesAnUnknownProfileLikeUpDoes(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "config.yaml")
+	cfg := config.Default()
+	cfg.Profiles = map[string]config.Profile{"coder": {Model: "org/m"}}
+	if err := config.Save(file, cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LARRI_CONFIG", file)
+
+	err := cmdConfig(context.Background(), []string{"--profile", "codr"})
+	if err == nil {
+		t.Fatal("config accepted a profile name that does not exist")
+	}
+	if !strings.Contains(err.Error(), "--new") {
+		t.Errorf("the error should say how to create one: %v", err)
+	}
+
+	// And `up` must refuse the same name, for the same reason.
+	if _, rerr := config.Resolve(config.Request{Path: file, Profile: "codr"}); rerr == nil {
+		t.Error("resolution accepted the same unknown profile")
 	}
 }

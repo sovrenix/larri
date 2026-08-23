@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,7 +33,8 @@ import (
 // a prerequisite, and a wizard on the spending path contradicts that.
 func cmdConfig(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("config", flag.ExitOnError)
-	profile := fs.String("profile", config.DefaultProfile, "profile to edit")
+	profile := fs.String("profile", "", "edit one profile directly (default: list them all)")
+	create := fs.Bool("new", false, "create the named profile if it does not exist")
 	show := fs.Bool("show", false, "print the resolved configuration and exit")
 	path := fs.String("path", "", "configuration file (default: XDG location)")
 	_ = fs.Parse(args)
@@ -57,39 +59,109 @@ func cmdConfig(ctx context.Context, args []string) error {
 		return showConfig(file, cfg)
 	}
 
+	if cfg.Profiles == nil {
+		cfg.Profiles = map[string]config.Profile{}
+	}
+	// Checked before the terminal is, because a name that does not exist is a
+	// usage error either way — and finding out about a typo should not
+	// require a tty to find out in.
+	if *profile != "" {
+		if _, ok := cfg.Profiles[*profile]; !ok && !*create {
+			return fmt.Errorf("no profile %q in %s: pass --new to create it, "+
+				"or run 'larri config' to list what is there", *profile, file)
+		}
+	}
+
 	mode := config.DetectMode(config.Invocation{}, os.Getenv)
 	if !mode.Interactive() {
 		// FR-CFG-02. A form needs a terminal, and a surface that opened one
 		// anyway would hang whatever launched it with no output and no error.
 		return errors.New("editing needs a terminal; use --show, or edit " + file)
 	}
-
-	if cfg.Profiles == nil {
-		cfg.Profiles = map[string]config.Profile{}
-	}
-	ed := tui.NewEditor(*profile, cfg.Profiles[*profile])
-	ed.Preview = previewFunc(ctx)
-	ed.Save = func(p config.Profile) error {
-		if err := p.Validate(); err != nil {
-			return err
+	save := func(set map[string]config.Profile) error {
+		for name, p := range set {
+			if err := p.Validate(); err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
 		}
-		cfg.Profiles[*profile] = p
+		cfg.Profiles = set
 		return config.Save(file, cfg)
 	}
 
+	if *profile != "" {
+		return editOne(ctx, file, cfg, *profile, *create, save)
+	}
+	return pickAndEdit(ctx, file, cfg, save)
+}
+
+// editOne opens the editor on a named profile.
+//
+// A name that does not exist is refused unless --new. `larri up --profile
+// codr` already errors on an unknown name; a `config` that silently created
+// one instead would let a typo produce a phantom profile that only reveals
+// itself as "no profile" from the other command.
+func editOne(ctx context.Context, file string, cfg config.Config, name string,
+	create bool, save func(map[string]config.Profile) error) error {
+
+	if _, ok := cfg.Profiles[name]; !ok {
+		if !create {
+			return fmt.Errorf("no profile %q in %s: pass --new to create it, "+
+				"or run 'larri config' to list what is there", name, file)
+		}
+		cfg.Profiles[name] = config.Profile{}
+	}
+	ed := tui.NewEditor(name, cfg.Profiles[name])
+	ed.Preview = previewFunc(ctx)
+	ed.Save = func(p config.Profile) error {
+		set := cfg.Profiles
+		set[name] = p
+		return save(set)
+	}
 	final, err := tea.NewProgram(ed, tea.WithContext(ctx)).Run()
 	if err != nil && !errors.Is(err, tea.ErrProgramKilled) {
 		return err
 	}
 	if m, ok := final.(tui.Editor); ok {
 		if _, saved := m.Done(); saved {
-			fmt.Printf("\n  ✓ saved profile %q to %s\n", *profile, file)
+			fmt.Printf("\n  ✓ saved profile %q to %s\n", name, file)
 			fmt.Printf("    %s\n", m.Result().Summary())
-			fmt.Printf("\n  use it with: larri up --profile %s\n", *profile)
+			fmt.Printf("\n  use it with: larri up --profile %s\n", name)
 			return nil
 		}
 	}
 	fmt.Println("\n  nothing saved")
+	return nil
+}
+
+// pickAndEdit lists the profiles and edits whichever is chosen.
+func pickAndEdit(ctx context.Context, file string, cfg config.Config,
+	save func(map[string]config.Profile) error) error {
+
+	pk := tui.NewProfiles(cfg.Profiles)
+	pk.Preview = previewFunc(ctx)
+	pk.Save = save
+
+	final, err := tea.NewProgram(pk, tea.WithContext(ctx)).Run()
+	if err != nil && !errors.Is(err, tea.ErrProgramKilled) {
+		return err
+	}
+	m, ok := final.(tui.Profiles)
+	if !ok {
+		return nil
+	}
+	set := m.Result()
+	names := make([]string, 0, len(set))
+	for n := range set {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	fmt.Printf("\n  %s\n", file)
+	for _, n := range names {
+		fmt.Printf("    %-14s %s\n", n, set[n].Summary())
+	}
+	if len(names) == 0 {
+		fmt.Println("    (no profiles)")
+	}
 	return nil
 }
 
@@ -165,9 +237,20 @@ func showConfig(file string, cfg config.Config) error {
 		fmt.Println("  profiles    none")
 		return nil
 	}
+	// Sorted, because Go randomises map iteration and a listing that
+	// reordered itself between runs is one an operator cannot scan.
+	names := make([]string, 0, len(cfg.Profiles))
+	for name := range cfg.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	fmt.Println("  profiles")
-	for name, p := range cfg.Profiles {
-		fmt.Printf("    %-14s %s\n", name, p.Summary())
+	for _, name := range names {
+		marker := ""
+		if name == config.DefaultProfile {
+			marker = "  ← used by a bare `larri up`"
+		}
+		fmt.Printf("    %-14s %s%s\n", name, cfg.Profiles[name].Summary(), marker)
 	}
 	return nil
 }

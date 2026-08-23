@@ -157,3 +157,20 @@ var errWrite = errDiskFull{}
 type errDiskFull struct{}
 
 func (errDiskFull) Error() string { return "disk full" }
+
+// Opening a field shows what it currently holds, so a setting can be amended
+// rather than retyped from memory. Getting this wrong on a price ceiling —
+// clearing it, and the operator typing what they think is a change — would
+// silently replace a limit with a fragment of one.
+func TestOpeningAFieldPreFillsItsCurrentValue(t *testing.T) {
+	e := NewEditor("default", config.Profile{Model: "org/existing"})
+	e = sendE(e, tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(e.View(), "org/existing") {
+		t.Error("the field opened empty; an amendment would look like a replacement")
+	}
+	// Accepting without typing must be a no-op, not a wipe.
+	e = sendE(e, tea.KeyMsg{Type: tea.KeyEnter})
+	if e.Result().Model != "org/existing" {
+		t.Errorf("model = %q after opening and closing a field", e.Result().Model)
+	}
+}

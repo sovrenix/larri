@@ -1564,6 +1564,13 @@ market answers in a second, for free, through the same survey `larri offers` run
 number and watching the eligible offers change is the case where a terminal UI is genuinely
 better than flags, rather than merely prettier than them.
 
+**Profiles are chosen from a list, not remembered.** `larri config` opens the set; naming one
+with `--profile` goes straight to it. Reaching a profile only by typing its name is a poor
+interface for something you cannot see — and it hid a real inconsistency: `up --profile codr`
+refused an unknown name while `config --profile codr` silently created one, so a typo produced
+a phantom profile that announced itself only from the other command. Both now refuse, and
+creating is explicit (`--new`, or `n` in the list).
+
 **Two rules keep saved criteria from becoming a trap.**
 
 First, *a profile that applies is a profile that is shown.* FR-CRIT-05 originally forbade any

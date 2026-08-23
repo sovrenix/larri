@@ -159,8 +159,19 @@ A web console with graphs and a chat pane is designed (§14.4) but not built.
 
 ### Saved criteria
 
-`larri config` opens an editor over a named profile and previews what it would rent as you
-type. Nothing is spent — it is the same search `larri offers` runs.
+`larri config` lists your saved profiles; pick one to edit, `n` for a new one, `d` to delete.
+The editor previews what the current criteria would rent as you type — nothing is spent, it
+is the same search `larri offers` runs.
+
+```
+  ▸ big            meta-llama/Llama-3.1-70B · ≤$2.000/hr
+    coder          Qwen/Qwen3-Coder-30B · RTX 4090 · ≤$0.600/hr
+    default        Qwen/Qwen2.5-1.5B-Instruct · ≤$0.050/hr   ← used by a bare `larri up`
+```
+
+`larri config --profile coder` edits one directly, `--new` creates it, and `--show` prints
+them all without a terminal. A name that does not exist is refused rather than created, so a
+typo cannot become a phantom profile.
 
 ```
   ▸ max price $/hr  0.40
