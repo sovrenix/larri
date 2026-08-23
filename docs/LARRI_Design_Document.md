@@ -2643,6 +2643,41 @@ Two of these are worth naming as risks rather than as remaining work:
   baked into it, and none was visible until a second engine met real hardware. Which is the
   argument for RunPod, below, stated in the past tense.
 
+### 20.0.1 Versioning
+
+**0.9.0**, semantic, with the version written in `internal/buildinfo` and nowhere else. One
+place, because a version that appears in three files becomes three versions the first time
+someone bumps two of them — and this one is reported to MCP hosts, sent to providers as a
+`User-Agent`, and quoted in bug reports, so disagreement between them is disagreement about
+what a user is running.
+
+The build layers rather than overrides. The source carries a real release, so `go install`
+and `go run` report something true; the Makefile stamps commit and date, and a **release tag**
+overrides the version — but only a tag matching `v[0-9]*`, because `git describe` falls back
+to a bare commit hash when no tag exists and stamping that would replace a version with
+something that is not one. When no ldflags are present at all, commit and date come from Go's
+embedded VCS stamp, including whether the tree was dirty. A bug report quoting a clean commit
+that was not the code being run is worse than no commit at all.
+
+`make version-check` fails when a release tag disagrees with the source, and runs as part of
+`make check`. Without it, tagging `v1.0.0` against a tree that still says `0.9.0` produces a
+binary reporting the wrong release — and the tag is the thing people trust. No tag is not a
+failure; it is the normal state between releases.
+
+**Why 0.9 and not 1.0.** The lifecycle is proven against live hardware, repeatedly and at
+cost. What 1.0 would promise is stability across a surface that has not been tested where it
+matters most: the provider abstraction has exactly one implementation. Taking a second and
+third *runtime* live produced five bugs no unit test could have found — three deadlines
+measuring elapsed time instead of silence, a daemon reading one engine's log path whatever
+was running, and a selection heuristic that misrouted a reference once its real quantisation
+was known (§12.2.1.1). Every one was a vLLM-shaped assumption in code that looked generic.
+There is no reason to expect `Provider` to be different, and a major version claiming
+otherwise before RunPod exists would be a claim nobody has checked.
+
+Pre-1.0 is stated rather than implied: `larri version` prints that the command line and
+config format may still change, because anyone wiring tools against them is relying on being
+told.
+
 ### 20.1 Why M1 Is Large
 
 M1 looks heavier than "one provider, one runtime" implies, and the reason is that **cost

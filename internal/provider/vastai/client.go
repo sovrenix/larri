@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"go.sovrenix.com/larri/internal/buildinfo"
 	"go.sovrenix.com/larri/internal/errs"
 	"go.sovrenix.com/larri/internal/secret"
 )
@@ -105,6 +106,10 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	// every intermediary's access log would capture it.
 	req.Header.Set("Authorization", "Bearer "+c.Key.Reveal())
 	req.Header.Set("Accept", "application/json")
+	// Providers log this, and a version in their log is what turns "some
+	// client is hammering the offers endpoint" into a specific release with a
+	// specific bug — including for them, when they need to tell us.
+	req.Header.Set("User-Agent", buildinfo.UserAgent())
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

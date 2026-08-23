@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"go.sovrenix.com/larri/internal/buildinfo"
 	"go.sovrenix.com/larri/internal/secret"
 )
 
@@ -157,6 +158,9 @@ func (h *HFResolver) get(ctx context.Context, path string) ([]byte, error) {
 		base = HFEndpoint
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+	if err == nil {
+		req.Header.Set("User-Agent", buildinfo.UserAgent())
+	}
 	if err != nil {
 		return nil, err
 	}

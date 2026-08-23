@@ -11,6 +11,7 @@ import (
 	"os"
 	"time"
 
+	"go.sovrenix.com/larri/internal/buildinfo"
 	"go.sovrenix.com/larri/internal/config"
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
@@ -68,7 +69,7 @@ func cmdMCP(ctx context.Context, args []string) error {
 		return err
 	}
 
-	srv := &mcpsrv.Server{Registry: reg, Name: "larri", Version: version}
+	srv := &mcpsrv.Server{Registry: reg, Name: "larri", Version: buildinfo.Version()}
 	fmt.Fprintf(os.Stderr, "larri mcp: %d tools on stdio\n", len(reg.All()))
 	return srv.Serve(ctx, os.Stdin, os.Stdout)
 }

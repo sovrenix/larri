@@ -25,6 +25,7 @@
 *Rent a GPU. Serve a model. Stop paying. Two commands.*
 
 [![Licence: GPL v3](https://img.shields.io/badge/Licence-GPLv3-blue.svg)](LICENSE)
+[![Version 0.9.0](https://img.shields.io/badge/version-0.9.0-blue.svg)](#status)
 [![Status: alpha](https://img.shields.io/badge/Status-alpha-yellow.svg)](#status)
 [![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8.svg)](https://go.dev)
 
@@ -70,6 +71,19 @@ model — including the parts that are still specification.
 
 Treat it as alpha in the way that matters: **it spends money.** Run `larri orphans` if a
 session ever ends in a way you did not expect.
+
+### Versioning
+
+**0.9.0.** Semantic versioning, and the leading zero is doing work: the lifecycle is proven,
+but the command line and the config format may still move, so pin a version if you script
+against them. `larri version` says so out loud rather than leaving stability to be assumed.
+
+What 1.0 waits on is not polish. It is **a second provider** — one adapter is not an
+abstraction, it is an interface shaped like the thing behind it, and whatever RunPod turns
+out to need will change the interface rather than merely add to it. Taking a second and third
+*runtime* live produced five bugs no unit test could have found, every one a vLLM-shaped
+assumption in supposedly generic code; there is no reason the provider layer is different.
+Client config writers and the web console are also outstanding (§20).
 
 ---
 

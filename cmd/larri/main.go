@@ -13,11 +13,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
+	"go.sovrenix.com/larri/internal/buildinfo"
 	"go.sovrenix.com/larri/internal/config"
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
@@ -27,12 +27,6 @@ import (
 	"go.sovrenix.com/larri/internal/runtime/vllm"
 	"go.sovrenix.com/larri/internal/secret"
 	"go.sovrenix.com/larri/internal/state"
-)
-
-var (
-	version = "dev"
-	commit  = "none"
-	date    = "unknown"
 )
 
 const usage = `larri — Local Agent for Remote Rigging of Inference
@@ -80,8 +74,13 @@ func main() {
 	case "status":
 		err = cmdStatus(ctx, os.Args[2:])
 	case "version", "--version", "-v":
-		fmt.Printf("larri %s (%s) built %s %s/%s with %s\n",
-			version, commit, date, runtime.GOOS, runtime.GOARCH, runtime.Version())
+		fmt.Println(buildinfo.String())
+		if buildinfo.Prerelease() {
+			// Said rather than implied by omission: a pre-1.0 build is a
+			// statement that the interface may still move, and anyone wiring
+			// tools against it deserves to hear that from the tool.
+			fmt.Println("pre-1.0: the command line and config format may still change")
+		}
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 	default:

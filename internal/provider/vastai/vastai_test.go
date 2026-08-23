@@ -422,3 +422,23 @@ func TestAttachSSHKeySendsTheKeyToTheInstanceRoute(t *testing.T) {
 		t.Errorf("body = %q", body)
 	}
 }
+
+// Providers log the User-Agent, and a version in their log is what turns "some
+// client is hammering the offers endpoint" into a specific release with a
+// specific bug — including for them, when they need to tell us.
+func TestRequestsIdentifyLarriAndItsVersion(t *testing.T) {
+	var ua string
+	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		ua = r.Header.Get("User-Agent")
+		_, _ = w.Write([]byte(`{"offers":[]}`))
+	})
+	if _, err := p.Search(context.Background(), core.Criteria{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(ua, "larri/") {
+		t.Errorf("User-Agent = %q; requests do not identify larri", ua)
+	}
+	if ua == "larri/" {
+		t.Error("User-Agent carries no version")
+	}
+}

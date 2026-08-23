@@ -1,0 +1,7 @@
+# Build output. `make build` writes here; nothing in it belongs in the repo.
+/bin/
+
+# Local coverage and profiling artefacts.
+*.out
+*.test
+*.prof
