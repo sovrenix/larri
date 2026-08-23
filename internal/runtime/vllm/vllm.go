@@ -11,7 +11,6 @@ package vllm
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strconv"
@@ -261,24 +260,7 @@ func isUnquantised(q string) bool {
 // catches — a server that accepts connections and never completes — is
 // exactly what an under-sized rig looks like.
 func (r *Runtime) Ready(ctx context.Context, ep runtime.Endpoint, spec core.ModelSpec) error {
-	body, err := json.Marshal(map[string]any{
-		"model":      ep.Model,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens": 1,
-	})
-	if err != nil {
-		return err
-	}
-	req := runtime.ChatRequest{Endpoint: ep, Body: body}
-	resp, err := req.Do(ctx)
-	if err != nil {
-		return errs.Newf(errs.ClassHostFailure, "vllm.Ready", "%v", err)
-	}
-	if len(resp.Choices) == 0 {
-		return errs.Newf(errs.ClassHostFailure, "vllm.Ready",
-			"completion returned no choices")
-	}
-	return nil
+	return runtime.PingReady(ctx, ep, "vllm")
 }
 
 // Logs streams the runtime log.
@@ -421,13 +403,7 @@ const aliveCmd = `pgrep -f '[v]llm serve' >/dev/null 2>&1 && { echo yes; exit 0;
 
 // Alive reports whether the server process is still running.
 func (r *Runtime) Alive(ctx context.Context, sess runtime.Session) (bool, error) {
-	out, err := sess.Run(ctx, aliveCmd)
-	if err != nil {
-		// An unreachable host is not a dead runtime. Saying "not alive" here
-		// would turn a dropped SSH connection into a teardown.
-		return false, errs.Newf(errs.ClassHostFailure, "vllm.Alive", "probe host: %v", err)
-	}
-	return strings.Contains(string(out), "yes"), nil
+	return runtime.ProcessAlive(ctx, sess, aliveCmd, "vllm")
 }
 
 var _ runtime.LivenessChecker = (*Runtime)(nil)

@@ -12,7 +12,6 @@ package ollama
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strconv"
@@ -174,23 +173,7 @@ func (r *Runtime) Launch(ctx context.Context, sess runtime.Session,
 }
 
 func (r *Runtime) Ready(ctx context.Context, ep runtime.Endpoint, spec core.ModelSpec) error {
-	body, err := json.Marshal(map[string]any{
-		"model":      ep.Model,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens": 1,
-	})
-	if err != nil {
-		return err
-	}
-	resp, err := runtime.ChatRequest{Endpoint: ep, Body: body}.Do(ctx)
-	if err != nil {
-		return errs.Newf(errs.ClassHostFailure, "ollama.Ready", "%v", err)
-	}
-	if len(resp.Choices) == 0 {
-		return errs.Newf(errs.ClassHostFailure, "ollama.Ready",
-			"completion returned no choices")
-	}
-	return nil
+	return runtime.PingReady(ctx, ep, "ollama")
 }
 
 func (r *Runtime) Logs(ctx context.Context, sess runtime.Session, tail int) (io.ReadCloser, error) {
@@ -205,11 +188,7 @@ func (r *Runtime) Stop(ctx context.Context, sess runtime.Session) error {
 const aliveCmd = `pgrep -f '[o]llama serve' >/dev/null 2>&1 && echo yes || echo no`
 
 func (r *Runtime) Alive(ctx context.Context, sess runtime.Session) (bool, error) {
-	out, err := sess.Run(ctx, aliveCmd)
-	if err != nil {
-		return false, errs.Newf(errs.ClassHostFailure, "ollama.Alive", "probe host: %v", err)
-	}
-	return strings.Contains(string(out), "yes"), nil
+	return runtime.ProcessAlive(ctx, sess, aliveCmd, "ollama")
 }
 
 const adoptCmd = `pid=$(pgrep -f '[o]llama serve' | head -1); ` +

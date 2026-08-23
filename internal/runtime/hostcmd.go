@@ -5,10 +5,13 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+
+	"go.sovrenix.com/larri/internal/errs"
 )
 
 // ShellQuote wraps a value for safe use in a remote shell command.
@@ -62,4 +65,49 @@ func ArgValue(argv []string, flag string) string {
 		}
 	}
 	return ""
+}
+
+// PingReady performs the readiness check every OpenAI-compatible runtime
+// performs: a real completion, round-tripped.
+//
+// Shared because all three engines had it byte-identical apart from the label
+// in the error. That is the wrong kind of duplication — not three
+// implementations of one idea, but one implementation written three times,
+// where a fix to the readiness contract would have to be made in three places
+// and could be made in two.
+//
+// The engine-specific part is only the name in the error, which is why that is
+// the only parameter.
+func PingReady(ctx context.Context, ep Endpoint, engine string) error {
+	body, err := json.Marshal(map[string]any{
+		"model":      ep.Model,
+		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		"max_tokens": 1,
+	})
+	if err != nil {
+		return err
+	}
+	resp, err := ChatRequest{Endpoint: ep, Body: body}.Do(ctx)
+	if err != nil {
+		return errs.Newf(errs.ClassHostFailure, engine+".Ready", "%v", err)
+	}
+	// NFR-05: READY means a completion came back, not that a port answered.
+	if len(resp.Choices) == 0 {
+		return errs.Newf(errs.ClassHostFailure, engine+".Ready",
+			"completion returned no choices")
+	}
+	return nil
+}
+
+// ProcessAlive reports whether a process matching cmd's pattern is running.
+//
+// cmd must print "yes" or "no" and must not match the shell that issues it —
+// a lesson this codebase has learned three times (see the bracket convention
+// in each runtime's aliveCmd).
+func ProcessAlive(ctx context.Context, sess Session, cmd, engine string) (bool, error) {
+	out, err := sess.Run(ctx, cmd)
+	if err != nil {
+		return false, errs.Newf(errs.ClassHostFailure, engine+".Alive", "probe host: %v", err)
+	}
+	return strings.Contains(string(out), "yes"), nil
 }
