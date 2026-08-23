@@ -5,26 +5,25 @@ package tui
 
 import (
 	"fmt"
+	"go.sovrenix.com/larri/internal/term"
 	"strings"
 	"time"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 var (
 	// Colours are chosen from the 256-colour cube and adapt to the terminal's
 	// background, because a dashboard that is unreadable on a light terminal
 	// is a dashboard that gets turned off.
-	dim   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "244", Dark: "240"})
-	label = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "245"})
-	value = lipgloss.NewStyle().Bold(true)
-	good  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "28", Dark: "78"})
-	warn  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "130", Dark: "214"})
-	bad   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "124", Dark: "203"})
+	dim   = term.NewStyle().Foreground(term.Adaptive("244", "240"))
+	label = term.NewStyle().Foreground(term.Adaptive("240", "245"))
+	value = term.NewStyle().Bold(true)
+	good  = term.NewStyle().Foreground(term.Adaptive("28", "78"))
+	warn  = term.NewStyle().Foreground(term.Adaptive("130", "214"))
+	bad   = term.NewStyle().Foreground(term.Adaptive("124", "203"))
 	// Money is styled as a warning throughout, on purpose: the number that
 	// matters here is the one that keeps growing.
-	money = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "130", Dark: "214"}).Bold(true)
-	title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "25", Dark: "39"})
+	money = term.NewStyle().Foreground(term.Adaptive("130", "214")).Bold(true)
+	title = term.NewStyle().Bold(true).Foreground(term.Adaptive("25", "39"))
 )
 
 func (m Model) View() string {

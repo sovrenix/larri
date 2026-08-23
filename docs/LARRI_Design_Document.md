@@ -1747,7 +1747,34 @@ is a cheap price for making it visible.
 
 ### 14.3 TUI
 
-Bubble Tea: offers table with score breakdown, provisioning progress with per-phase bytes,
+**Rendered by `internal/term`, not a framework.** The surfaces here used two calls from a
+styling library and a handful of types from an event-loop library, and those two brought
+**nineteen of the project's twenty-two modules** with them — from eight organisations, for 9%
+of the binary. For a tool whose central claim is that the rented machine is untrusted, that
+much unaudited supply-chain surface bought one optional screen. Replacing it left LARRI
+depending on `x/crypto`, `x/term` and `yaml.v3`, and nothing else.
+
+The replacement is ~530 lines: a render loop, key decoding, and SGR styling. It was cheap
+because the Model/Update/View shape was always LARRI's own — the surfaces and their tests
+were written against it and did not change. `x/term` was already a dependency and supplies
+the hard parts (`MakeRaw`, `Restore`, `GetSize`).
+
+What is deliberately absent is the reason the trade works: no mouse, no bracketed paste, no
+colour-profile negotiation, no cell-level diffing. None was used. Frame-level diffing —
+skipping the redraw when the view string is unchanged — removes nearly all the flicker for
+none of the complexity, because these surfaces tick once a second and mostly render the same
+thing.
+
+Two properties are load-bearing and tested against a real pty rather than asserted: **the
+terminal is restored on every path out** — normal exit, error, panic, and signal — because a
+shell handed back in raw mode with no echo appears broken to the user with no obvious fix;
+and **an incomplete escape sequence waits for the rest**, because a read that ends mid-arrow-key
+would otherwise deliver a bare Escape, which in the editor closes the field being typed into.
+
+If the console pane of §14.4 lands and needs graphs, mouse support or colour negotiation,
+that is the moment to reconsider — not the moment to reimplement them here.
+
+Offers table with score breakdown, provisioning progress with per-phase bytes,
 live health, tokens/sec, elapsed time, accrued cost, and a destroy confirmation. Reads
 `/v1/events` and `/v1/metrics/stream`; holds no state of its own (P5).
 

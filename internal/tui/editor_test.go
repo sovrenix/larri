@@ -7,12 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"go.sovrenix.com/larri/internal/config"
+	"go.sovrenix.com/larri/internal/term"
 )
 
-func sendE(e Editor, msgs ...tea.Msg) Editor {
+func sendE(e Editor, msgs ...term.Msg) Editor {
 	for _, m := range msgs {
 		next, _ := e.Update(m)
 		e = next.(Editor)
@@ -20,18 +19,18 @@ func sendE(e Editor, msgs ...tea.Msg) Editor {
 	return e
 }
 
-func typeIn(s string) []tea.Msg {
-	out := []tea.Msg{tea.KeyMsg{Type: tea.KeyEnter}} // begin editing
+func typeIn(s string) []term.Msg {
+	out := []term.Msg{term.KeyMsg{Type: term.KeyEnter}} // begin editing
 	for _, r := range s {
-		out = append(out, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		out = append(out, term.KeyMsg{Type: term.KeyRunes, Runes: []rune{r}})
 	}
-	return append(out, tea.KeyMsg{Type: tea.KeyEnter}) // accept
+	return append(out, term.KeyMsg{Type: term.KeyEnter}) // accept
 }
 
-func down(n int) []tea.Msg {
-	var out []tea.Msg
+func down(n int) []term.Msg {
+	var out []term.Msg
 	for i := 0; i < n; i++ {
-		out = append(out, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+		out = append(out, term.KeyMsg{Type: term.KeyRunes, Runes: []rune{'j'}})
 	}
 	return out
 }
@@ -47,9 +46,9 @@ func TestEditingAFieldUpdatesTheProfile(t *testing.T) {
 // way out would change spending limits by accident.
 func TestEscapeAbandonsAnEdit(t *testing.T) {
 	e := NewEditor("default", config.Profile{Model: "original"})
-	e = sendE(e, tea.KeyMsg{Type: tea.KeyEnter})
-	e = sendE(e, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
-	e = sendE(e, tea.KeyMsg{Type: tea.KeyEsc})
+	e = sendE(e, term.KeyMsg{Type: term.KeyEnter})
+	e = sendE(e, term.KeyMsg{Type: term.KeyRunes, Runes: []rune{'x'}})
+	e = sendE(e, term.KeyMsg{Type: term.KeyEsc})
 	if e.Result().Model != "original" {
 		t.Errorf("model = %q; an abandoned edit was committed", e.Result().Model)
 	}
@@ -79,7 +78,7 @@ func TestSaveDelegatesToTheCaller(t *testing.T) {
 	e := NewEditor("default", config.Profile{Model: "org/m"})
 	e.Save = func(p config.Profile) error { got, called = p, true; return nil }
 
-	e = sendE(e, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	e = sendE(e, term.KeyMsg{Type: term.KeyRunes, Runes: []rune{'s'}})
 	if !called {
 		t.Fatal("save did not reach the caller")
 	}
@@ -98,7 +97,7 @@ func TestQuittingSavesNothing(t *testing.T) {
 	e := NewEditor("default", config.Profile{})
 	e.Save = func(config.Profile) error { called = true; return nil }
 
-	e = sendE(e, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	e = sendE(e, term.KeyMsg{Type: term.KeyRunes, Runes: []rune{'q'}})
 	if called {
 		t.Fatal("quitting wrote the profile")
 	}
@@ -112,7 +111,7 @@ func TestQuittingSavesNothing(t *testing.T) {
 func TestFailedSaveKeepsTheEditorOpen(t *testing.T) {
 	e := NewEditor("default", config.Profile{})
 	e.Save = func(config.Profile) error { return errWrite }
-	e = sendE(e, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	e = sendE(e, term.KeyMsg{Type: term.KeyRunes, Runes: []rune{'s'}})
 
 	if done, saved := e.Done(); done || saved {
 		t.Error("a failed write was reported as a save")
@@ -164,12 +163,12 @@ func (errDiskFull) Error() string { return "disk full" }
 // silently replace a limit with a fragment of one.
 func TestOpeningAFieldPreFillsItsCurrentValue(t *testing.T) {
 	e := NewEditor("default", config.Profile{Model: "org/existing"})
-	e = sendE(e, tea.KeyMsg{Type: tea.KeyEnter})
+	e = sendE(e, term.KeyMsg{Type: term.KeyEnter})
 	if !strings.Contains(e.View(), "org/existing") {
 		t.Error("the field opened empty; an amendment would look like a replacement")
 	}
 	// Accepting without typing must be a no-op, not a wipe.
-	e = sendE(e, tea.KeyMsg{Type: tea.KeyEnter})
+	e = sendE(e, term.KeyMsg{Type: term.KeyEnter})
 	if e.Result().Model != "org/existing" {
 		t.Errorf("model = %q after opening and closing a field", e.Result().Model)
 	}

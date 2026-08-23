@@ -7,12 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"go.sovrenix.com/larri/internal/config"
+	"go.sovrenix.com/larri/internal/term"
 )
 
-func sendP(p Profiles, msgs ...tea.Msg) Profiles {
+func sendP(p Profiles, msgs ...term.Msg) Profiles {
 	for _, m := range msgs {
 		next, _ := p.Update(m)
 		p = next.(Profiles)
@@ -20,18 +19,18 @@ func sendP(p Profiles, msgs ...tea.Msg) Profiles {
 	return p
 }
 
-func key(s string) tea.Msg {
+func key(s string) term.Msg {
 	switch s {
 	case "enter":
-		return tea.KeyMsg{Type: tea.KeyEnter}
+		return term.KeyMsg{Type: term.KeyEnter}
 	case "esc":
-		return tea.KeyMsg{Type: tea.KeyEsc}
+		return term.KeyMsg{Type: term.KeyEsc}
 	}
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+	return term.KeyMsg{Type: term.KeyRunes, Runes: []rune(s)}
 }
 
-func typeName(s string) []tea.Msg {
-	out := []tea.Msg{key("n")}
+func typeName(s string) []term.Msg {
+	out := []term.Msg{key("n")}
 	for _, r := range s {
 		out = append(out, key(string(r)))
 	}
@@ -184,13 +183,13 @@ func TestFailedWriteKeepsThePickerOpen(t *testing.T) {
 // The pre-fill is deliberate — opening a field shows what it currently holds
 // so it can be amended rather than retyped — so a test that only typed would
 // be appending.
-func replaceWith(s string) []tea.Msg {
-	out := []tea.Msg{tea.KeyMsg{Type: tea.KeyEnter}}
+func replaceWith(s string) []term.Msg {
+	out := []term.Msg{term.KeyMsg{Type: term.KeyEnter}}
 	for i := 0; i < 64; i++ {
-		out = append(out, tea.KeyMsg{Type: tea.KeyBackspace})
+		out = append(out, term.KeyMsg{Type: term.KeyBackspace})
 	}
 	for _, r := range s {
-		out = append(out, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		out = append(out, term.KeyMsg{Type: term.KeyRunes, Runes: []rune{r}})
 	}
-	return append(out, tea.KeyMsg{Type: tea.KeyEnter})
+	return append(out, term.KeyMsg{Type: term.KeyEnter})
 }

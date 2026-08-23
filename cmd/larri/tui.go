@@ -12,14 +12,13 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"go.sovrenix.com/larri/internal/config"
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
 	"go.sovrenix.com/larri/internal/notice"
 	"go.sovrenix.com/larri/internal/secret"
 	"go.sovrenix.com/larri/internal/state"
+	"go.sovrenix.com/larri/internal/term"
 )
 
 // cmdTUI brings a rig up under a dashboard.
@@ -103,7 +102,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	o.Policy.ReliabilityFloor = *minRel
 
 	m := newTUIModel()
-	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx))
+	prog := term.NewProgram(m, term.WithAltScreen(), term.WithContext(ctx))
 
 	// Events reach the screen rather than stdout, which the alternate screen
 	// owns for the duration.
@@ -126,7 +125,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	})
 
 	final, err := prog.Run()
-	if err != nil && !errors.Is(err, tea.ErrProgramKilled) {
+	if err != nil && !errors.Is(err, term.ErrNotATerminal) {
 		return err
 	}
 	// Reprint the outcome outside the alternate screen, so the cost survives
@@ -152,7 +151,7 @@ type rigRequest struct {
 }
 
 // runRig performs the lifecycle and reports it to the screen.
-func runRig(ctx context.Context, cancel context.CancelFunc, prog *tea.Program,
+func runRig(ctx context.Context, cancel context.CancelFunc, prog *term.Program,
 	o *daemon.Orchestrator, st *state.Store, cfg config.Config, req rigRequest) {
 
 	live, err := o.UpAndServe(ctx, daemon.UpRequest{

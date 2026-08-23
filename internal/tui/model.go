@@ -12,10 +12,9 @@ package tui
 import (
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
+	"go.sovrenix.com/larri/internal/term"
 )
 
 // Phase is where the rig is in its life, as far as the screen is concerned.
@@ -85,15 +84,15 @@ type Model struct {
 
 func New() Model { return Model{Started: time.Now(), width: 80} }
 
-func (m Model) Init() tea.Cmd { return tick() }
+func (m Model) Init() term.Cmd { return tick() }
 
-func tick() tea.Cmd {
-	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+func tick() term.Cmd {
+	return term.Tick(time.Second, func(t time.Time) term.Msg { return tickMsg(t) })
 }
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m Model) Update(msg term.Msg) (term.Model, term.Cmd) {
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
+	case term.SizeMsg:
 		m.width = msg.Width
 		return m, nil
 
@@ -125,15 +124,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.term = msg.Term
 		m.stats.Accrued = msg.Cost
 		m.err = msg.Err
-		return m, tea.Quit
+		return m, term.Quit
 
-	case tea.KeyMsg:
+	case term.KeyMsg:
 		return m.key(msg)
 	}
 	return m, nil
 }
 
-func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) key(msg term.KeyMsg) (term.Model, term.Cmd) {
 	if m.confirm {
 		switch msg.String() {
 		case "y", "Y":

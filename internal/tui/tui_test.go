@@ -8,13 +8,12 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
+	"go.sovrenix.com/larri/internal/term"
 )
 
-func send(m Model, msgs ...tea.Msg) Model {
+func send(m Model, msgs ...term.Msg) Model {
 	for _, msg := range msgs {
 		next, _ := m.Update(msg)
 		m = next.(Model)
@@ -42,7 +41,7 @@ func TestQuittingTearsDown(t *testing.T) {
 	m := servingModel()
 	m.Quit = func() { quit = true }
 
-	m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m = send(m, term.KeyMsg{Type: term.KeyRunes, Runes: []rune{'q'}})
 	if !quit {
 		t.Fatal("quitting left the rig billing")
 	}
@@ -58,19 +57,19 @@ func TestDestroyNeedsConfirmation(t *testing.T) {
 	m := servingModel()
 	m.Destroy = func() { destroyed = true }
 
-	m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	m = send(m, term.KeyMsg{Type: term.KeyRunes, Runes: []rune{'d'}})
 	if destroyed {
 		t.Fatal("one keypress destroyed a rig")
 	}
 	if !strings.Contains(m.View(), "destroy this rig?") {
 		t.Error("no confirmation was shown")
 	}
-	m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = send(m, term.KeyMsg{Type: term.KeyRunes, Runes: []rune{'n'}})
 	if destroyed {
 		t.Fatal("declining still destroyed the rig")
 	}
-	m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}},
-		tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = send(m, term.KeyMsg{Type: term.KeyRunes, Runes: []rune{'d'}},
+		term.KeyMsg{Type: term.KeyRunes, Runes: []rune{'y'}})
 	if !destroyed {
 		t.Error("confirming did not destroy")
 	}

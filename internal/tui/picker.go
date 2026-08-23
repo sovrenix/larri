@@ -8,9 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"go.sovrenix.com/larri/internal/config"
+	"go.sovrenix.com/larri/internal/term"
 )
 
 // Profiles lists the saved profiles and hands one to the editor.
@@ -39,7 +38,7 @@ type Profiles struct {
 	// Save persists the whole set, so deleting is as much a save as editing.
 	Save func(map[string]config.Profile) error
 	// Preview is handed to the editor.
-	Preview func(config.Profile) tea.Cmd
+	Preview func(config.Profile) term.Cmd
 }
 
 // NewProfiles builds a picker over a set of profiles.
@@ -81,9 +80,9 @@ func (p Profiles) Done() (bool, bool) { return p.done, p.dirty }
 // Result returns the profile set as it now stands.
 func (p Profiles) Result() map[string]config.Profile { return p.profiles }
 
-func (p Profiles) Init() tea.Cmd { return nil }
+func (p Profiles) Init() term.Cmd { return nil }
 
-func (p Profiles) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (p Profiles) Update(msg term.Msg) (term.Model, term.Cmd) {
 	// While the editor is open it owns the keyboard entirely. Sharing input
 	// between a list and a text field is how a keystroke meant for one ends
 	// up deleting something in the other.
@@ -91,10 +90,10 @@ func (p Profiles) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p.updateEditor(msg)
 	}
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
+	case term.SizeMsg:
 		p.width = msg.Width
 		return p, nil
-	case tea.KeyMsg:
+	case term.KeyMsg:
 		if p.naming {
 			return p.nameKey(msg)
 		}
@@ -106,7 +105,7 @@ func (p Profiles) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
-func (p Profiles) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (p Profiles) updateEditor(msg term.Msg) (term.Model, term.Cmd) {
 	next, cmd := p.editor.Update(msg)
 	ed := next.(Editor)
 	p.editor = &ed
@@ -126,7 +125,7 @@ func (p Profiles) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, cmd
 }
 
-func (p Profiles) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (p Profiles) listKey(msg term.KeyMsg) (term.Model, term.Cmd) {
 	switch msg.String() {
 	case "up", "k":
 		if p.cursor > 0 {
@@ -161,12 +160,12 @@ func (p Profiles) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		p.done = true
-		return p, tea.Quit
+		return p, term.Quit
 	}
 	return p, nil
 }
 
-func (p Profiles) edit(name string) (tea.Model, tea.Cmd) {
+func (p Profiles) edit(name string) (term.Model, term.Cmd) {
 	ed := NewEditor(name, p.profiles[name])
 	ed.Preview = p.Preview
 	// The editor saves into the picker's map rather than to disk: one writer
@@ -177,7 +176,7 @@ func (p Profiles) edit(name string) (tea.Model, tea.Cmd) {
 	return p, ed.Init()
 }
 
-func (p Profiles) nameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (p Profiles) nameKey(msg term.KeyMsg) (term.Model, term.Cmd) {
 	switch msg.String() {
 	case "enter":
 		name := strings.TrimSpace(p.buf)
@@ -212,7 +211,7 @@ func (p Profiles) nameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
-func (p Profiles) confirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (p Profiles) confirmKey(msg term.KeyMsg) (term.Model, term.Cmd) {
 	p.confirm = false
 	if msg.String() != "y" && msg.String() != "Y" {
 		return p, nil
@@ -225,7 +224,7 @@ func (p Profiles) confirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
-func (p Profiles) persist() (tea.Model, tea.Cmd) {
+func (p Profiles) persist() (term.Model, term.Cmd) {
 	if err := p.write(); err != nil {
 		p.status = "! " + err.Error()
 		return p, nil

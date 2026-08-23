@@ -8,9 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"go.sovrenix.com/larri/internal/config"
+	"go.sovrenix.com/larri/internal/term"
 )
 
 // Editor edits a criteria profile and previews what it would rent.
@@ -37,7 +36,7 @@ type Editor struct {
 	// Preview is asked to rank the market for the current profile. It costs a
 	// search and spends nothing, which is what makes editing worth doing here
 	// rather than by re-running a command with different flags.
-	Preview func(config.Profile) tea.Cmd
+	Preview func(config.Profile) term.Cmd
 	// Save persists the profile. Supplied by the caller so this model never
 	// writes configuration itself.
 	Save func(config.Profile) error
@@ -187,7 +186,7 @@ func profileFields() []field {
 	}
 }
 
-func (e Editor) Init() tea.Cmd { return e.refresh() }
+func (e Editor) Init() term.Cmd { return e.refresh() }
 
 // Done reports that the editor has finished, and whether anything was saved.
 func (e Editor) Done() (bool, bool) { return e.done, e.saved }
@@ -195,16 +194,16 @@ func (e Editor) Done() (bool, bool) { return e.done, e.saved }
 // Result returns the edited profile.
 func (e Editor) Result() config.Profile { return e.Profile }
 
-func (e Editor) refresh() tea.Cmd {
+func (e Editor) refresh() term.Cmd {
 	if e.Preview == nil || e.Profile.Model == "" {
 		return nil
 	}
 	return e.Preview(e.Profile)
 }
 
-func (e Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (e Editor) Update(msg term.Msg) (term.Model, term.Cmd) {
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
+	case term.SizeMsg:
 		e.width = msg.Width
 		return e, nil
 
@@ -217,7 +216,7 @@ func (e Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return e, nil
 
-	case tea.KeyMsg:
+	case term.KeyMsg:
 		if e.typing {
 			return e.editKey(msg)
 		}
@@ -226,7 +225,7 @@ func (e Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return e, nil
 }
 
-func (e Editor) editKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (e Editor) editKey(msg term.KeyMsg) (term.Model, term.Cmd) {
 	switch msg.String() {
 	case "enter":
 		f := e.fields[e.cursor]
@@ -248,14 +247,14 @@ func (e Editor) editKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		if len(msg.String()) == 1 {
 			e.buf += msg.String()
-		} else if msg.Type == tea.KeySpace {
+		} else if msg.Type == term.KeySpace {
 			e.buf += " "
 		}
 		return e, nil
 	}
 }
 
-func (e Editor) navKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (e Editor) navKey(msg term.KeyMsg) (term.Model, term.Cmd) {
 	switch msg.String() {
 	case "up", "k":
 		if e.cursor > 0 {
@@ -279,13 +278,13 @@ func (e Editor) navKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return e, nil
 		}
 		e.saved, e.done = true, true
-		return e, tea.Quit
+		return e, term.Quit
 	case "r":
 		e.loading = true
 		return e, e.refresh()
 	case "q", "esc", "ctrl+c":
 		e.done = true
-		return e, tea.Quit
+		return e, term.Quit
 	}
 	return e, nil
 }

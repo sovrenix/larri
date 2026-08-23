@@ -13,14 +13,13 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"go.sovrenix.com/larri/internal/config"
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
 	"go.sovrenix.com/larri/internal/provider/vastai"
 	"go.sovrenix.com/larri/internal/rank"
 	"go.sovrenix.com/larri/internal/secret"
+	"go.sovrenix.com/larri/internal/term"
 	"go.sovrenix.com/larri/internal/tui"
 )
 
@@ -117,8 +116,8 @@ func editOne(ctx context.Context, file string, cfg config.Config, name string,
 		set[name] = p
 		return save(set)
 	}
-	final, err := tea.NewProgram(ed, tea.WithContext(ctx)).Run()
-	if err != nil && !errors.Is(err, tea.ErrProgramKilled) {
+	final, err := term.NewProgram(ed, term.WithContext(ctx)).Run()
+	if err != nil && !errors.Is(err, term.ErrNotATerminal) {
 		return err
 	}
 	if m, ok := final.(tui.Editor); ok {
@@ -141,8 +140,8 @@ func pickAndEdit(ctx context.Context, file string, cfg config.Config,
 	pk.Preview = previewFunc(ctx)
 	pk.Save = save
 
-	final, err := tea.NewProgram(pk, tea.WithContext(ctx)).Run()
-	if err != nil && !errors.Is(err, tea.ErrProgramKilled) {
+	final, err := term.NewProgram(pk, term.WithContext(ctx)).Run()
+	if err != nil && !errors.Is(err, term.ErrNotATerminal) {
 		return err
 	}
 	m, ok := final.(tui.Profiles)
@@ -170,9 +169,9 @@ func pickAndEdit(ctx context.Context, file string, cfg config.Config,
 // It spends nothing — the same survey `larri offers` runs — which is what
 // makes editing here worth doing: the answer to "is that ceiling too low?"
 // arrives in a second rather than after a failed rental.
-func previewFunc(ctx context.Context) func(config.Profile) tea.Cmd {
-	return func(p config.Profile) tea.Cmd {
-		return func() tea.Msg {
+func previewFunc(ctx context.Context) func(config.Profile) term.Cmd {
+	return func(p config.Profile) term.Cmd {
+		return func() term.Msg {
 			key := os.Getenv("VASTAI_API_KEY")
 			if key == "" {
 				return tui.PreviewMsg{Err: errors.New("VASTAI_API_KEY is not set, so offers cannot be previewed")}

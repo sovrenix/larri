@@ -95,7 +95,7 @@ criteria → search offers across providers → rank → provision → bootstrap
 
 The provider is **Vast.ai** (RunPod is designed for but not built). Runtimes are **vLLM**,
 **llama.cpp**, and **Ollama**. The whole thing is a single static Go binary with no runtime
-dependencies.
+dependencies — and three build ones: `x/crypto`, `x/term`, `yaml.v3`.
 
 ### The problem
 

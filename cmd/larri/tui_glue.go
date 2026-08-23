@@ -7,11 +7,10 @@ import (
 	"context"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
 	"go.sovrenix.com/larri/internal/state"
+	"go.sovrenix.com/larri/internal/term"
 	"go.sovrenix.com/larri/internal/tui"
 )
 
@@ -21,9 +20,9 @@ type tuiModel struct{ tui.Model }
 
 func newTUIModel() tuiModel { return tuiModel{tui.New()} }
 
-func (m tuiModel) Init() tea.Cmd { return m.Model.Init() }
+func (m tuiModel) Init() term.Cmd { return m.Model.Init() }
 
-func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m tuiModel) Update(msg term.Msg) (term.Model, term.Cmd) {
 	inner, cmd := m.Model.Update(msg)
 	m.Model = inner.(tui.Model)
 	return m, cmd
@@ -35,17 +34,17 @@ func (m tuiModel) View() string { return m.Model.View() }
 // cost of a rig should not disappear with the screen that showed it.
 func (m tuiModel) Summary() string { return "\n" + m.Model.Done() }
 
-func tuiEvent(e daemon.Event) tea.Msg { return tui.EventMsg(e) }
-func tuiReady(r *core.Rig, ep, tok string) tea.Msg {
+func tuiEvent(e daemon.Event) term.Msg { return tui.EventMsg(e) }
+func tuiReady(r *core.Rig, ep, tok string) term.Msg {
 	return tui.ReadyMsg{Rig: r, Endpoint: ep, Token: tok}
 }
-func tuiDone(t *core.Termination, c core.CostSummary, err error) tea.Msg {
+func tuiDone(t *core.Termination, c core.CostSummary, err error) term.Msg {
 	return tui.DoneMsg{Term: t, Cost: c, Err: err}
 }
 
 // sampleInto feeds the dashboard from the journal and the proxy, never from
 // numbers the screen keeps for itself (P5).
-func sampleInto(ctx context.Context, prog *tea.Program, o *daemon.Orchestrator, live *daemon.Live) {
+func sampleInto(ctx context.Context, prog *term.Program, o *daemon.Orchestrator, live *daemon.Live) {
 	for {
 		select {
 		case <-ctx.Done():
