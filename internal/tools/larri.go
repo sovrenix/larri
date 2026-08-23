@@ -11,6 +11,7 @@ import (
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
+	"go.sovrenix.com/larri/internal/secret"
 	"go.sovrenix.com/larri/internal/state"
 )
 
@@ -27,9 +28,14 @@ type Deps struct {
 	// reported to the calling agent, not discovered as a nil dereference.
 	NewOrchestrator func(runtimeKind string) (*daemon.Orchestrator, error)
 
-	// Live returns the rig this process is serving, if any. MCP runs beside
-	// a session rather than inside it, so this is usually nil.
-	Live func() *daemon.Live
+	// Session is the rig this surface is holding, when it is long-running
+	// enough to hold one. An MCP server outlives its tool calls, so it can;
+	// a one-shot CLI invocation cannot, and leaves this nil.
+	Session *Session
+
+	// HFToken is the weight-download credential, handed to a bring-up at
+	// launch so it never reaches a snapshot or a journal entry (FR-STATE-05).
+	HFToken secret.Secret
 }
 
 // Register adds LARRI's operations to a registry.
@@ -47,7 +53,9 @@ func larriTools(d Deps) []Tool {
 		{
 			Name: "larri_status",
 			Description: "List LARRI rigs with state, hourly price, accrued cost, and why past rigs ended. " +
-				"Read-only; spends nothing.",
+				"Also reports the rig this server is bringing up or serving, including its progress and — " +
+				"once ready — the OpenAI-compatible endpoint and api key to send requests to. " +
+				"Poll this after larri_up. Read-only; spends nothing.",
 			Schema: Object(map[string]Property{
 				"all": {Type: "boolean", Description: "include terminated rigs"},
 			}),
@@ -79,8 +87,9 @@ func larriTools(d Deps) []Tool {
 			Handler: d.searchOffers,
 		},
 		{
-			Name:        "larri_logs",
-			Description: "Read the runtime log from the rig's host — the account of why a launch failed.",
+			Name: "larri_logs",
+			Description: "Read the runtime log from the rig this server is serving — the account of what a " +
+				"launch is doing, or why it failed. Only available once SSH is up.",
 			Schema: Object(map[string]Property{
 				"rig":  {Type: "string", Description: "rig id (default: the serving rig)"},
 				"tail": {Type: "integer", Description: "lines to return (default 100)"},
@@ -96,9 +105,11 @@ func larriTools(d Deps) []Tool {
 		},
 		{
 			Name: "larri_up",
-			Description: "Rent a GPU and serve a model on it. THIS SPENDS MONEY — it rents hardware billed by " +
-				"the second until destroyed. Call larri_search_offers first to see the price. Returns the " +
-				"hourly rate actually committed to.",
+			Description: "Rent a GPU and serve a model on it. THIS SPENDS MONEY — it rents hardware billed " +
+				"by the second from the moment an instance exists, until destroyed. Call larri_search_offers " +
+				"first to see the price. Returns immediately: bring-up takes minutes (image pull, weight " +
+				"download, model load), so poll larri_status until it reports READY and an endpoint. Stop it " +
+				"at any point with larri_down.",
 			Schema: Object(map[string]Property{
 				"model":        {Type: "string", Description: "model reference"},
 				"quantization": {Type: "string"},
@@ -168,7 +179,7 @@ func (d Deps) status(ctx context.Context, raw json.RawMessage) (any, error) {
 			"served":   r.Model.ServedName,
 			"runtime":  string(r.Runtime),
 			"gpu":      r.Offer.GPUModel,
-			"price_hr": r.Offer.PriceHr,
+			"price_hr": round4(r.Offer.PriceHr),
 			"billable": r.State.Billable(),
 		}
 		if r.Instance != nil {
@@ -189,7 +200,37 @@ func (d Deps) status(ctx context.Context, raw json.RawMessage) (any, error) {
 		}
 		out = append(out, row)
 	}
-	return map[string]any{"rigs": out, "count": len(out)}, nil
+	res := map[string]any{"rigs": out, "count": len(out)}
+
+	// The in-flight bring-up, which is the whole reason larri_up returns
+	// early. Without this the agent has started something that bills and has
+	// no way to ask what it is doing.
+	if d.Session != nil {
+		snap := d.Session.Snapshot()
+		if snap.Running || snap.Endpoint != "" || snap.Err != nil {
+			held := map[string]any{
+				"phase":   snap.Phase,
+				"detail":  snap.Message,
+				"elapsed": snap.Elapsed.Round(time.Second).String(),
+				"running": snap.Running,
+			}
+			if snap.RigID != "" {
+				held["rig"] = snap.RigID
+			}
+			if snap.Endpoint != "" {
+				held["endpoint"] = snap.Endpoint
+				held["api_key"] = snap.Token
+				held["ready"] = true
+				held["usage"] = "OpenAI-compatible; POST " + snap.Endpoint +
+					"/chat/completions with this api_key as a bearer token"
+			}
+			if snap.Err != nil {
+				held["error"] = snap.Err.Error()
+			}
+			res["serving"] = held
+		}
+	}
+	return res, nil
 }
 
 type planArgs struct {
@@ -245,9 +286,9 @@ func (d Deps) plan(ctx context.Context, raw json.RawMessage) (any, error) {
 		c := sv.Selection.Selected.Offer
 		res["cheapest"] = map[string]any{
 			"gpu": c.GPUModel, "vram_gb": c.VRAMTotalGB(),
-			"price_hr": c.PriceHr, "provider": c.Provider,
+			"price_hr": round4(c.PriceHr), "provider": c.Provider,
 		}
-		res["estimated_usd_per_hour"] = c.PriceHr
+		res["estimated_usd_per_hour"] = round4(c.PriceHr)
 	}
 	return res, nil
 }
@@ -289,7 +330,7 @@ func (d Deps) searchOffers(ctx context.Context, raw json.RawMessage) (any, error
 		}
 		rows = append(rows, map[string]any{
 			"gpu": c.Offer.GPUModel, "vram_gb": c.Offer.VRAMTotalGB(),
-			"price_hr": c.Offer.PriceHr, "reliability": c.Offer.Reliability,
+			"price_hr": round4(c.Offer.PriceHr), "reliability": round2(c.Offer.Reliability),
 			"provider": c.Offer.Provider, "offer_id": c.Offer.OfferID,
 		})
 	}

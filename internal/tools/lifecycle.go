@@ -47,10 +47,10 @@ func (d Deps) logs(ctx context.Context, raw json.RawMessage) (any, error) {
 }
 
 func (d Deps) live() *daemon.Live {
-	if d.Live == nil {
+	if d.Session == nil {
 		return nil
 	}
-	return d.Live()
+	return d.Session.Live()
 }
 
 func (d Deps) orphans(ctx context.Context, _ json.RawMessage) (any, error) {
@@ -90,12 +90,19 @@ type upArgs struct {
 	DryRun      bool    `json:"dry_run"`
 }
 
-// up rents hardware. It is the tool that spends, so it says what it spent.
+// up rents hardware, serves a model on it, and holds the tunnel.
 //
-// It deliberately does not hold the tunnel: an MCP call returns, and a rig
-// whose data plane died with the call would be a rig that bills and serves
-// nothing. Bringing it up and reporting the rate leaves the operator's own
-// `larri resume` as the way to attach — which is the same path a restart uses.
+// It starts the work and returns; it does not block until the rig is ready. A
+// bring-up can take twenty minutes — an image pull, a weight download, a
+// checkpoint load — and a tool call that blocked for twenty minutes would be
+// indistinguishable from a hung server. The agent polls larri_status instead,
+// which can say *what* is happening rather than only whether it finished.
+//
+// Holding the tunnel is what makes this different from provisioning. An
+// earlier version called Up rather than UpAndServe and left the instance at
+// PROVISIONED: billing by the second, with no runtime, no model, and no way to
+// reach it — `larri resume` refuses it, correctly, because there is no server
+// to adopt. That is renting hardware that cannot serve.
 func (d Deps) up(ctx context.Context, raw json.RawMessage) (any, error) {
 	var a upArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
@@ -104,22 +111,22 @@ func (d Deps) up(ctx context.Context, raw json.RawMessage) (any, error) {
 	if a.Model == "" {
 		return nil, fmt.Errorf("model is required")
 	}
-	// The same guard the CLI applies: a second rig alongside a billing one is
-	// the leak this product exists to prevent, and an agent is more likely to
-	// cause it than a person.
+	// The cost-safety guard runs first, and before anything about *this*
+	// surface, because a second rig alongside a billing one is the leak this
+	// product exists to prevent. An agent is likelier to cause it than a
+	// person, because it cannot see the terminal it did not print to.
 	if rigs, err := d.Store.List(); err == nil {
 		for _, r := range rigs {
 			if r.State.Billable() {
 				return nil, fmt.Errorf("rig %s is already billing at $%.3f/hr; "+
-					"destroy it with larri_down or reconnect with 'larri resume' before renting another",
-					r.ID, r.Offer.PriceHr)
+					"destroy it with larri_down before renting another", r.ID, r.Offer.PriceHr)
 			}
 		}
 	}
-	o, err := d.NewOrchestrator(a.Runtime)
-	if err != nil {
-		return nil, err
+	if d.Session == nil {
+		return nil, fmt.Errorf("this surface cannot hold a rig")
 	}
+
 	crit := core.Criteria{MaxPriceHr: a.MaxPrice, MinReliability: 0.90, DiskGB: 60}
 	if a.GPU != "" {
 		crit.GPUModel = []string{a.GPU}
@@ -128,6 +135,10 @@ func (d Deps) up(ctx context.Context, raw json.RawMessage) (any, error) {
 	spec.ServedName = "larri"
 
 	if a.DryRun {
+		o, err := d.NewOrchestrator(a.Runtime)
+		if err != nil {
+			return nil, err
+		}
 		sv, err := o.Offers(ctx, daemon.UpRequest{Criteria: crit, Model: spec, DiskGB: 60})
 		if err != nil {
 			return nil, err
@@ -136,41 +147,93 @@ func (d Deps) up(ctx context.Context, raw json.RawMessage) (any, error) {
 		if sv.Selection.Selected != nil {
 			res["would_rent"] = map[string]any{
 				"gpu":      sv.Selection.Selected.Offer.GPUModel,
-				"price_hr": sv.Selection.Selected.Offer.PriceHr,
+				"price_hr": round4(sv.Selection.Selected.Offer.PriceHr),
 			}
 		}
 		return res, nil
 	}
 
-	rig, err := o.Up(ctx, daemon.UpRequest{Criteria: crit, Model: spec, DiskGB: 60})
-	if err != nil {
-		return nil, err
+	// Its own context, because the work outlives the call that started it.
+	// Tying it to the tool call's context would cancel the bring-up the
+	// moment the reply was sent, leaving a half-provisioned instance.
+	runCtx, cancel := context.WithCancel(context.Background())
+	if !d.Session.Begin("", cancel) {
+		cancel()
+		snap := d.Session.Snapshot()
+		return nil, fmt.Errorf("a rig is already being brought up (%s, %s); "+
+			"poll larri_status or stop it with larri_down", snap.RigID, snap.Phase)
 	}
-	res := map[string]any{
-		"rig": rig.ID, "state": string(rig.State),
-		"gpu": rig.Offer.GPUModel, "price_hr": rig.Offer.PriceHr,
-		"provider": rig.Offer.Provider,
-		"billing":  true,
-		"note": fmt.Sprintf("this rig now bills at $%.3f/hr until destroyed; "+
-			"attach to it with 'larri resume' or stop it with larri_down", rig.Offer.PriceHr),
-	}
-	if rig.Instance != nil {
-		res["instance"] = rig.Instance.InstanceID
-	}
-	// A policy the agent asked for is worth confirming back, because the
-	// agent will report it to a person who is relying on it.
+
+	policy := d.policy(a)
+	go d.bringUp(runCtx, crit, spec, a, policy)
+
+	return map[string]any{
+		"started": true,
+		"billing": true,
+		"model":   a.Model,
+		"note": "provisioning has begun and the rig bills from the moment an instance " +
+			"exists. Poll larri_status until state is READY, then use the endpoint it " +
+			"returns. larri_down stops it at any point.",
+		"poll": "larri_status",
+	}, nil
+}
+
+// policy renders the deadlines an agent asked for.
+func (d Deps) policy(a upArgs) daemon.SupervisePolicy {
+	cfg := config.Default()
 	if a.IdleTimeout != "" {
 		if dur, err := time.ParseDuration(a.IdleTimeout); err == nil {
-			res["idle_timeout"] = dur.String()
-			res["idle_note"] = "enforced while a larri process supervises this rig"
+			cfg.Idle.Timeout = dur
 		}
 	}
-	if a.Budget > 0 {
-		res["budget_usd"] = a.Budget
-		res["budget_note"] = "enforced while a larri process supervises this rig"
+	cfg.Budget.MaxUSD = a.Budget
+	return daemon.SupervisePolicy{Idle: cfg.Idle, Budget: cfg.Budget}
+}
+
+// bringUp provisions, serves, and then supervises until something ends it.
+//
+// The supervisor runs here for the same reason it runs under `larri up`: an
+// agent that walks away from a rig is exactly the case idle reclamation exists
+// for, and a surface that skipped it would be the one where forgetting is
+// cheapest.
+func (d Deps) bringUp(ctx context.Context, crit core.Criteria, spec core.ModelSpec,
+	a upArgs, policy daemon.SupervisePolicy) {
+
+	o, err := d.NewOrchestrator(a.Runtime)
+	if err != nil {
+		d.Session.Fail(err)
+		return
 	}
-	_ = config.Default
-	return res, nil
+	events := make(chan daemon.Event, 128)
+	o.Events = events
+	go func() {
+		for e := range events {
+			d.Session.Note(e.Phase, e.Message)
+		}
+	}()
+	defer close(events)
+
+	live, err := o.UpAndServe(ctx, daemon.UpRequest{
+		Criteria: crit, Model: spec, DiskGB: 60,
+		HFToken: d.HFToken, LocalPort: 0,
+	})
+	if err != nil {
+		d.Session.Fail(err)
+		return
+	}
+	d.Session.Ready(live)
+
+	term := o.Supervise(ctx, live, policy)
+	live.Close()
+
+	// A policy that ended the rig destroys it; a cancelled context means the
+	// operator asked to stop holding it, and larri_down does the destroying.
+	if term != nil {
+		dctx, dcancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer dcancel()
+		_ = o.Down(dctx, live.Rig, term)
+	}
+	d.Session.Finish()
 }
 
 type downArgs struct {
@@ -196,7 +259,25 @@ func (d Deps) down(ctx context.Context, raw json.RawMessage) (any, error) {
 		}
 	}
 	if target == nil {
+		// A bring-up can be in flight before any instance exists — between
+		// the search and the create there is nothing billable to find, and a
+		// `down` that reported "nothing to tear down" while provisioning
+		// continued would be the one command that made the leak worse.
+		if d.Session != nil && d.Session.Snapshot().Running {
+			d.Session.Stop()
+			return map[string]any{
+				"destroyed": false, "stopped": true,
+				"note": "no instance existed yet; the bring-up was cancelled. " +
+					"Run larri_orphans to confirm nothing was created.",
+			}, nil
+		}
 		return map[string]any{"destroyed": false, "note": "nothing billable to tear down"}, nil
+	}
+	// Stop holding it before destroying it. A supervisor still running
+	// against a rig that is being torn down would race the teardown, and the
+	// tunnel would be closed twice.
+	if d.Session != nil {
+		d.Session.Stop()
 	}
 	o, err := d.NewOrchestrator(string(target.Runtime))
 	if err != nil {
@@ -208,6 +289,9 @@ func (d Deps) down(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	if err := o.Down(ctx, target, term); err != nil {
 		return nil, err
+	}
+	if d.Session != nil {
+		d.Session.Finish()
 	}
 	c := target.End.Cost
 	return map[string]any{

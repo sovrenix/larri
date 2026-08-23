@@ -242,6 +242,22 @@ description, so the agent reports it before acting rather than after.
 "larri": { "command": "larri", "args": ["mcp"] }
 ```
 
+The server is long-lived, so it **holds the rig** — `larri_up` serves a model rather than
+merely renting a box, the supervisor enforces your idle timeout and budget, and `larri_logs`
+can read the host. Bring-up takes minutes, so `larri_up` starts the work and returns; the
+agent polls `larri_status` until it reports an endpoint:
+
+```
+larri_up      → { started: true, billing: true, poll: "larri_status" }
+larri_status  → { serving: { phase: "boot",  detail: "image.pull 61%", elapsed: "4m10s" } }
+larri_status  → { serving: { phase: "ready", endpoint: "http://127.0.0.1:43139/v1",
+                             api_key: "…", ready: true } }
+larri_down    → { destroyed: true, ran: "2m24s", total_usd: 0.0068 }
+```
+
+If your agent host disconnects, the tunnel closes but **the rig is not destroyed** — it is
+still billing and may still be wanted. `larri resume` reattaches; `larri down` stops it.
+
 ### Your tools, configured by hand
 
 > **Not implemented yet.** LARRI serves an OpenAI-compatible endpoint on a fixed loopback

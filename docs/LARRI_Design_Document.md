@@ -1540,7 +1540,61 @@ report it rather than infer it (FR-UI-03). The `Exposure` column is the load-bea
 addition: the read-only set is identical for both drivers, while the consequential set is
 opt-in for the chat pane for the reasons in §14.4.4.
 
-### 14.2.1 Configuration Is Edited in Its Own Command
+### 14.2.1 The MCP Server Holds the Rig
+
+An MCP server is a long-running process, and that single fact decides what
+`larri_up` can mean.
+
+The first version treated each tool call as self-contained, so `larri_up` called `Up` rather
+than `UpAndServe` and returned once an instance existed. What that produced was a rented GPU
+at `PROVISIONED` — **billing by the second, with no runtime, no model, and no way to reach
+it.** `larri resume` refuses such a rig, correctly, because there is no server to adopt. The
+tool rented hardware that could not serve, and reported success.
+
+The server can hold a rig, so it does. A `Session` owns the tunnel between calls, exactly as
+`larri up` owns it in the foreground, which makes three things work that could not before:
+the model is actually served, `larri_logs` has an SSH session to read from, and the
+supervisor runs — so idle reclamation and budget ceilings apply to an agent-driven rig too.
+That last one matters most: an agent that wanders off is precisely the case reclamation
+exists for, and a surface without it would be the one where forgetting is cheapest.
+
+**Bring-up is started, not awaited.** A rig takes minutes to come up and can take twenty —
+an image pull, a weight download, a checkpoint load. A tool call that blocked for twenty
+minutes is indistinguishable from a hung server, and the agent would have no way to ask what
+was happening. So `larri_up` returns as soon as the work is under way and the agent polls
+`larri_status`, which reports the phase, the last event, and elapsed time:
+
+```
+larri_up      → { started, billing: true, poll: "larri_status" }
+larri_status  → { serving: { phase: "boot",  detail: "image.pull 61%", elapsed: "4m10s" } }
+larri_status  → { serving: { phase: "ready", endpoint: "http://127.0.0.1:43139/v1",
+                             api_key: "…", ready: true } }
+larri_down    → { destroyed: true, ran: "2m24s", total_usd: 0.0068 }
+```
+
+The endpoint and key come back in the status result because without them the agent has paid
+for a model it cannot reach. From there it is an ordinary OpenAI-compatible endpoint.
+
+**Three failure paths are handled rather than assumed away.**
+
+- *Two bring-ups at once.* The session refuses the second. Two concurrent rentals mean two
+  billing instances, and an agent is likelier than a person to ask twice — it cannot see the
+  terminal it did not print to. The already-billing guard runs first, before anything about
+  the surface, for the same reason.
+- *`larri_down` before an instance exists.* Between the search and the create there is
+  nothing billable to find, and a `down` that answered "nothing to tear down" while
+  provisioning carried on would be the one command that made the leak worse. It cancels the
+  bring-up and points at `larri_orphans` to confirm.
+- *The host disconnects.* Stdin closes, the server stops holding the tunnel — and does **not**
+  destroy. The instance is still billing and may be wanted; a message on stderr names
+  `larri resume` and `larri down`. Silently destroying an agent's rig because a socket closed
+  would be worse than either.
+
+Stopping and destroying stay separate throughout. `Session.Stop` releases the tunnel;
+teardown is a provider call with a termination record. Conflating them is how a dropped
+session becomes an instance nobody is tracking.
+
+### 14.2.2 Configuration Is Edited in Its Own Command
 
 Criteria editing lives in `larri config`, not on the spending path, and the reasoning is the
 same one that governs every other surface here: **a command that spends money must not

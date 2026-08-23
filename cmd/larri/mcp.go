@@ -60,8 +60,13 @@ func cmdMCP(ctx context.Context, args []string) error {
 	}()
 	defer close(events)
 
+	// The server outlives its tool calls, so it can hold a rig — which is
+	// what lets larri_up serve a model rather than merely provision one.
+	sess := &tools.Session{}
 	deps := tools.Deps{
 		Store:           st,
+		Session:         sess,
+		HFToken:         secret.New(os.Getenv("HF_TOKEN")),
 		NewOrchestrator: func(kind string) (*daemon.Orchestrator, error) { return newOrchestrator(st, kind, events) },
 	}
 	reg := tools.NewRegistry()
@@ -70,8 +75,21 @@ func cmdMCP(ctx context.Context, args []string) error {
 	}
 
 	srv := &mcpsrv.Server{Registry: reg, Name: "larri", Version: buildinfo.Version()}
-	fmt.Fprintf(os.Stderr, "larri mcp: %d tools on stdio\n", len(reg.All()))
-	return srv.Serve(ctx, os.Stdin, os.Stdout)
+	fmt.Fprintf(os.Stderr, "larri mcp %s: %d tools on stdio\n", buildinfo.Version(), len(reg.All()))
+
+	err = srv.Serve(ctx, os.Stdin, os.Stdout)
+
+	// The host has gone. Stop holding the tunnel, but do **not** destroy: the
+	// instance is still billing and the operator may want it. Saying so is
+	// the difference between a rig they can reattach to and one they discover
+	// on an invoice.
+	if snap := sess.Snapshot(); snap.Running || snap.RigID != "" {
+		sess.Stop()
+		fmt.Fprintf(os.Stderr,
+			"larri mcp: exiting with a rig still billing — reattach with 'larri resume', "+
+				"or destroy it with 'larri down'\n")
+	}
+	return err
 }
 
 // newOrchestrator builds one configured from the environment.
