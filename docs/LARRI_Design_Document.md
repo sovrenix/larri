@@ -1027,6 +1027,59 @@ Two failure modes this closes:
   found; the reconciler's job is to surface the pair rather than to pick one, because
   choosing which of two billing instances to destroy is an operator decision (FR-SUP-03).
 
+### 11.4 Adopting a Rig After a Restart (FR-SUP-07)
+
+Reconciliation says *adopt*; this is what adoption costs and how it is paid.
+
+Start with what a restart actually loses, because the answer is smaller than it looks. **The
+tunnel is not a remote object.** It is an SSH connection and a local listener, both of which
+died with the process; the rented host observed a client disconnect and nothing more. There is
+no remote state to stop, and no provider call that stops one. What survived is the part that
+bills — the instance — and the part that is expensive to recreate: a runtime with tens of
+gigabytes of weights already resident in VRAM.
+
+So adoption is a reconnection, not a relaunch. Two credentials stand in the way, and neither
+is recovered from storage:
+
+| Lost | Why it is not stored | How adoption gets one |
+|---|---|---|
+| The rig's SSH private key | FR-STATE-05 forbids private keys in state | Mint a **new** keypair; ask the provider to install the public half on the running instance |
+| The rig's API credential | Generated at launch, held in memory | Read it back from the running server's own `argv` |
+
+**The key is replaced, not retrieved.** Providers expose an attach-key call against a running
+instance — on Vast, `POST /api/v0/instances/{id}/ssh/` — so recovery does not need the old
+identity to have been kept anywhere. This is a better outcome than persisting the key in the
+OS keyring, which was the obvious alternative: it satisfies FR-STATE-05 by construction rather
+than by exception, it rotates the rig's identity on every recovery for free, and it leaves no
+stored secret to leak or to forget to revoke. A provider that cannot attach a key is not a
+disaster — teardown never depended on SSH (FR-SEC-18) — but the rig must be reported as
+*destroyable but not reconnectable* rather than left to fail as a timeout.
+
+**The API credential is read from the process, not regenerated.** Regenerating it would mean
+relaunching the server, which evicts the weights and pays the model-load cost a second time to
+solve a bookkeeping problem. Reading it from `argv` is sound precisely because it was never a
+secret from the host: the operator there has root, and §15.4 says so. It is a secret from the
+*network*, and recovering it over an authenticated channel keeps it one. A server found
+running *without* a LARRI-issued credential is refused rather than adopted — putting an
+unauthenticated endpoint behind the tunnel and reporting the rig recovered would be worse than
+failing, because the operator would believe the credential boundary held.
+
+**Host key handling is stricter here than at bring-up, deliberately.** During a boot a
+changing host key means a host still generating one, so it is re-pinned (§12.2.2). After a rig
+has served, the key is a recorded fact about that machine, and one that no longer matches
+means the endpoint now leads somewhere else. Adoption refuses outright and classifies the
+failure as `security` rather than `host-failure` — the difference matters, because a host
+failure means *try another machine*, and falling back would silently discard the only evidence
+that something answered in place of the expected host. `Rig.HostKeyFingerprint` is persisted
+for exactly this comparison; recovery is the moment it earns its place in the state file.
+
+Finally, the tunnel is rebuilt **on the same local port**. That is the whole point: clients
+were wired to that address and were never told anything happened. Handing them a different
+port would make a successful adoption indistinguishable from a failed one at every tool that
+matters. Readiness is then re-proven the same way a bring-up proves it — a real completion,
+round-tripped through the local endpoint — because a restored tunnel that carries no traffic
+is not a recovered rig.
+
 ---
 
 ## 12. Supervisor
@@ -1096,7 +1149,7 @@ ahead of the deadline on every surface (FR-SUP-09) with time to cancel or extend
 reclaiming a rig thirty seconds before it was needed is a worse failure than the idle spend
 it prevented.
 
-### 12.2.1 Waiting Has Two Regimes
+### 12.2.1 Waiting Has Two Regimes, and One Way Out
 
 Once SSH is up, LARRI can ask the host directly rather than reading the
 provider's status text, and how long to wait should depend on whether there is
@@ -1127,6 +1180,33 @@ through a phase that logs nothing. Requiring agreement between them would
 reproduce the single-signal blindness these regimes exist to avoid — which is
 the same error as judging liveness by network traffic alone, and the reason the
 host probe reads CPU, disk and network rather than just the wire.
+
+**And a third signal ends the wait early, because patience should never be
+spent on a decided outcome.** Both regimes above measure *silence*, and silence
+is ambiguous: a checkpoint loading and a process that has exited look identical
+from the outside. They are not the same, and the difference is expensive. A live
+run watched a host whose vLLM had exhausted its retries and quit — it could not
+reach Hugging Face — while LARRI waited out a stall timeout sized for a large
+model loading quietly. Eleven billed minutes, on a question answered in the
+first one.
+
+So when nothing else indicates work, LARRI asks whether the runtime process is
+still there, and treats its absence as the answer. The ordering matters and is
+deliberate:
+
+1. **Log growth or hardware movement → alive.** Direct evidence of work, and it
+   is trusted first.
+2. **Neither, and the process is gone → dead.** Fail now, carrying the log tail
+   so the operator learns *why* rather than only *that*.
+3. **Neither, and the process is there → keep waiting**, up to the stall limits
+   above.
+
+The probe is consulted last rather than first because it is the weakest of the
+three: a runtime may fork, re-exec, or run under a name a pattern does not
+match. Evidence of work beats absence of a pid, so a probe that disagreed with a
+growing log would be the thing that is wrong. It is also meaningless before the
+runtime has spoken at all — an absent process may simply not have started yet,
+which is what the cold regime already covers.
 
 ### 12.2.2 Dead on Arrival Is Common, and Reliability Does Not Predict It
 
@@ -1226,8 +1306,10 @@ consent. A supervisor that quietly re-provisions at 3× the price while the oper
 asleep is worse than one that stops.
 
 **Daemon death is not rig death (FR-SUP-07).** The instance keeps running and keeps
-billing. On restart, the daemon adopts it via §11.3. The tunnel is rebuilt on the same
-local port, so clients recover with no reconfiguration.
+billing. On restart the daemon finds it by label (§11.3) and reconnects to it (§11.4) —
+minting a fresh SSH key rather than recovering the lost one, and re-attaching to the running
+server rather than relaunching it. The tunnel is rebuilt on the same local port, so clients
+recover with no reconfiguration.
 
 ### 12.5 Budget Ceilings Destroy (Q-03, resolved)
 
@@ -1720,6 +1802,19 @@ This is why FR-SEC-04 is mandatory rather than a nice-to-have. First-connect pin
 leave a TOFU window, and it is genuinely narrow — LARRI learns the endpoint from the provider
 API over verified TLS moments before connecting — but it is not zero, and calling it zero
 would be dishonest.
+
+**Recovery closes the TOFU window rather than reopening it (§11.4).** Reconnecting to a rig
+after a restart is the one connection that is *not* trust-on-first-use: the fingerprint is
+already recorded, so the check is a verification against a known value. Adoption therefore
+refuses a mismatch outright and classifies it as a security failure rather than a host
+failure — a distinction with teeth, because host failures fall back to another machine, and
+falling back here would discard the only evidence that something answered in place of the
+expected host.
+
+**The rig's identity rotates on every recovery, and no private key is ever stored.** Adoption
+mints a new keypair and has the provider install it, so a stolen state directory yields
+nothing that authenticates to anything, and a rig that has been recovered no longer accepts
+the key it was brought up with.
 
 Note that Vast.ai's default proxy connection puts the provider on the SSH path. That is
 consistent with the table above: the provider is trusted for control and not for workload

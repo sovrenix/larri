@@ -46,6 +46,24 @@ type Provider interface {
 	Destroy(ctx context.Context, instanceID string) error
 }
 
+// KeyAttacher is implemented by providers that can add an SSH key to an
+// instance that is already running.
+//
+// It is what makes recovery possible without storing a private key. On restart
+// LARRI has lost the ephemeral identity it created — deliberately, since
+// FR-STATE-05 forbids persisting one — so instead of reusing an old key it
+// mints a fresh pair and asks the provider to install it. The old key is not
+// recovered; it is replaced, which is strictly better hygiene than keeping it
+// somewhere for the purpose.
+//
+// A provider that cannot do this is not broken: teardown never depended on SSH
+// (FR-SEC-18), so the rig remains destroyable. What is lost is the data plane,
+// and the operator should be told that plainly rather than left with a rig
+// that looks adopted and serves nothing.
+type KeyAttacher interface {
+	AttachSSHKey(ctx context.Context, instanceID, publicKey string) error
+}
+
 // CreateSpec is what to make of a purchased offer.
 type CreateSpec struct {
 	Image        string

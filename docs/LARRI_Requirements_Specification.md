@@ -276,6 +276,7 @@ client — the thing P3 exists to prevent.
 | FR-RT-10 | S | When the operator requires a control-capable rig and tool-calling support cannot be established for the model, reject before the create call rather than after paying to boot. |
 | FR-RT-11 | M | Use project-maintained, pre-baked runtime images pinned by content digest rather than composing stock images at boot. Select the image variant against the host's reported driver/CUDA version as a **search filter**, so an incompatible host is excluded before it is rented, not discovered after. Fall back to a stock image with a warning when no compatible variant exists. |
 | FR-RT-12 | M | Resolve model facts by live fetch of the model's `config.json` from Hugging Face, cached by resolved commit; operator override wins, and unresolvable facts are a hard error before spend, never a guess. Gated repositories exercise the Hugging Face token during sizing, so a bad token fails before anything is billed. |
+| FR-RT-13 | M | End a readiness wait as soon as the runtime process is found **absent**, rather than waiting out a stall timeout sized for a model loading in silence. Consult process liveness only when neither log growth nor hardware activity indicates work, and only after the runtime has produced output: evidence of work must outrank absence of a pid, since a runtime may fork, re-exec, or run under an unmatched name. The failure must carry the runtime's own log tail. |
 
 ### 7.5 Endpoint Wiring (FR-WIRE)
 
@@ -307,6 +308,10 @@ client — the thing P3 exists to prevent.
 | FR-SUP-05 | M | Support a budget ceiling (absolute $ or duration), per rig and globally across all rigs, defaulting to **destroy** on breach after a warning with usable lead time. The ceiling must count storage accrued by `STOPPED` rigs, not GPU time alone. Breach records why, with evidence (FR-DEL-08). |
 | FR-SUP-06 | M | Support an idle timeout — no operator inference for N minutes triggers the configured action, which defaults to `destroy`. Configurable per rig and by default (`--idle-timeout 30m` with `--idle-action` of `destroy` or `warn`). Reclamation records why it fired (FR-DEL-08), because a rig that disappears while the operator is away is the case where an unexplained destruction is least acceptable. |
 | FR-SUP-07 | M | Continue to hold the rig if the supervisor itself crashes; a dead daemon must never imply a destroyed instance, and restart must recover ownership from state. |
+| FR-SUP-13 | M | On restart, rebuild the data plane for a rig still running at the provider: install a **newly minted** SSH key on the running instance through the provider API, reconnect, re-attach to the running server, and republish the endpoint **on the same local port** so wired clients recover without reconfiguration. The lost key must be superseded, never retrieved from storage (FR-STATE-05). |
+| FR-SUP-14 | M | Recover the rig's API credential from the running server rather than by relaunching it. Relaunching evicts resident weights and pays the model-load cost again to solve a bookkeeping problem. A server found running without a LARRI-issued credential must be **refused**, not adopted: tunnelling to an unauthenticated endpoint and reporting the rig recovered is worse than failing to recover. |
+| FR-SUP-15 | M | On adoption, verify the host key against the recorded fingerprint and **refuse on mismatch**, classified as a security failure rather than a host failure. Re-pinning is correct only while a host is still settling during boot; after a rig has served, a changed key means the endpoint leads elsewhere, and falling back to another machine would discard the only evidence of it. |
+| FR-SUP-16 | M | Report a rig that cannot be reconnected as **destroyable but not reconnectable**, naming its ongoing hourly cost. A failed resume must never read as a command that changed nothing. |
 | FR-SUP-08 | M | Count only **operator-attributable inference** as activity for the idle timer. LARRI's own health probes (FR-SUP-01) must be excluded, or the timer resets every interval and never fires. Model listings and other non-inference endpoints do not count; a request still streaming does. |
 | FR-SUP-09 | M | Warn before acting on an idle or budget deadline, on every surface, with enough lead time to cancel or extend. Reclaiming a rig the operator was about to use must be preventable, not merely explicable afterwards. |
 | FR-SUP-10 | M | Treat a `STOPPED` rig as billable and unresolved: continue to supervise it, surface it in every surface, and either destroy it or — on explicit operator choice — wait for resume. A stopped interruptible instance may resume by itself; if LARRI has provisioned a replacement, that resume produces two billing instances and must be detected and surfaced. |
@@ -327,6 +332,7 @@ client — the thing P3 exists to prevent.
 | FR-DEL-08 | M | Record a **typed termination reason** for every rig that stops existing, resolved at the moment of the decision and journalled with the teardown intent — never reconstructed afterwards. It must carry the deciding actor (operator, configured policy, provider, or LARRI fault), the reason code, and the evidence behind it. A reason without evidence is not an explanation. |
 | FR-DEL-09 | M | Retain terminated rigs so the operator can inspect why one ended, long after it ended. `larri status` shows the reason for recent rigs and `larri status --all` the full retained set; snapshot retention is bounded by count and age, while the append-only journal remains the permanent record. |
 | FR-DEL-10 | M | Surface the termination reason in every surface — CLI status and the exit output of `larri down`, the event stream, the TUI, the console pane, and the `larri_status` tool result — subject to FR-SEC-06 redaction on the path that returns to the served model. |
+| FR-DEL-11 | M | **Refuse to provision while a rig is already billing**, naming that rig, its hourly cost, and both ways out (`larri resume` to reconnect, `larri down` to destroy). The check reads local state rather than the provider, so an unreachable provider can never become a reason to spend. It refuses rather than warns: a warning printed above a bring-up that proceeds anyway is read after the money is gone. |
 
 ### 7.8 State (FR-STATE)
 
@@ -577,6 +583,22 @@ The seven-step Vast.ai playbook in §1 is reproduced by two commands.
   leaves rig state, supervision, teardown, and cost accounting unaffected.
 - **AC-5.4** No telemetry signal emitted under any configuration contains prompt or
   completion content.
+
+### Restart recovery
+
+- **AC-6.1** With a rig serving, killing the LARRI process and running `larri resume`
+  restores the endpoint **at the same local port**, and a client configured before the kill
+  gets a completion afterwards with no reconfiguration.
+- **AC-6.2** The resume in AC-6.1 does not restart the model: the runtime's process start
+  time is unchanged across the recovery, and no weights are re-downloaded.
+- **AC-6.3** No private key is written to the state directory at any point in AC-6.1.
+  Inspecting every file under it after a resume finds none.
+- **AC-6.4** Resume against an instance whose host key has changed fails, is classified as a
+  security failure, and does **not** fall back to another host.
+- **AC-6.5** Resume against an instance the provider has destroyed records the rig
+  `DESTROYED` rather than retrying, and resume against a `STOPPED` one reports the ongoing
+  storage cost and refuses to silently resume it.
+- **AC-6.6** A failed resume names the rig's hourly cost and the command that destroys it.
 
 ---
 

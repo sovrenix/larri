@@ -148,3 +148,42 @@ type Runtime interface {
 	// Stop halts the runtime.
 	Stop(ctx context.Context, sess Session) error
 }
+
+// Adopter is implemented by runtimes that can re-attach to a server they
+// already started, instead of starting a new one.
+//
+// This exists for recovery. When LARRI restarts it has lost the rig
+// credential it minted at launch — held in memory only, so it never reached a
+// snapshot — but the server on the host is still running, still holding the
+// weights in VRAM. Relaunching to mint a fresh credential would evict them and
+// pay for the load a second time, which is the expensive way to solve a
+// bookkeeping problem.
+//
+// So Adopt recovers the credential from the running process rather than
+// replacing it. That is only sound because the value was never a secret from
+// the host to begin with: the host operator has root, and LARRI's threat model
+// says so plainly (§15.4). It is a secret from the *network*, and adopting it
+// over an authenticated channel keeps it one.
+//
+// Implementations must return a not-running error rather than a zero Endpoint
+// when they find nothing, so a caller cannot mistake "no server" for "a server
+// on port 0".
+type Adopter interface {
+	Adopt(ctx context.Context, sess Session, spec core.ModelSpec) (Endpoint, error)
+}
+
+// LivenessChecker is implemented by runtimes that can say whether their server
+// process still exists on the host.
+//
+// This exists to stop LARRI paying for a decided outcome. Readiness waits are
+// necessarily patient — a large model legitimately spends many minutes loading
+// while writing nothing to its log — so the stall timeout that protects
+// against a wedged host is long. A runtime that has *exited*, though, is not
+// slow; it is finished, and every second spent waiting for it to speak is
+// billed for an answer that already arrived.
+//
+// The distinction is only safe once the runtime has produced output. Before
+// that, an absent process may simply not have started yet.
+type LivenessChecker interface {
+	Alive(ctx context.Context, sess Session) (bool, error)
+}

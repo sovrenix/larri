@@ -448,3 +448,59 @@ func TestAuthFailureDuringBringUpIsTiming(t *testing.T) {
 		t.Error("mismatch detection broke")
 	}
 }
+
+// The waste this closes: a runtime that starts, fails, and exits, while LARRI
+// waits out a stall timeout sized for a large model loading in silence. A live
+// run spent eleven billed minutes that way on a host whose vLLM had already
+// exhausted its retries and quit.
+func TestExitedRuntimeEndsTheWaitImmediately(t *testing.T) {
+	o := &Orchestrator{
+		Runtime:           rfake.New(rfake.Behaviour{NeverReady: true, ExitsAfterLaunch: true}),
+		ColdStartLimit:    time.Hour, // neither timeout may be what ends this
+		WarmStallLimit:    time.Hour,
+		ReadyCap:          30 * time.Second,
+		ReadyPollInterval: 20 * time.Millisecond,
+	}
+	rig := &core.Rig{Model: core.ModelSpec{ServedName: "m"}}
+	// Speaks once, then goes quiet — a runtime that logged its failure and died.
+	sess := &logSession{growBy: 0, size: 512}
+
+	start := time.Now()
+	err := o.waitReady(context.Background(), sess, rig, 1, secret.New("t"))
+	if err == nil {
+		t.Fatal("a dead runtime was waited on indefinitely")
+	}
+	if !strings.Contains(err.Error(), "exited") {
+		t.Errorf("error should say the runtime exited, got: %v", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Errorf("took %s to notice an exited runtime", time.Since(start).Round(time.Second))
+	}
+}
+
+// The converse, and the reason the probe is not consulted first: a runtime
+// whose log is still growing is working, whatever a process pattern says. A
+// probe that can be wrong must never override direct evidence of work.
+func TestGrowingLogOutweighsAFailedLivenessProbe(t *testing.T) {
+	o := &Orchestrator{
+		Runtime:           rfake.New(rfake.Behaviour{NeverReady: true, ExitsAfterLaunch: true}),
+		ColdStartLimit:    100 * time.Millisecond,
+		WarmStallLimit:    30 * time.Second,
+		ReadyCap:          2 * time.Second,
+		ReadyPollInterval: 50 * time.Millisecond,
+	}
+	rig := &core.Rig{Model: core.ModelSpec{ServedName: "m"}}
+	sess := &logSession{growBy: 4096} // steadily writing
+
+	start := time.Now()
+	err := o.waitReady(context.Background(), sess, rig, 1, secret.New("t"))
+	if err == nil {
+		t.Fatal("it should eventually hit the cap")
+	}
+	if strings.Contains(err.Error(), "exited") {
+		t.Error("a runtime writing to its log was declared dead")
+	}
+	if time.Since(start) < 1500*time.Millisecond {
+		t.Errorf("gave up after %s despite a growing log", time.Since(start).Round(time.Millisecond))
+	}
+}

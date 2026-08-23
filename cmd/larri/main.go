@@ -40,6 +40,7 @@ const usage = `larri — Local Agent for Remote Rigging of Inference
 
   larri up      rent a GPU, serve a model, wire local clients
   larri down    revert wiring, destroy the rig, confirm it is gone
+  larri resume  rebuild the tunnel to a rig that outlived the last process
   larri status  what is running, what it costs, and why past rigs ended
   larri version build metadata
 
@@ -60,6 +61,8 @@ func main() {
 		err = cmdUp(ctx, os.Args[2:])
 	case "down":
 		err = cmdDown(ctx, os.Args[2:])
+	case "resume":
+		err = cmdResume(ctx, os.Args[2:])
 	case "status":
 		err = cmdStatus(ctx, os.Args[2:])
 	case "version", "--version", "-v":
@@ -142,6 +145,20 @@ func cmdUp(ctx context.Context, args []string) error {
 		return err
 	}
 	defer st.Close()
+
+	// Renting a second rig while a first one is still billing is the exact
+	// leak this product exists to prevent, and the likeliest way to cause it
+	// is an operator whose process died reaching for `up` again. `resume`
+	// (FR-SUP-13) is what they usually want, so name it rather than making
+	// them discover it after the invoice.
+	//
+	// This refuses rather than warns: a warning printed above a bring-up that
+	// proceeds anyway is read after the money is spent.
+	if !*dryRun {
+		if err := refuseIfAlreadyBilling(st); err != nil {
+			return err
+		}
+	}
 
 	name := *served
 	if name == "" {
@@ -357,6 +374,108 @@ func cmdStatus(ctx context.Context, args []string) error {
 	}
 	if shown == 0 {
 		fmt.Println("  no rigs")
+	}
+	return nil
+}
+
+// cmdResume reconnects to a rig that is still running at the provider after
+// the process that created it went away.
+//
+// The tunnel it rebuilds was never a remote object: an SSH connection and a
+// local listener, both of which died with that process. What is still there —
+// and still billing — is the instance, with the model resident in VRAM. So
+// this reconnects rather than relaunches, and the endpoint clients were wired
+// to comes back at the same address.
+func cmdResume(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("resume", flag.ExitOnError)
+	_ = fs.Parse(args)
+
+	st, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	key := os.Getenv("VASTAI_API_KEY")
+	if key == "" {
+		return errors.New("VASTAI_API_KEY is not set")
+	}
+	rigs, err := st.List()
+	if err != nil {
+		return err
+	}
+	var target *core.Rig
+	want := fs.Arg(0)
+	for _, r := range rigs {
+		if want != "" && r.ID != want {
+			continue
+		}
+		if r.State.Billable() {
+			target = r
+			break
+		}
+	}
+	if target == nil {
+		fmt.Println("  nothing billable to resume")
+		return nil
+	}
+
+	events := make(chan daemon.Event, 32)
+	go func() {
+		for e := range events {
+			mark := " "
+			if e.Warning {
+				mark = "!"
+			}
+			fmt.Printf("  %s %-10s %s\n", mark, e.Phase, e.Message)
+		}
+	}()
+	defer close(events)
+
+	o := &daemon.Orchestrator{
+		Store: st, Provider: vastai.New(secret.New(key)),
+		Runtime: vllm.New(), Events: events,
+	}
+	live, err := o.Adopt(ctx, target.ID)
+	if err != nil {
+		// A rig that cannot be reconnected to is still a rig that is billing.
+		// Saying so here is the difference between an operator who destroys it
+		// and one who assumes a failed command changed nothing.
+		fmt.Fprintf(os.Stderr, "\n  ! rig %s is still billing at $%.3f/hr — 'larri down' destroys it\n",
+			target.ID, target.Offer.PriceHr)
+		return err
+	}
+	defer live.Close()
+
+	fmt.Printf("\n  ✓ rig %s READY   %s   model: %s\n",
+		target.ID, live.Endpoint, target.Model.ServedName)
+	fmt.Printf("    $%.3f/hr · reconnected without restarting the model\n\n", target.Offer.PriceHr)
+	fmt.Println(notice.PrivacyHeadline)
+
+	<-ctx.Done()
+	fmt.Println("\n  interrupted — the rig keeps running; 'larri down' destroys it")
+	return nil
+}
+
+// refuseIfAlreadyBilling stops a second rig from being rented while a first
+// one is unaccounted for.
+//
+// It reads local state rather than querying the provider, deliberately: a
+// provider that is slow or unreachable must not become a reason to spend
+// money, and the rig this catches is by definition one LARRI recorded.
+func refuseIfAlreadyBilling(st *state.Store) error {
+	rigs, err := st.List()
+	if err != nil {
+		return err
+	}
+	for _, r := range rigs {
+		if !r.State.Billable() {
+			continue
+		}
+		return fmt.Errorf("rig %s is already billing at $%.3f/hr (%s)\n"+
+			"    reconnect to it   larri resume %s\n"+
+			"    or destroy it     larri down %s",
+			r.ID, r.Offer.PriceHr, r.State, r.ID, r.ID)
 	}
 	return nil
 }

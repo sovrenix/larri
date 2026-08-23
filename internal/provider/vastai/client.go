@@ -36,6 +36,7 @@ const (
 	pathCreate  = "/api/v0/asks/%s/"      // offer id
 	pathDestroy = "/api/v0/instances/%s/" // instance id
 	pathGet     = "/api/v0/instances/%s/" // instance id, single-instance read
+	pathAttach  = "/api/v0/instances/%s/ssh/"
 	pathList    = "/api/v1/instances/"
 )
 

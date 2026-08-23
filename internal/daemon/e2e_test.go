@@ -19,8 +19,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -127,7 +129,9 @@ func TestE2ERentServeDestroy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bring-up: %v", err)
 	}
-	defer live.Close()
+	// Indirect, because the resume subtest replaces live with the adopted
+	// one and a direct defer would close the old pointer and leak the new.
+	defer func() { live.Close() }()
 
 	rig := live.Rig
 	t.Logf("READY  rig=%s instance=%s %s $%.3f/hr  endpoint=%s",
@@ -181,6 +185,76 @@ func TestE2ERentServeDestroy(t *testing.T) {
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Errorf("status = %d, want 401", resp.StatusCode)
 		}
+	})
+
+	// FR-SUP-13..16: the rig outlives the process that made it.
+	//
+	// This is the subtest that needs real hardware. Everything it exercises —
+	// the provider installing a key on a running instance, the credential
+	// still being in the server's argv, the host key matching what was pinned
+	// — is a claim about someone else's system that a fake would only restate.
+	t.Run("resume rebuilds the tunnel after the process dies", func(t *testing.T) {
+		port := rig.LocalPort
+		before := processIdentity(ctx, t, live)
+		t.Logf("before: %s", before)
+
+		// Everything a process death takes with it: the SSH connection, the
+		// forward, the proxy, the ephemeral key, the client token.
+		live.Close()
+
+		adopted, err := o.Adopt(ctx, rig.ID)
+		if adopted != nil {
+			t.Cleanup(func() { adopted.Close() })
+		}
+		if err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+		live = adopted
+
+		// AC-6.1: the same local port, or clients would need reconfiguring
+		// and the recovery would be worthless to the tools that matter.
+		if adopted.Rig.LocalPort != port {
+			t.Errorf("local port %d after resume, was %d", adopted.Rig.LocalPort, port)
+		}
+
+		// AC-6.2: re-attached, not relaunched. A restarted server would show
+		// a new pid and would have paid the model-load cost a second time.
+		after := processIdentity(ctx, t, adopted)
+		t.Logf("after:  %s", after)
+		if before != "" && after != before {
+			t.Errorf("the runtime restarted:\n  before %s\n  after  %s", before, after)
+		}
+
+		// AC-6.3: no private key was written anywhere to make this work.
+		assertNoPrivateKeyOnDisk(t, st.Dir())
+
+		// And the only proof that counts.
+		body, _ := json.Marshal(map[string]any{
+			"model":      "e2e",
+			"messages":   []map[string]string{{"role": "user", "content": "Reply with the single word: back"}},
+			"max_tokens": 16,
+		})
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+			adopted.Endpoint+"/chat/completions", strings.NewReader(string(body)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+adopted.ClientToken.Reveal())
+		resp, err := (&http.Client{Timeout: 2 * time.Minute}).Do(req)
+		if err != nil {
+			t.Fatalf("completion after resume: %v", err)
+		}
+		defer resp.Body.Close()
+		var out struct {
+			Choices []struct {
+				Message struct{ Content string } `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Choices) == 0 {
+			t.Fatal("no completion came back through the rebuilt tunnel")
+		}
+		t.Logf("model said after resume: %q", strings.TrimSpace(out.Choices[0].Message.Content))
 	})
 
 	// The teardown under test, rather than the cleanup safety net.
@@ -255,4 +329,46 @@ func sweepOrphans(t *testing.T, p *vastai.Provider, st *state.Store) {
 	}
 	t.Errorf("SWEEP UNCONFIRMED for %s — CHECK THE VAST.AI DASHBOARD",
 		fmt.Sprint(stragglers))
+}
+
+// processIdentity returns the runtime's pid and start time, which together
+// change if and only if the server was restarted.
+func processIdentity(ctx context.Context, t *testing.T, l *Live) string {
+	t.Helper()
+	const cmd = `pid=$(pgrep -f '[v]llm serve' | head -1); ` +
+		`[ -z "$pid" ] && pid=$(pgrep -f '[v]llm\.entrypoints\.openai' | head -1); ` +
+		`[ -z "$pid" ] && { echo none; exit 0; }; ` +
+		`echo "pid=$pid started=$(ps -o lstart= -p $pid)"`
+	out, err := l.ssh.Session().Run(ctx, cmd)
+	if err != nil {
+		t.Logf("could not read the runtime process: %v", err)
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// assertNoPrivateKeyOnDisk enforces FR-STATE-05 by inspection rather than by
+// intent. Recovery is built so that no key ever needs storing; this is what
+// would catch a future change that quietly stored one to make something work.
+func assertNoPrivateKeyOnDisk(t *testing.T, dir string) {
+	t.Helper()
+	markers := []string{"PRIVATE KEY", "BEGIN OPENSSH"}
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		for _, m := range markers {
+			if strings.Contains(string(b), m) {
+				t.Errorf("private key material in %s", path)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Errorf("walk state dir: %v", err)
+	}
 }

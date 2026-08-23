@@ -27,12 +27,14 @@ import (
 // Live is a rig that is serving, plus the machinery holding it open.
 //
 // None of this is persisted, and the ephemeral SSH key is why: FR-STATE-05
-// forbids private keys in state files. The consequence is worth naming — a
-// process restart cannot currently rebuild the tunnel, only tear the rig down.
-// Teardown is a provider API call and never depended on SSH (FR-SEC-18), so
-// that is a lost data plane rather than an unkillable bill. Restoring the
-// tunnel across a restart needs the key in the OS keyring, which is where
-// secrets resolve from anyway (FR-SEC-01).
+// forbids private keys in state files. That is not a limitation to work
+// around; it is the property Adopt is built on. A restart recovers the rig by
+// minting a new key and having the provider install it, so the key that was
+// lost is superseded rather than retrieved — and there is no keyring entry to
+// steal, expire, or forget to clean up.
+//
+// The instance itself was never at risk either way: teardown is a provider API
+// call and has never depended on SSH (FR-SEC-18).
 type Live struct {
 	Rig         *core.Rig
 	Endpoint    string
@@ -160,37 +162,9 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 	// The listener binds before anything is declared healthy, so a port
 	// already in use is an error rather than a rig that reports READY while
 	// every client gets connection refused.
-	fwd, err := client.Listen(0, ep.Port) // 0: kernel-chosen, proxied below
-	if err != nil {
+	if err := o.attachTunnel(ctx, live, rig, ep, localPort); err != nil {
 		return live, err
 	}
-	live.forward = fwd
-	tctx, cancel := context.WithCancel(context.Background())
-	live.cancel = cancel
-	go fwd.Serve(tctx)
-
-	proxy := o.Proxy
-	if proxy == nil {
-		proxy, err = wire.NewProxy(localPort)
-		if err != nil {
-			cancel()
-			return live, err
-		}
-		go proxy.Serve(tctx)
-	}
-	live.proxy = proxy
-	proxy.SetUpstream(wire.Upstream{
-		Host: "127.0.0.1", Port: fwd.LocalPort(), Key: ep.Key,
-	})
-	token, err := secret.Generate(32)
-	if err != nil {
-		cancel()
-		return live, err
-	}
-	proxy.AddClient("larri-cli", token)
-	live.ClientToken = token
-	rig.LocalPort = proxy.LocalPort()
-	live.Endpoint = fmt.Sprintf("http://127.0.0.1:%d/v1", rig.LocalPort)
 	o.emit("tunnel", "%s → %s:%d", live.Endpoint, inst.SSHHost, ep.Port)
 
 	// ---- readiness, through the tunnel ----------------------------------
@@ -200,7 +174,7 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 	// credential, and the model produces a token. A check run on the host
 	// would prove only that vLLM answers itself.
 	o.emit("ready", "waiting for a completion to round-trip")
-	if err := o.waitReady(ctx, sess, rig, proxy.LocalPort(), token); err != nil {
+	if err := o.waitReady(ctx, sess, rig, live.proxy.LocalPort(), live.ClientToken); err != nil {
 		return live, err
 	}
 	if err := o.Store.Transition(rig, core.StateReady, "completion round-trip verified"); err != nil {
@@ -428,7 +402,8 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 		act := cur.since(prevCount)
 		prevCount = cur
 
-		if size > logBytes {
+		grew := size > logBytes
+		if grew {
 			if !everLogged {
 				o.emit("ready", "runtime started producing output")
 			}
@@ -445,6 +420,35 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 		}
 		if attempts%4 == 0 {
 			o.emit("ready", "log %s · %s", humanSize(logBytes), act)
+		}
+
+		// A runtime that has exited is not a runtime that is being slow. The
+		// stall timeout below is deliberately patient — a large checkpoint
+		// loads for many minutes in silence — and that patience is billed. It
+		// should never be spent on a process that is already gone.
+		//
+		// Consulted only when nothing else says the host is working. A log
+		// that is still growing, or a machine that is still burning CPU, is
+		// direct evidence of life, and a process probe that disagreed with it
+		// would be the thing that is wrong — a runtime may fork, re-exec, or
+		// run under a name the pattern does not match. Evidence of work beats
+		// absence of a pid.
+		//
+		// It is also meaningless before the runtime has spoken: an absent
+		// process may simply not have started yet.
+		if everLogged && !grew && !act.Moving {
+			if lc, ok := o.Runtime.(runtime.LivenessChecker); ok {
+				if alive, err := lc.Alive(ctx, sess); err == nil && !alive {
+					// "quiet for" rather than "exited after": the
+					// duration is how long since the log last moved, not
+					// how long the runtime ran. An operator reading
+					// "exited after 12s" would hunt for a crash on
+					// startup that never happened.
+					return errs.Newf(errs.ClassHostFailure, "daemon.waitReady",
+						"runtime exited without serving; log quiet for %s%s",
+						idleSince(lastGrowth), o.runtimeSaid(ctx, sess))
+				}
+			}
 		}
 
 		idle := time.Since(lastGrowth)
@@ -692,3 +696,7 @@ func isAuthFailure(err error) bool {
 		strings.Contains(e, "no supported methods remain") ||
 		strings.Contains(e, "permission denied")
 }
+
+// idleSince renders how long a runtime has been quiet, rounded to something a
+// person reads rather than parses.
+func idleSince(t time.Time) time.Duration { return time.Since(t).Round(time.Second) }

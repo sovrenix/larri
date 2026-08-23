@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -375,5 +376,49 @@ func TestSearchBelowLimitReportsNothing(t *testing.T) {
 	}
 	if len(notices) != 0 {
 		t.Errorf("a partial page is complete and must not warn: %v", notices)
+	}
+}
+
+// The behaviour that makes this endpoint dangerous to trust by status code:
+// Vast answers a failed attach with HTTP 200 and success:false. Verified
+// against the live API — a bogus instance id returns 200 carrying an internal
+// error, where an absent route returns 404.
+//
+// If this check regresses, adopt reports a key installed that is not, and the
+// operator sees an authentication failure against a host that never received
+// it — a confusing symptom two layers from its cause.
+func TestAttachSSHKeyTreats200WithSuccessFalseAsFailure(t *testing.T) {
+	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success": false, "error": "add_ssh_to_instance",
+			"msg": "Error adding SSH key to instance"}`))
+	})
+	err := p.AttachSSHKey(context.Background(), "999", "ssh-ed25519 AAAA test")
+	if err == nil {
+		t.Fatal("a declined attach reported success")
+	}
+	if !strings.Contains(err.Error(), "Error adding SSH key") {
+		t.Errorf("error should carry the provider's reason, got: %v", err)
+	}
+}
+
+func TestAttachSSHKeySendsTheKeyToTheInstanceRoute(t *testing.T) {
+	var path, body string
+	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		_, _ = w.Write([]byte(`{"success": true, "msg": "SSH key attached successfully"}`))
+	})
+	if err := p.AttachSSHKey(context.Background(), "48429759", "ssh-ed25519 AAAAC3 larri"); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	// The trailing slash is not cosmetic: Vast 301s without it, and a
+	// redirected POST arrives without its body.
+	if path != "/api/v0/instances/48429759/ssh/" {
+		t.Errorf("path = %q", path)
+	}
+	if !strings.Contains(body, `"ssh_key"`) || !strings.Contains(body, "AAAAC3") {
+		t.Errorf("body = %q", body)
 	}
 }

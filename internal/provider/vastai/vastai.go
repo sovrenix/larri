@@ -324,3 +324,41 @@ func renderEnv(spec provider.CreateSpec) string {
 	}
 	return strings.TrimSpace(b.String())
 }
+
+// AttachSSHKey installs a public key on a running instance.
+//
+// This is what lets a restarted LARRI recover a rig it can no longer
+// authenticate to. It does not retrieve the old credential — that is gone by
+// design — it adds a new one, so the identity a recovered rig accepts is
+// freshly minted rather than dug out of storage.
+func (p *Provider) AttachSSHKey(ctx context.Context, instanceID, publicKey string) error {
+	body := struct {
+		SSHKey string `json:"ssh_key"`
+	}{SSHKey: publicKey}
+
+	// Vast answers a *failed* attach with HTTP 200 and success:false — a
+	// probe against a non-existent instance returns 200 carrying an internal
+	// Python error, where a genuinely absent route returns 404. So the status
+	// code cannot be the check. Trusting it would report a key installed that
+	// is not, and the failure would surface later as an unexplained
+	// authentication error against a host that never received it.
+	var resp struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+		Msg     string `json:"msg"`
+	}
+	if err := p.c.do(ctx, "POST", fmt.Sprintf(pathAttach, instanceID), body, &resp); err != nil {
+		return err
+	}
+	if !resp.Success {
+		detail := resp.Msg
+		if detail == "" {
+			detail = resp.Error
+		}
+		return errs.Newf(errs.ClassProviderTransient, "vastai.AttachSSHKey",
+			"attach key to %s: %s", instanceID, detail)
+	}
+	return nil
+}
+
+var _ provider.KeyAttacher = (*Provider)(nil)

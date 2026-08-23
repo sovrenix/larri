@@ -36,6 +36,10 @@ type Behaviour struct {
 	// BindHost overrides the bind address, to prove a non-loopback bind is
 	// rejected rather than merely warned about.
 	BindHost string
+	// ExitsAfterLaunch simulates a runtime that starts, writes something, and
+	// dies — the case where waiting out a stall timeout bills for an outcome
+	// that has already been decided.
+	ExitsAfterLaunch bool
 }
 
 // Runtime is a fake inference engine.
@@ -177,3 +181,15 @@ func (s *Session) Close() error                                          { retur
 
 // Requires reports no hardware floor by default.
 func (r *Runtime) Requires() runtime.Requirements { return runtime.Requirements{} }
+
+// Alive reports whether the fake server process would still exist.
+func (r *Runtime) Alive(context.Context, runtime.Session) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Alive unless the test asks otherwise. Tests that drive waitReady
+	// directly never call Launch, and a fake that called those runs dead
+	// would be modelling the harness rather than a runtime.
+	return !r.behaviour.ExitsAfterLaunch, nil
+}
+
+var _ runtime.LivenessChecker = (*Runtime)(nil)

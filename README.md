@@ -18,7 +18,7 @@
                       (__/  \__)
 <div align="center">
 
-# L.A.R.R.I.
+# L.A.R.R.I. 🦞
 
 **Local Agent for Remote Rigging of Inference**
 
@@ -136,6 +136,7 @@ larri up --model Qwen/Qwen3-Coder-30B \
 | `larri up` | Search, rank, provision, bootstrap, wire clients |
 | `larri status` | State, price, elapsed time, accrued cost — and why a past rig ended |
 | `larri down` | Revert wiring, destroy, **confirm absence**, report total cost |
+| `larri resume` | Rebuild the tunnel to a rig that outlived the last process |
 | `larri offers` | Search and rank without spending anything |
 | `larri orphans` | Find and destroy resources that local state does not account for |
 | `larri ui` | Web console: live KPIs, GPU/VRAM graphs, accrued cost, chat pane |

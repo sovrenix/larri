@@ -360,3 +360,101 @@ func (r *Runtime) Requires() runtime.Requirements {
 		Why:                  "vLLM",
 	}
 }
+
+// adoptCmd prints the argv of a running vLLM server, one element per line.
+//
+// The bracket in the pattern keeps the search from matching the shell that
+// issues it — a lesson learned the expensive way, when a self-matching pattern
+// made a process appear to be running that was in fact the query for it.
+const adoptCmd = `pid=$(pgrep -f '[v]llm serve' | head -1); ` +
+	`[ -z "$pid" ] && pid=$(pgrep -f '[v]llm\.entrypoints\.openai' | head -1); ` +
+	`[ -z "$pid" ] && { echo NOTRUNNING; exit 0; }; ` +
+	`tr '\0' '\n' < /proc/$pid/cmdline`
+
+// Adopt re-attaches to a vLLM server this host is already running.
+//
+// The port and the rig credential are read back from the process's own argv,
+// which is where Launch put them. Nothing is restarted, so the weights stay
+// resident and recovery costs a round-trip rather than a reload.
+func (r *Runtime) Adopt(ctx context.Context, sess runtime.Session,
+	spec core.ModelSpec) (runtime.Endpoint, error) {
+
+	out, err := sess.Run(ctx, adoptCmd)
+	if err != nil {
+		return runtime.Endpoint{}, errs.Newf(errs.ClassHostFailure, "vllm.Adopt",
+			"inspect host: %v", err)
+	}
+	text := string(out)
+	if strings.Contains(text, "NOTRUNNING") {
+		return runtime.Endpoint{}, errs.Newf(errs.ClassHostFailure, "vllm.Adopt",
+			"no server running")
+	}
+
+	argv := strings.Split(strings.TrimSpace(text), "\n")
+	value := func(flag string) string {
+		for i, a := range argv {
+			a = strings.TrimSpace(a)
+			if a == flag && i+1 < len(argv) {
+				return strings.TrimSpace(argv[i+1])
+			}
+			if v, ok := strings.CutPrefix(a, flag+"="); ok {
+				return strings.TrimSpace(v)
+			}
+		}
+		return ""
+	}
+
+	key := value("--api-key")
+	if key == "" {
+		// A server running without the credential LARRI issues is not one
+		// LARRI started. Adopting it would put an unauthenticated endpoint
+		// behind a tunnel and call it recovered.
+		return runtime.Endpoint{}, errs.Newf(errs.ClassHostFailure, "vllm.Adopt",
+			"server has no api key: not started by larri")
+	}
+	port := RemotePort
+	if p := value("--port"); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return runtime.Endpoint{}, errs.Newf(errs.ClassHostFailure, "vllm.Adopt",
+				"unreadable port %q", p)
+		}
+		port = n
+	}
+	served := spec.ServedName
+	if s := value("--served-model-name"); s != "" {
+		served = s
+	}
+
+	ep := runtime.Endpoint{
+		Host:  runtime.Loopback,
+		Port:  port,
+		Model: served,
+		Key:   secret.New(key),
+	}
+	if !ep.Valid() {
+		return runtime.Endpoint{}, errs.Newf(errs.ClassModelFailure, "vllm.Adopt",
+			"invalid bind address %s: loopback only", ep.Host)
+	}
+	return ep, nil
+}
+
+var _ runtime.Adopter = (*Runtime)(nil)
+
+// aliveCmd reports whether a vLLM server process exists. The bracket keeps the
+// pattern from matching the shell that runs it.
+const aliveCmd = `pgrep -f '[v]llm serve' >/dev/null 2>&1 && { echo yes; exit 0; }; ` +
+	`pgrep -f '[v]llm\.entrypoints\.openai' >/dev/null 2>&1 && { echo yes; exit 0; }; echo no`
+
+// Alive reports whether the server process is still running.
+func (r *Runtime) Alive(ctx context.Context, sess runtime.Session) (bool, error) {
+	out, err := sess.Run(ctx, aliveCmd)
+	if err != nil {
+		// An unreachable host is not a dead runtime. Saying "not alive" here
+		// would turn a dropped SSH connection into a teardown.
+		return false, errs.Newf(errs.ClassHostFailure, "vllm.Alive", "probe host: %v", err)
+	}
+	return strings.Contains(string(out), "yes"), nil
+}
+
+var _ runtime.LivenessChecker = (*Runtime)(nil)

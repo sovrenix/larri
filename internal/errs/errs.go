@@ -50,6 +50,16 @@ const (
 	// ClassWiring: client config could not be written or reverted. Never
 	// fatal to the rig; report, keep the backup, continue.
 	ClassWiring
+
+	// ClassSecurity: an identity check failed — a host key that no longer
+	// matches the one a rig was pinned to, or a credential that did not come
+	// from LARRI.
+	//
+	// Separate from ClassHostFailure because the responses differ in kind. A
+	// host failure means try another machine; this means stop and tell the
+	// operator, since falling back would quietly discard the only evidence
+	// that something answered in place of the expected host.
+	ClassSecurity
 )
 
 var classNames = map[Class]string{
@@ -61,6 +71,7 @@ var classNames = map[Class]string{
 	ClassModelFailure:           "model-failure",
 	ClassDestroyUnconfirmed:     "destroy-unconfirmed",
 	ClassWiring:                 "wiring",
+	ClassSecurity:               "security",
 }
 
 func (c Class) String() string {
