@@ -49,7 +49,7 @@
 
 **Alpha. It rents real GPUs and serves real models — against Vast.ai only.**
 
-The core lifecycle works and has been verified on live hardware, repeatedly and at cost:
+The core lifecycle works and has been verified on live hardware:
 search, rank, rent, bootstrap, serve, tunnel, supervise, reconnect after a restart, and tear
 down with absence confirmed at the provider.
 
@@ -63,8 +63,7 @@ down with absence confirmed at the provider.
 | Client config writers (Continue.dev, VS Code, LibreChat) | **Not implemented** — configure clients by hand for now |
 | Web UI, chat pane, OpenTelemetry | **Not implemented** |
 
-What is not built is marked as such below rather than described as if it were. The
-[Requirements Specification](docs/LARRI_Requirements_Specification.md) and [Design
+The [Requirements Specification](docs/LARRI_Requirements_Specification.md) and [Design
 Document](docs/LARRI_Design_Document.md) cover the whole system — architecture, the provider
 and runtime abstractions, VRAM sizing mathematics, cost-safety invariants, and a full threat
 model — including the parts that are still specification.
@@ -74,16 +73,8 @@ session ever ends in a way you did not expect.
 
 ### Versioning
 
-**0.9.0.** Semantic versioning, and the leading zero is doing work: the lifecycle is proven,
-but the command line and the config format may still move, so pin a version if you script
-against them. `larri version` says so out loud rather than leaving stability to be assumed.
-
-What 1.0 waits on is not polish. It is **a second provider** — one adapter is not an
-abstraction, it is an interface shaped like the thing behind it, and whatever RunPod turns
-out to need will change the interface rather than merely add to it. Taking a second and third
-*runtime* live produced five bugs no unit test could have found, every one a vLLM-shaped
-assumption in supposedly generic code; there is no reason the provider layer is different.
-Client config writers and the web console are also outstanding (§20).
+**0.9.0.** : The lifecycle is proven, but the command line and the config format may still 
+move.
 
 ---
 
