@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"go.sovrenix.com/larri/internal/runtime"
 	"go.sovrenix.com/larri/internal/secret"
 )
 
@@ -250,5 +251,16 @@ func TestPerClientTokensRevokeIndependently(t *testing.T) {
 		if r.StatusCode != http.StatusOK {
 			t.Errorf("token %s got %d", tok, r.StatusCode)
 		}
+	}
+}
+
+// The probe header is declared in two packages — wire, which strips and counts
+// it, and runtime, which sets it — because neither should depend on the other.
+// That is fine only while they agree, and this is what makes a disagreement a
+// failed test rather than an idle timer that silently never fires.
+func TestProbeHeaderMatchesTheRuntimeConstant(t *testing.T) {
+	if ProbeHeader != runtime.ProbeHeader {
+		t.Fatalf("wire says %q, runtime says %q: probe traffic would reset the idle clock",
+			ProbeHeader, runtime.ProbeHeader)
 	}
 }

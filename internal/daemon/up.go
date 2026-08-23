@@ -182,7 +182,20 @@ type UpRequest struct {
 // The ordering is the design's, and the two lines that matter are the intent
 // write before the create call, and the readiness check through the tunnel
 // rather than on the host.
-func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error) {
+// Survey is the result of sizing a model and ranking the market for it,
+// without spending anything.
+//
+// It exists so `offers` and `up` cannot disagree. A preview that ran its own
+// search would eventually recommend an offer that `up` then rejects, and the
+// operator would have no way to tell which one was lying.
+type Survey struct {
+	Plan      core.SizingPlan
+	Selection rank.Result
+	Offers    int
+}
+
+// survey sizes the model and ranks the market. It never spends.
+func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, error) {
 	// ---- size before spending -------------------------------------------
 	o.emit("sizing", "resolving %s", req.Model.Ref)
 	facts, err := o.Resolver.Resolve(ctx, req.Model.Ref, req.Model.Revision)
@@ -235,8 +248,22 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 	sel := rank.Select(offers, req.Criteria, fits, o.Policy)
 	if sel.Selected == nil {
 		short := sizing.Analyse(sizing.Request{Spec: req.Model, Facts: facts}, offers)
-		return nil, errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.Up", "%s", short.String())
+		return nil, errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.survey", "%s", short.String())
 	}
+	return &Survey{Plan: plan, Selection: sel, Offers: len(offers)}, nil
+}
+
+// Offers ranks the market for a model without spending (FR-CLI-04).
+func (o *Orchestrator) Offers(ctx context.Context, req UpRequest) (*Survey, error) {
+	return o.survey(ctx, req)
+}
+
+func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error) {
+	sv, err := o.survey(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	plan, sel := sv.Plan, sv.Selection
 	chosen := sel.Selected.Offer
 	o.reportExclusions(sel)
 	o.emit("select", "%s %s %dGB $%.3f/hr (reliability %.2f)",

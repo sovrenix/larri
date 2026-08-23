@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Sovrenix Inc.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-package vllm
+package runtime
 
 import (
 	"bytes"
@@ -13,11 +13,14 @@ import (
 	"net/http"
 	"strconv"
 	"time"
-
-	"go.sovrenix.com/larri/internal/runtime"
 )
 
 // ChatRequest is one OpenAI-compatible completion call.
+//
+// It lives here rather than beside a particular engine because vLLM,
+// llama.cpp's server and Ollama all speak the same wire format. One client for
+// all three means a readiness check cannot come to mean something different
+// depending on which engine happens to be serving.
 //
 // Readiness checks whatever address it is given, and the orchestrator gives it
 // the **local** end of the tunnel rather than the remote one. That is
@@ -27,7 +30,7 @@ import (
 // and the model produces a token. READY should mean the thing the operator is
 // about to do actually works.
 type ChatRequest struct {
-	Endpoint runtime.Endpoint
+	Endpoint Endpoint
 	Body     []byte
 	Timeout  time.Duration
 }
@@ -64,6 +67,11 @@ func (r ChatRequest) Do(ctx context.Context) (*ChatResponse, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if r.Endpoint.Probe {
+		// FR-SUP-08: LARRI's own health traffic must not reset the idle
+		// clock, or a rig supervised every 30 s is a rig that never reclaims.
+		req.Header.Set(ProbeHeader, "1")
+	}
 	if !r.Endpoint.Key.Empty() {
 		req.Header.Set("Authorization", "Bearer "+r.Endpoint.Key.Reveal())
 	}

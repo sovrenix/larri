@@ -64,6 +64,26 @@ func (a *Activity) Probes() int64 { return a.probes.Load() }
 // activity even though no new request has arrived.
 func (a *Activity) InFlight() int64 { return a.inFlight.Load() }
 
+// MarkOperator backdates the idle clock.
+//
+// Two callers need this and neither is the data plane, which sets the clock
+// itself: a restarted LARRI restoring what it knew before the process died,
+// and tests that must simulate an hour of silence without waiting an hour. It
+// is not a way to keep a rig alive — writing a *future* time would defeat the
+// timeout this exists to enforce — so it refuses to move the clock forward.
+func (a *Activity) MarkOperator(t time.Time) {
+	if t.After(time.Now()) {
+		return
+	}
+	a.lastOperator.Store(t.UnixNano())
+}
+
+// EnterInFlight and ExitInFlight bracket a request the proxy is not carrying
+// itself — a supervisor holding a rig alive across work it knows about, or a
+// test proving a long generation is not idleness.
+func (a *Activity) EnterInFlight() { a.inFlight.Add(1) }
+func (a *Activity) ExitInFlight()  { a.inFlight.Add(-1) }
+
 // IdleFor reports how long the rig has been without operator inference.
 func (a *Activity) IdleFor(now time.Time) time.Duration {
 	if a.InFlight() > 0 {

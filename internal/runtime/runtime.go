@@ -30,7 +30,18 @@ type Endpoint struct {
 	Port  int
 	Model string        // the stable served name, not the upstream ref
 	Key   secret.Secret // the rig token; never a client's token (FR-SEC-22)
+
+	// Probe marks this call as LARRI's own health check rather than the
+	// operator's work, so it is excluded from the idle clock (FR-SUP-08).
+	// A supervisor that reset the timer it enforces would never fire.
+	Probe bool
 }
+
+// ProbeHeader marks a request as LARRI's own. It is duplicated from wire
+// rather than imported to keep the runtime layer free of a dependency on the
+// proxy; the constant is part of the contract between them, and the test in
+// wire asserts they agree.
+const ProbeHeader = "X-Larri-Probe"
 
 // Loopback is the only address a runtime may bind.
 const Loopback = "127.0.0.1"
@@ -186,4 +197,21 @@ type Adopter interface {
 // that, an absent process may simply not have started yet.
 type LivenessChecker interface {
 	Alive(ctx context.Context, sess Session) (bool, error)
+}
+
+// SecurityNoter is implemented by runtimes that cannot uphold some part of the
+// security model, and must say so rather than let it pass unnoticed.
+//
+// The case that forced this: Ollama has no server-side credential at all. Its
+// maintainers have said they do not plan to add one, so a rig running Ollama
+// has no rig-side token, and the "two credentials with opposite lifetimes"
+// boundary holds only on the local half. That is a defensible trade — the
+// server binds loopback on the rented host, nothing publishes a port for it,
+// and the SSH tunnel is the only way in — but it is not the same guarantee as
+// vLLM's, and an operator choosing between them deserves to know which they are
+// getting.
+//
+// Notes are surfaced at bring-up. A caveat nobody is shown is not a caveat.
+type SecurityNoter interface {
+	SecurityNotes() []string
 }

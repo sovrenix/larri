@@ -269,7 +269,7 @@ func (r *Runtime) Ready(ctx context.Context, ep runtime.Endpoint, spec core.Mode
 	if err != nil {
 		return err
 	}
-	req := ChatRequest{Endpoint: ep, Body: body}
+	req := runtime.ChatRequest{Endpoint: ep, Body: body}
 	resp, err := req.Do(ctx)
 	if err != nil {
 		return errs.Newf(errs.ClassHostFailure, "vllm.Ready", "%v", err)
@@ -288,21 +288,7 @@ func (r *Runtime) Ready(ctx context.Context, ep runtime.Endpoint, spec core.Mode
 // quantisation — so it reads the file the launch redirected into rather than
 // questioning a process that may no longer exist.
 func (r *Runtime) Logs(ctx context.Context, sess runtime.Session, tail int) (io.ReadCloser, error) {
-	n := "200"
-	if tail > 0 {
-		n = strconv.Itoa(tail)
-	}
-	cmd := fmt.Sprintf("tail -n %s %s 2>/dev/null || echo '(no runtime log yet)'", n, LogPath)
-	if st, ok := sess.(interface {
-		Stream(context.Context, string) (io.ReadCloser, error)
-	}); ok {
-		return st.Stream(ctx, cmd)
-	}
-	out, err := sess.Run(ctx, cmd)
-	if err != nil {
-		return nil, err
-	}
-	return io.NopCloser(strings.NewReader(string(out))), nil
+	return runtime.TailLog(ctx, sess, LogPath, tail)
 }
 
 // stopServersCmd kills any running server without killing the shell that
@@ -344,9 +330,7 @@ func (r *Runtime) Stop(ctx context.Context, sess runtime.Session) error {
 // Model references and served names reach a remote shell, and a ref
 // containing a quote or a semicolon would otherwise be command injection on a
 // machine LARRI has root on.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
+func shellQuote(s string) string { return runtime.ShellQuote(s) }
 
 // Requires reports vLLM's hardware floor.
 //
@@ -391,18 +375,7 @@ func (r *Runtime) Adopt(ctx context.Context, sess runtime.Session,
 	}
 
 	argv := strings.Split(strings.TrimSpace(text), "\n")
-	value := func(flag string) string {
-		for i, a := range argv {
-			a = strings.TrimSpace(a)
-			if a == flag && i+1 < len(argv) {
-				return strings.TrimSpace(argv[i+1])
-			}
-			if v, ok := strings.CutPrefix(a, flag+"="); ok {
-				return strings.TrimSpace(v)
-			}
-		}
-		return ""
-	}
+	value := func(flag string) string { return runtime.ArgValue(argv, flag) }
 
 	key := value("--api-key")
 	if key == "" {

@@ -41,6 +41,8 @@ const usage = `larri — Local Agent for Remote Rigging of Inference
   larri up      rent a GPU, serve a model, wire local clients
   larri down    revert wiring, destroy the rig, confirm it is gone
   larri resume  rebuild the tunnel to a rig that outlived the last process
+  larri offers  search and rank without spending anything
+  larri orphans find and destroy resources local state does not account for
   larri status  what is running, what it costs, and why past rigs ended
   larri version build metadata
 
@@ -63,6 +65,10 @@ func main() {
 		err = cmdDown(ctx, os.Args[2:])
 	case "resume":
 		err = cmdResume(ctx, os.Args[2:])
+	case "offers":
+		err = cmdOffers(ctx, os.Args[2:])
+	case "orphans":
+		err = cmdOrphans(ctx, os.Args[2:])
 	case "status":
 		err = cmdStatus(ctx, os.Args[2:])
 	case "version", "--version", "-v":
@@ -127,12 +133,26 @@ func cmdUp(ctx context.Context, args []string) error {
 	port := fs.Int("port", 8000, "fixed local port clients are wired against")
 	yes := fs.Bool("yes", false, "do not prompt before spending")
 	dryRun := fs.Bool("dry-run", false, "search, size and select without spending")
+	engine := fs.String("runtime", "", "vllm, llamacpp or ollama (default: chosen from the model)")
+	idleFor := fs.Duration("idle-timeout", 0, "reclaim after this long without operator inference (0: use the default)")
+	idleAct := fs.String("idle-action", "", "destroy or warn (default: destroy)")
+	budget := fs.Float64("budget", 0, "spend ceiling in $; destroys on breach after a warning")
 	_ = fs.Parse(args)
 
 	if *model == "" {
 		return errors.New("--model is required")
 	}
 	cfg := config.Default()
+	if *idleFor != 0 {
+		cfg.Idle.Timeout = *idleFor
+	}
+	if *idleAct != "" {
+		cfg.Idle.Action = config.IdleAction(*idleAct)
+	}
+	cfg.Budget.MaxUSD = *budget
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 	mode := config.DetectMode(config.Invocation{ForceNonInteractive: *yes}, os.Getenv)
 	firstRun(cfg, mode)
 
@@ -193,8 +213,27 @@ func cmdUp(ctx context.Context, args []string) error {
 	}
 	fmt.Printf("  labels      %s — %s\n\n", keySrc, config.LabelKeyNotice(keySrc))
 
+	spec := core.ModelSpec{
+		Ref: *model, Source: core.SourceHuggingFace, ServedName: name,
+		Quantization: *quant, ContextLen: *ctxLen,
+	}
+	if strings.Contains(*model, ":") && !strings.Contains(*model, "/") {
+		// "llama3.1:70b" is an Ollama tag; "org/repo" is Hugging Face. The
+		// shapes are unambiguous, so asking the operator to also pass
+		// --runtime would be asking them to repeat themselves.
+		spec.Source = core.SourceOllamaRegistry
+	}
+	eng, err := pickRuntime(*engine, spec)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("  runtime     %s (%s)\n", eng.Kind(), runtimeWhy(*engine, spec))
+	for _, note := range securityNotes(eng) {
+		fmt.Printf("  ! runtime    %s\n", note)
+	}
+
 	o := &daemon.Orchestrator{
-		Store: st, Provider: p, Runtime: vllm.New(),
+		Store: st, Provider: p, Runtime: eng,
 		LabelSealer: sealer,
 		Resolver:    sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
 		Policy: rank.Policy{
@@ -211,11 +250,8 @@ func cmdUp(ctx context.Context, args []string) error {
 		crit.GPUModel = []string{*gpu}
 	}
 	req := daemon.UpRequest{
-		Criteria: crit,
-		Model: core.ModelSpec{
-			Ref: *model, Source: core.SourceHuggingFace, ServedName: name,
-			Quantization: *quant, ContextLen: *ctxLen,
-		},
+		Criteria:  crit,
+		Model:     spec,
 		DiskGB:    *disk,
 		HFToken:   secret.New(os.Getenv("HF_TOKEN")),
 		LocalPort: *port,
@@ -256,14 +292,24 @@ func cmdUp(ctx context.Context, args []string) error {
 	// M1 has no daemon, so `up` holds the tunnel in the foreground. That is
 	// honest rather than convenient: a tunnel is a live process, and exiting
 	// while the rig bills would make `up` look successful and cost money.
-	fmt.Printf("\n  holding the tunnel — Ctrl-C to tear down and stop paying\n\n")
-	<-ctx.Done()
+	fmt.Printf("\n  %s\n", describePolicy(cfg))
+	fmt.Printf("  holding the tunnel — Ctrl-C to tear down and stop paying\n\n")
 
-	fmt.Printf("\n  interrupted; tearing down\n")
+	// The supervisor decides; it does not destroy. A nil return means the
+	// operator interrupted, and an interrupt is not a reason to end a rig.
+	term := o.Supervise(ctx, live, daemon.SupervisePolicy{
+		Idle: cfg.Idle, Budget: cfg.Budget,
+	})
+	if term == nil {
+		fmt.Printf("\n  interrupted; tearing down\n")
+	} else {
+		fmt.Printf("\n  ! %s — %s\n", term.Code, term.Summary)
+	}
+
 	live.Close()
 	dctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	if err := o.Down(dctx, rig, nil); err != nil {
+	if err := o.Down(dctx, rig, term); err != nil {
 		return err
 	}
 	c := rig.End.Cost
@@ -478,4 +524,24 @@ func refuseIfAlreadyBilling(st *state.Store) error {
 			r.ID, r.Offer.PriceHr, r.State, r.ID, r.ID)
 	}
 	return nil
+}
+
+// describePolicy states the deadlines a rig is running under.
+//
+// FR-CFG-03 applied to the moment it matters: the operator is about to walk
+// away from something that bills by the second, and a destructive default they
+// were never told about is a trap however well reasoned.
+func describePolicy(cfg config.Config) string {
+	parts := make([]string, 0, 2)
+	if cfg.Idle.Timeout > 0 {
+		parts = append(parts, fmt.Sprintf("idle %s → %s", cfg.Idle.Timeout, cfg.Idle.Action))
+	} else {
+		parts = append(parts, "no idle timeout")
+	}
+	if cfg.Budget.MaxUSD > 0 {
+		parts = append(parts, fmt.Sprintf("budget $%.2f → destroy", cfg.Budget.MaxUSD))
+	} else {
+		parts = append(parts, "no budget ceiling")
+	}
+	return "policy: " + strings.Join(parts, " · ")
 }
