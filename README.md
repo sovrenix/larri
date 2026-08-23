@@ -56,7 +56,7 @@ down with absence confirmed at the provider.
 |---|---|
 | Lifecycle: `up` · `down` · `status` · `resume` · `offers` · `orphans` | **Working, live-verified** |
 | Providers | **Vast.ai.** RunPod is not implemented |
-| Runtimes | **vLLM live-verified.** llama.cpp and Ollama implemented, not yet exercised on live hardware |
+| Runtimes | **vLLM and llama.cpp live-verified.** Ollama implemented, not yet exercised on live hardware |
 | Cost safety: journal, orphan sweep, idle timeout, budget ceiling, health checks | **Working** |
 | Surfaces: `mcp` (Model Context Protocol) · `tui` (dashboard) | **Working** |
 | Client config writers (Continue.dev, VS Code, LibreChat) | **Not implemented** — configure clients by hand for now |

@@ -1208,6 +1208,46 @@ growing log would be the thing that is wrong. It is also meaningless before the
 runtime has spoken at all — an absent process may simply not have started yet,
 which is what the cold regime already covers.
 
+### 12.2.1.1 Every Deadline Is a Deadline About Cheap Hardware
+
+The regimes above were written against fast hosts and tested against them. Then llama.cpp
+went to live hardware — and llama.cpp exists to make **cheap** hardware usable, which meant
+the first honest test of these timers was also the first slow one. Three fixed limits failed
+in the same way within one afternoon:
+
+| Limit | What it measured | What it should have measured |
+|---|---|---|
+| Endpoint unreachable (90 s) | Time since the endpoint was published | Time since **anything changed** |
+| Auth retries (8 × 10 s) | A fixed attempt count | Time since **anything changed** |
+| Readiness cold start | Growth of vLLM's log file, by name | Growth of **this runtime's** log |
+
+A GTX 1050 Ti was killed 106 seconds in while the provider reported `Verifying Checksum` and
+`Pull complete`: sshd was not up because the image was still arriving. The replacement host
+died the same way. On the next, sshd answered and the rig key was refused for eighty seconds
+— the provider installs it from a start-up script that runs *after* the pull — so LARRI gave
+up and paid to begin the same pull somewhere else.
+
+The rule these converge on is the one §12.2.1 already stated and did not apply everywhere:
+**a deadline that measures elapsed time punishes slow hardware for being slow.** Every wait
+here now measures *silence*, and silence is what a dead host produces. Nothing was weakened
+by this: a host that goes `offline` stops changing its status, so the same limits still catch
+it — verified in the same session, on the same run that fixed them.
+
+The third row is a different fault, and worse. `readLogState` reached for vLLM's log path
+directly, so under llama.cpp the daemon watched a file that did not exist, concluded the
+runtime had produced nothing, and killed a working host on the cold-start limit. That is P2
+violated — nothing above the runtime layer may know which engine is serving — and the fix is
+the runtime declaring where it writes (`LogWriter`) rather than the daemon assuming.
+
+One consequence is worth stating on its own, because it inverts an earlier decision. The
+liveness probe (§12.2.1) was originally gated on the hardware counters being quiet, on the
+reasoning that a busy machine is evidence of work. **On a marketplace instance it is not.**
+`/proc` reports the whole machine (§12.2.3), so the CPU it shows is mostly other tenants: a
+live run sat for minutes at `cpu 9%` while `llama-server` had already exited on a missing
+shared library. The counters were real and the work was somebody else's. The log is the only
+signal that belongs to *our* process, so a growing log still outranks the probe — and nothing
+else does.
+
 ### 12.2.2 Dead on Arrival Is Common, and Reliability Does Not Predict It
 
 Measured across eleven live rentals on the cheap end of the Vast market:
@@ -2532,7 +2572,7 @@ after the plan has partly happened is the same drift this document exists to pre
 | **M0** | Done |
 | **M1** | Done, verified on live hardware across repeated paid runs |
 | **M2** | Mostly done — reconciliation, orphan sweep, `STOPPED` semantics, idle reclamation, budget ceilings, health checks, restart adoption (§11.4). Crash injection and preemption recovery outstanding |
-| **M3** | Partial — llama.cpp and Ollama implemented and unit-tested but not yet run on live hardware; `offers` and `--dry-run` done. **RunPod not started**, so the provider abstraction has never been proven against a second provider |
+| **M3** | Partial — llama.cpp implemented and **live-verified** (GTX 1060, $0.016/hr, serving a GGUF the vLLM path cannot run at all); Ollama implemented but not yet run on live hardware; `offers` and `--dry-run` done. **RunPod not started**, so the provider abstraction has never been proven against a second provider |
 | **M4** | Partial — tool registry, MCP server and TUI done. Daemon API, web UI, chat pane and client config writers outstanding |
 | **M5** | Not started |
 
@@ -2541,11 +2581,11 @@ Two of these are worth naming as risks rather than as remaining work:
 - **The provider abstraction is unproven.** One adapter is not an abstraction, it is an
   interface shaped like the thing behind it. Whatever RunPod turns out to need is the real
   test of §5, and some of it will be a change to the interface rather than to the adapter.
-- **Two runtimes are untested against reality.** llama.cpp and Ollama pass their unit tests,
-  which proves the command lines are built as intended and nothing more. Every live-only
-  bug in vLLM's bring-up — the image variants, the launcher discovery, the self-matching
-  process pattern, the container counters that lie — was invisible until a paid run found
-  it, and there is no reason to expect these two to be different.
+- **Ollama is untested against reality.** It passes its unit tests, which proves the command
+  lines are built as intended and nothing more. This risk was written when it covered
+  llama.cpp too, and taking llama.cpp live immediately produced four bugs no unit test could
+  have found: three deadlines that measured elapsed time instead of silence (§12.2.1.1), and
+  a daemon watching the wrong log file. There is no reason to expect Ollama to be different.
 
 ### 20.1 Why M1 Is Large
 

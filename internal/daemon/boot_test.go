@@ -19,6 +19,7 @@ import (
 	"go.sovrenix.com/larri/internal/provider"
 	rfake "go.sovrenix.com/larri/internal/runtime/fake"
 	"go.sovrenix.com/larri/internal/secret"
+	"go.sovrenix.com/larri/internal/sshx"
 )
 
 // bootProvider reports a scripted sequence of statuses, so the wait can be
@@ -277,7 +278,7 @@ func TestAdvertisedEndpointThatNeverAnswersIsAHostFailure(t *testing.T) {
 	if !errs.Is(err, errs.ClassHostFailure) {
 		t.Fatalf("class = %s, want host-failure so it earns a fallback", errs.ClassOf(err))
 	}
-	if !strings.Contains(err.Error(), "still not answering") {
+	if !strings.Contains(err.Error(), "unreachable") {
 		t.Errorf("the error should name what was tried: %v", err)
 	}
 	if time.Since(start) > 10*time.Second {
@@ -504,3 +505,123 @@ func TestGrowingLogOutweighsAFailedLivenessProbe(t *testing.T) {
 		t.Errorf("gave up after %s despite a growing log", time.Since(start).Round(time.Millisecond))
 	}
 }
+
+// The bug a live run on a GTX 1050 Ti found: the endpoint clock measured
+// elapsed time since publication rather than silence, so a host was killed 106
+// seconds in while the provider was reporting "Verifying Checksum" and "Pull
+// complete". sshd was not up because the image was still arriving — a host
+// working, not a host dead. Cheap cards pull slowly, so the engines that exist
+// to use cheap cards hit this hardest.
+func TestEndpointClockResetsWhileTheHostReportsProgress(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	// An endpoint that never answers, on a host that keeps reporting new
+	// pull progress — exactly the live shape.
+	// Enough distinct statuses to cover the whole window: once the fixture
+	// repeats its last step the host has genuinely gone quiet, and the clock
+	// should fire then.
+	steps := make([]core.Instance, 0, 400)
+	for i := 0; i < 400; i++ {
+		steps = append(steps, core.Instance{
+			InstanceID: "i", Status: "loading",
+			StatusMsg: fmt.Sprintf("%02d: Pull complete", i),
+			SSHHost:   "127.0.0.1", SSHPort: dead,
+		})
+	}
+	p := &bootProvider{steps: steps, repeat: true}
+	o := &Orchestrator{
+		Provider:           p,
+		BootPollInterval:   10 * time.Millisecond,
+		EndpointStallLimit: 200 * time.Millisecond,
+		BootCap:            1500 * time.Millisecond,
+		BootStallTimeout:   30 * time.Second,
+	}
+	rig := &core.Rig{Instance: &core.Instance{InstanceID: "i"}}
+	start := time.Now()
+	_, err = o.waitForSSH(context.Background(), rig)
+	if err == nil {
+		t.Fatal("expected the cap to end it eventually")
+	}
+	// It must have outlived the 200ms endpoint limit many times over, because
+	// every status change is a reason to keep waiting.
+	if waited := time.Since(start); waited < time.Second {
+		t.Errorf("gave up after %s despite continuous pull progress", waited.Round(time.Millisecond))
+	}
+	if strings.Contains(err.Error(), "unreachable") {
+		t.Errorf("killed on the endpoint clock while the host was working: %v", err)
+	}
+}
+
+// The second bug of the same family, found on the same GTX 1050 Ti. sshd
+// answers as soon as the base image is up, but the provider's start-up script
+// installs the rig key only after the pull finishes — so a fixed eight
+// attempts ran out while the host was still working, and LARRI paid to start
+// the same pull somewhere else.
+func TestAuthRetryFollowsProviderProgress(t *testing.T) {
+	steps := make([]core.Instance, 0, 200)
+	for i := 0; i < 200; i++ {
+		steps = append(steps, core.Instance{
+			InstanceID: "i", Status: "loading",
+			StatusMsg: fmt.Sprintf("layer %03d pulled", i),
+		})
+	}
+	p := &bootProvider{steps: steps, repeat: true}
+	o := &Orchestrator{
+		Provider:         p,
+		BootPollInterval: 5 * time.Millisecond,
+		AuthStallTimeout: 50 * time.Millisecond,
+		AuthCap:          400 * time.Millisecond,
+	}
+	// A port nothing listens on: every dial fails, so only the stall logic
+	// decides when to stop.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	keys, err := sshx.NewKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, _, err = o.pinAndDial(context.Background(),
+		&core.Instance{InstanceID: "i", SSHHost: "127.0.0.1", SSHPort: port}, keys)
+	if err == nil {
+		t.Fatal("expected a failure against a dead port")
+	}
+	// It must have kept going past the 50ms stall window, because the
+	// provider kept reporting new layers.
+	if waited := time.Since(start); waited < 200*time.Millisecond {
+		t.Errorf("gave up after %s despite continuous provider progress", waited.Round(time.Millisecond))
+	}
+}
+
+// The leak this closes: readLogState reached for vLLM's log constant
+// directly, so under llama.cpp the daemon watched a file that never existed,
+// saw no output, and killed a working host on the cold-start limit. Nothing
+// above the runtime layer may know which engine is serving (P2).
+func TestDaemonAsksTheRuntimeWhereItWrites(t *testing.T) {
+	o := &Orchestrator{Runtime: rfake.New(rfake.Behaviour{})}
+	if got := o.runtimeLogPath(); got != "/var/log/larri-fake.log" {
+		t.Errorf("log path = %q; the daemon is not asking the runtime", got)
+	}
+	// A runtime that writes no file must degrade rather than read a path
+	// belonging to a different engine.
+	o.Runtime = pathlessRuntime{rfake.New(rfake.Behaviour{})}
+	if got := o.runtimeLogPath(); got != "" {
+		t.Errorf("log path = %q for a runtime that writes none", got)
+	}
+}
+
+// pathlessRuntime hides the fake's LogPath, standing in for an engine that
+// streams its output instead of writing a file.
+type pathlessRuntime struct{ *rfake.Runtime }
+
+func (pathlessRuntime) LogPath() {} // shadows, so the LogWriter assertion fails

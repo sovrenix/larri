@@ -31,6 +31,9 @@ import (
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/provider/vastai"
 	"go.sovrenix.com/larri/internal/rank"
+	"go.sovrenix.com/larri/internal/runtime"
+	"go.sovrenix.com/larri/internal/runtime/llamacpp"
+	"go.sovrenix.com/larri/internal/runtime/ollama"
 	"go.sovrenix.com/larri/internal/runtime/vllm"
 	"go.sovrenix.com/larri/internal/secret"
 	"go.sovrenix.com/larri/internal/sizing"
@@ -88,8 +91,11 @@ func TestE2ERentServeDestroy(t *testing.T) {
 	}
 	t.Logf("label key: %s", keySrc)
 
+	eng, engName := e2eRuntime(t, model)
+	t.Logf("runtime: %s", engName)
+
 	o := &Orchestrator{
-		Store: st, Provider: p, Runtime: vllm.New(),
+		Store: st, Provider: p, Runtime: eng,
 		Resolver: sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
 		Policy:   rank.DefaultPolicy(),
 		Deadline: 20 * time.Minute,
@@ -120,7 +126,7 @@ func TestE2ERentServeDestroy(t *testing.T) {
 		Criteria: core.Criteria{MaxPriceHr: maxPrice, MinReliability: 0.90, DiskGB: 40},
 		Model: core.ModelSpec{
 			Ref: model, Source: core.SourceHuggingFace,
-			ServedName: "e2e", Quantization: "fp16", ContextLen: 4096,
+			ServedName: "e2e", Quantization: e2eQuant(), ContextLen: 4096,
 		},
 		DiskGB:    40,
 		HFToken:   secret.New(os.Getenv("HF_TOKEN")),
@@ -335,16 +341,25 @@ func sweepOrphans(t *testing.T, p *vastai.Provider, st *state.Store) {
 // change if and only if the server was restarted.
 func processIdentity(ctx context.Context, t *testing.T, l *Live) string {
 	t.Helper()
-	const cmd = `pid=$(pgrep -f '[v]llm serve' | head -1); ` +
-		`[ -z "$pid" ] && pid=$(pgrep -f '[v]llm\.entrypoints\.openai' | head -1); ` +
-		`[ -z "$pid" ] && { echo none; exit 0; }; ` +
-		`echo "pid=$pid started=$(ps -o lstart= -p $pid)"`
+	// Every engine, because a pattern that only knows vLLM reports "none"
+	// under llama.cpp, and the restart check then compares nothing to nothing
+	// and passes. A vacuous assertion is worse than none: it reads as
+	// coverage.
+	const cmd = `for p in '[v]llm serve' '[v]llm\.entrypoints\.openai' '[l]lama-server' '[/]app/server' '[o]llama serve'; do ` +
+		`pid=$(pgrep -f "$p" | head -1); ` +
+		`[ -n "$pid" ] && { echo "pid=$pid started=$(ps -o lstart= -p $pid)"; exit 0; }; ` +
+		`done; echo none`
 	out, err := l.ssh.Session().Run(ctx, cmd)
 	if err != nil {
 		t.Logf("could not read the runtime process: %v", err)
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	got := strings.TrimSpace(string(out))
+	if got == "none" {
+		t.Errorf("no runtime process on a rig that just served a completion; "+
+			"the restart check cannot mean anything (runtime %q)", os.Getenv("LARRI_E2E_RUNTIME"))
+	}
+	return got
 }
 
 // assertNoPrivateKeyOnDisk enforces FR-STATE-05 by inspection rather than by
@@ -371,4 +386,43 @@ func assertNoPrivateKeyOnDisk(t *testing.T, dir string) {
 	if err != nil {
 		t.Errorf("walk state dir: %v", err)
 	}
+}
+
+// e2eRuntime selects the engine under test.
+//
+// The live suite exists to find what unit tests cannot, and every engine has
+// its own set of those: image variants, launcher discovery, process patterns
+// that match their own shell. Running it against only one runtime would leave
+// the others in the state vLLM was in before the first paid run found eleven
+// bugs in it.
+func e2eRuntime(t *testing.T, model string) (runtime.Runtime, string) {
+	t.Helper()
+	switch os.Getenv("LARRI_E2E_RUNTIME") {
+	case "llamacpp":
+		r := llamacpp.New()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		file, err := llamacpp.ResolveGGUF(ctx, model, e2eQuant(),
+			secret.New(os.Getenv("HF_TOKEN")))
+		if err != nil {
+			t.Fatalf("resolve gguf: %v", err)
+		}
+		t.Logf("weights: %s", file)
+		r.SetGGUF(file)
+		return r, "llamacpp"
+	case "ollama":
+		return ollama.New(), "ollama"
+	default:
+		return vllm.New(), "vllm"
+	}
+}
+
+func e2eQuant() string {
+	if q := os.Getenv("LARRI_E2E_QUANT"); q != "" {
+		return q
+	}
+	if os.Getenv("LARRI_E2E_RUNTIME") == "llamacpp" {
+		return "Q4_K_M"
+	}
+	return "fp16"
 }

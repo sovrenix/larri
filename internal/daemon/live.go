@@ -17,7 +17,6 @@ import (
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/errs"
 	"go.sovrenix.com/larri/internal/runtime"
-	"go.sovrenix.com/larri/internal/runtime/vllm"
 	"go.sovrenix.com/larri/internal/secret"
 	"go.sovrenix.com/larri/internal/sizing"
 	"go.sovrenix.com/larri/internal/sshx"
@@ -257,8 +256,10 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 				o.emit("boot", "sshd answering at %s:%d", inst.SSHHost, inst.SSHPort)
 				return inst, nil
 			} else if waited := time.Since(endpointAt); waited > unreachable {
+				// Measured from the last sign of life, not from publication.
+				// See the reset below.
 				return nil, errs.Newf(errs.ClassHostFailure, "daemon.waitForSSH",
-					"endpoint %s:%d advertised %s ago and still not answering: %v",
+					"endpoint %s:%d unreachable for %s while nothing changed: %v",
 					inst.SSHHost, inst.SSHPort, waited.Round(time.Second), shortErr(perr))
 			}
 			fallthrough
@@ -272,6 +273,23 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 					o.emit("boot", "%s", now)
 					lastSeen, changedAt = now, time.Now()
 					o.lastBootStatus = now
+
+					// The endpoint clock is progress-driven too, and for the
+					// same reason the status clock is. A live run on a GTX
+					// 1050 Ti killed a host 106 seconds after its endpoint
+					// appeared while the provider was reporting "Verifying
+					// Checksum" and "Pull complete" — sshd was not up because
+					// the image was still arriving, which is a host working,
+					// not a host dead. Cheap cards pull slowly, so the
+					// engines that exist to use cheap cards hit this most.
+					//
+					// Resetting here does not weaken what the limit was built
+					// to catch. That failure is a contract reporting running
+					// with nothing listening, and its status does not change
+					// either — so the clock still runs out on it.
+					if !endpointAt.IsZero() {
+						endpointAt = time.Now()
+					}
 				}
 			}
 		}
@@ -427,16 +445,20 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 		// loads for many minutes in silence — and that patience is billed. It
 		// should never be spent on a process that is already gone.
 		//
-		// Consulted only when nothing else says the host is working. A log
-		// that is still growing, or a machine that is still burning CPU, is
-		// direct evidence of life, and a process probe that disagreed with it
-		// would be the thing that is wrong — a runtime may fork, re-exec, or
-		// run under a name the pattern does not match. Evidence of work beats
-		// absence of a pid.
+		// Consulted when the log has stopped growing, and gated on nothing
+		// else. Hardware activity deliberately does not veto it: /proc on a
+		// marketplace instance reports the whole machine (§12.2.3), so the
+		// CPU it shows is mostly other tenants and says nothing about our
+		// process. A live run sat for minutes at "cpu 9%" while llama-server
+		// had already exited on a missing shared library — the counters were
+		// real, the work was somebody else's.
 		//
-		// It is also meaningless before the runtime has spoken: an absent
+		// The log is different: it is our process's own output, so a growing
+		// log outranks the probe and still does.
+		//
+		// It stays meaningless before the runtime has spoken: an absent
 		// process may simply not have started yet.
-		if everLogged && !grew && !act.Moving {
+		if everLogged && !grew {
 			if lc, ok := o.Runtime.(runtime.LivenessChecker); ok {
 				if alive, err := lc.Alive(ctx, sess); err == nil && !alive {
 					// "quiet for" rather than "exited after": the
@@ -537,8 +559,15 @@ func (o *Orchestrator) readyCap() time.Duration {
 // Size rather than mtime: a file touched but not written has not progressed,
 // and growth is the only claim worth trusting.
 func (o *Orchestrator) readLogState(ctx context.Context, sess runtime.Session) (int64, string) {
-	out, err := sess.Run(ctx, "stat -c %s "+vllm.LogPath+" 2>/dev/null || echo 0; "+
-		"tail -n 3 "+vllm.LogPath+" 2>/dev/null | tr -d '\r' | grep -v '^$' | tail -n 1")
+	path := o.runtimeLogPath()
+	if path == "" {
+		// A runtime that writes no log file leaves the hardware counters as
+		// the only progress signal. They are weaker on their own, so this is
+		// worth knowing rather than silently degrading into.
+		return 0, ""
+	}
+	out, err := sess.Run(ctx, "stat -c %s "+path+" 2>/dev/null || echo 0; "+
+		"tail -n 3 "+path+" 2>/dev/null | tr -d '\r' | grep -v '^$' | tail -n 1")
 	if err != nil && len(out) == 0 {
 		return 0, ""
 	}
@@ -555,6 +584,14 @@ func (o *Orchestrator) readLogState(ctx context.Context, sess runtime.Session) (
 		}
 	}
 	return size, tail
+}
+
+// runtimeLogPath asks the engine where it writes, rather than assuming.
+func (o *Orchestrator) runtimeLogPath() string {
+	if lw, ok := o.Runtime.(runtime.LogWriter); ok {
+		return lw.LogPath()
+	}
+	return ""
 }
 
 func humanSize(b int64) string {
@@ -614,9 +651,25 @@ func shortErr(err error) string {
 func (o *Orchestrator) pinAndDial(ctx context.Context, inst *core.Instance,
 	keys *sshx.KeyPair) (ssh.PublicKey, *sshx.Client, error) {
 
-	const attempts = 8
-	var lastErr error
-	for i := 0; i < attempts; i++ {
+	// Bounded by progress rather than by a count.
+	//
+	// A fixed eight attempts was fine on the hardware it was written against
+	// and wrong on the hardware LARRI exists to make usable. On a GTX 1050 Ti
+	// pulling a CUDA image, sshd answers long before the provider's start-up
+	// script has installed the rig key, and eighty seconds of retries ran out
+	// while the image was still arriving. The host was working; LARRI gave up
+	// on it and paid to start the same pull somewhere else.
+	//
+	// So the same rule as the endpoint wait (§12.2.1): while the provider
+	// reports something new, the host is working and LARRI keeps trying. What
+	// ends it is a stall.
+	var (
+		lastErr    error
+		lastStatus string
+		changedAt  = time.Now()
+		deadline   = time.Now().Add(o.authCap())
+	)
+	for time.Now().Before(deadline) {
 		key, err := o.stableHostKey(ctx, inst)
 		if err != nil {
 			lastErr = err
@@ -652,11 +705,53 @@ func (o *Orchestrator) pinAndDial(ctx context.Context, inst *core.Instance,
 		select {
 		case <-ctx.Done():
 			return nil, nil, ctx.Err()
-		case <-time.After(10 * time.Second):
+		case <-time.After(o.bootPoll()):
+		}
+
+		// Ask the provider whether anything is still happening. A host part
+		// way through a 5 GB pull reports new layers every few seconds; a
+		// host that has given up reports the same line forever.
+		if cur, err := o.Provider.Get(ctx, inst.InstanceID); err == nil && cur != nil {
+			if now := describeBoot(cur); now != lastStatus {
+				if lastStatus != "" {
+					o.emit("boot", "%s", now)
+				}
+				lastStatus, changedAt = now, time.Now()
+			}
+		}
+		if idle := time.Since(changedAt); idle > o.authStall() {
+			return nil, nil, errs.Newf(errs.ClassHostFailure, "daemon.pinAndDial",
+				"host never accepted the rig key; nothing changed for %s: %v",
+				idle.Round(time.Second), shortErr(lastErr))
 		}
 	}
 	return nil, nil, errs.Newf(errs.ClassHostFailure, "daemon.pinAndDial",
 		"host key never settled: %v", shortErr(lastErr))
+}
+
+// bootPoll is how often a booting host is re-examined.
+func (o *Orchestrator) bootPoll() time.Duration {
+	if o.BootPollInterval > 0 {
+		return o.BootPollInterval
+	}
+	return 10 * time.Second
+}
+
+// authStall is how long the provider may report nothing new while the host
+// still refuses the rig key. Zero means three minutes.
+func (o *Orchestrator) authStall() time.Duration {
+	if o.AuthStallTimeout > 0 {
+		return o.AuthStallTimeout
+	}
+	return 3 * time.Minute
+}
+
+// authCap bounds the wait even on a host that keeps producing novel status.
+func (o *Orchestrator) authCap() time.Duration {
+	if o.AuthCap > 0 {
+		return o.AuthCap
+	}
+	return 15 * time.Minute
 }
 
 // stableHostKey returns a key only once two consecutive observations agree.

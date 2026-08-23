@@ -67,6 +67,19 @@ type Orchestrator struct {
 	// activity probe, which costs the provider nothing.
 	BootPollInterval time.Duration
 
+	// AuthStallTimeout ends the wait for a host to accept the rig key once
+	// the provider stops reporting anything new. Zero means three minutes.
+	//
+	// Separate from BootStallTimeout because it measures a different thing: by
+	// this point sshd is answering, and what is outstanding is the provider's
+	// start-up script installing the key — which on a slow host runs after an
+	// image pull that is still in flight.
+	AuthStallTimeout time.Duration
+
+	// AuthCap bounds that wait even while status keeps changing. Zero means
+	// fifteen minutes.
+	AuthCap time.Duration
+
 	// HostProbeInterval is how often the host itself is asked whether it is
 	// doing anything. Zero means twenty seconds.
 	HostProbeInterval time.Duration

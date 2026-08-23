@@ -215,3 +215,19 @@ type LivenessChecker interface {
 type SecurityNoter interface {
 	SecurityNotes() []string
 }
+
+// LogWriter is implemented by runtimes that redirect their server's output to
+// a file on the host.
+//
+// The supervisor needs the *size* of that output, not its contents: growth is
+// what distinguishes a model loading quietly from a host that has stopped
+// trying, and it is what the two readiness regimes are built on (§12.2.1).
+// Logs() returns contents and cannot answer that.
+//
+// This was a leak before it was an interface. readLogState reached for vLLM's
+// constant directly, so under llama.cpp the daemon watched a file that never
+// existed, concluded the runtime had produced nothing, and killed a host that
+// was working perfectly.
+type LogWriter interface {
+	LogPath() string
+}

@@ -162,3 +162,38 @@ func TestMissingQuantisationNamesTheAlternatives(t *testing.T) {
 		t.Errorf("error should list what is available, got: %v", err)
 	}
 }
+
+// A live run died here: /app/llama-server exists and is executable, but a
+// non-interactive ssh session inherits none of the image's ENV, so it exits
+// immediately with "error while loading shared libraries:
+// libllama-server-impl.so". The binary and its shared objects ship in the same
+// directory.
+func TestLaunchSetsTheLibraryPathForAnImageLocalBinary(t *testing.T) {
+	r := New()
+	r.launcher = "/app/llama-server"
+	r.SetGGUF("model.gguf")
+	ep := runtime.Endpoint{Host: runtime.Loopback, Port: RemotePort, Key: secret.New("k")}
+	cmd, err := r.launchCommand(spec(), core.SizingPlan{}, ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cmd, "LD_LIBRARY_PATH='/app'") {
+		t.Errorf("the image's own library directory is not on the search path:\n%s", cmd)
+	}
+}
+
+// A launcher found on PATH needs no such help, and adding an empty or "."
+// entry to the search path would be its own kind of wrong.
+func TestLaunchLeavesThePathAloneForAPathBinary(t *testing.T) {
+	r := New()
+	r.launcher = "llama-server"
+	r.SetGGUF("model.gguf")
+	ep := runtime.Endpoint{Host: runtime.Loopback, Port: RemotePort, Key: secret.New("k")}
+	cmd, err := r.launchCommand(spec(), core.SizingPlan{}, ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(cmd, "LD_LIBRARY_PATH") {
+		t.Errorf("needlessly rewrote the library path:\n%s", cmd)
+	}
+}

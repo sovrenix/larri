@@ -431,3 +431,9 @@ func (r *Runtime) Alive(ctx context.Context, sess runtime.Session) (bool, error)
 }
 
 var _ runtime.LivenessChecker = (*Runtime)(nil)
+
+// LogPath is where this runtime's output is redirected, so the supervisor can
+// measure growth rather than guess at progress.
+func (r *Runtime) LogPath() string { return LogPath }
+
+var _ runtime.LogWriter = (*Runtime)(nil)

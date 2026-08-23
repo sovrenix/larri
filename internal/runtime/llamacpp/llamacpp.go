@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -209,6 +210,17 @@ func (r *Runtime) launchCommand(spec core.ModelSpec, plan core.SizingPlan,
 	}
 
 	var b strings.Builder
+	// The binary and its shared objects ship in the same directory, and a
+	// non-interactive ssh session inherits none of the image's ENV — so
+	// /app/llama-server exits immediately with "error while loading shared
+	// libraries: libllama-server-impl.so". Setting the search path to the
+	// launcher's own directory is what makes the image's layout work off its
+	// entrypoint.
+	if dir := filepath.Dir(r.launcher); dir != "." && dir != "/" {
+		b.WriteString("export LD_LIBRARY_PATH=")
+		b.WriteString(runtime.ShellQuote(dir))
+		b.WriteString("${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}; ")
+	}
 	b.WriteString("nohup ")
 	b.WriteString(r.launcher)
 	for _, f := range flags {
@@ -340,3 +352,9 @@ func revisionOr(spec core.ModelSpec, def string) string {
 }
 
 func shellQuote(s string) string { return runtime.ShellQuote(s) }
+
+// LogPath is where this runtime's output is redirected, so the supervisor can
+// measure growth rather than guess at progress.
+func (r *Runtime) LogPath() string { return LogPath }
+
+var _ runtime.LogWriter = (*Runtime)(nil)

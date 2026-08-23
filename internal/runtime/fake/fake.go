@@ -193,3 +193,9 @@ func (r *Runtime) Alive(context.Context, runtime.Session) (bool, error) {
 }
 
 var _ runtime.LivenessChecker = (*Runtime)(nil)
+
+// LogPath lets the fake stand in for a real runtime in the supervisor's
+// progress logic, which asks the engine where it writes.
+func (r *Runtime) LogPath() string { return "/var/log/larri-fake.log" }
+
+var _ runtime.LogWriter = (*Runtime)(nil)
