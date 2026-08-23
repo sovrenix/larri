@@ -119,7 +119,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 
 	crit := core.Criteria{MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk}
 	if *gpu != "" {
-		crit.GPUModel = []string{*gpu}
+		crit.GPUModel = splitList(*gpu)
 	}
 	go runRig(runCtx, cancel, prog, o, st, cfg, rigRequest{
 		spec: spec, port: *port, disk: *disk, crit: crit,

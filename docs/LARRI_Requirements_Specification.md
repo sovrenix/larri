@@ -214,7 +214,7 @@ Priority: **M** = MUST (v1), **S** = SHOULD, **C** = COULD (post-v1).
 | FR-CRIT-02 | M | Accept commercial criteria: maximum $/hr, on-demand vs interruptible, minimum provider reliability score, allowed/blocked regions, allowed providers. |
 | FR-CRIT-03 | M | Accept a `ModelSpec`: model identity (Hugging Face repo, Ollama tag, or local path), quantization, and required context length. |
 | FR-CRIT-04 | M | Derive hardware requirements from the `ModelSpec` when the operator has not specified them, so that `larri up --model <name>` alone is a valid invocation. |
-| FR-CRIT-05 | S | Persist **named** criteria profiles (e.g. `--profile coding-rig`) for reuse, saved on explicit request. LARRI must not silently reuse the previous invocation's criteria for a bare `larri up`: a command that reapplies what was typed a fortnight ago can provision hardware nobody intended to buy. |
+| FR-CRIT-05 | S | Persist **named** criteria profiles (e.g. `--profile coding-rig`) for reuse, saved on explicit request. A profile named `default` may apply to a bare `larri up` **only if the whole profile is echoed** — model, filters and ceilings — before anything is searched or spent. *Amended:* this requirement originally forbade any reuse on a bare invocation, to stop a command reapplying what was typed a fortnight ago. The hazard was silence, not reuse; echoing the applied profile in full removes it, and FR-CFG-08 covers the settings that spend. There is still no implicit last-used slot. |
 | FR-CRIT-06 | M | Reject a request at submit time — before any spend — when the `ModelSpec` cannot fit any offer satisfying the criteria, and explain the shortfall in VRAM terms. |
 
 **Interruptible default (Q-04, resolved): opt-in.** `Criteria.Interruptible` defaults to
@@ -413,6 +413,9 @@ All four surfaces are clients of one daemon API. No lifecycle logic lives in a s
 | FR-CFG-05 | S | Report what was assumed whenever defaults were used in place of configuration, so a non-interactive run is auditable after the fact. |
 | FR-CFG-06 | S | Allow the TUI to explore offers and save the criteria converged upon as a named profile, via the daemon API rather than by writing configuration directly. |
 | FR-CFG-07 | M | Validate resolvable provider credentials at configuration time without spending. A key that cannot authenticate must surface before it is needed, not during provisioning. |
+| FR-CFG-08 | M | Disclose every **spending or destructive** setting that came from a file rather than a flag, on each run that uses it. FR-CFG-03 covers creation; this covers use, because both directions of a stale limit are harmful: a low ceiling fails as "no offer satisfies the criteria" — which reads as a market problem — and a high one silently removes a guard the operator believes is active. |
+| FR-CFG-09 | M | Create configuration **without prompting**. First run may write a defaults file and must say that it did; it must never open a form. A surface that blocked here would hang every non-interactive caller, and the MCP server worst of all, where a terminal prompt yields a protocol stream that never speaks again. |
+| FR-CFG-10 | S | Offer criteria editing in its own command rather than on the spending path. `larri up` must not interview an operator who asked to rent hardware, and an interrupted form must not leave them wondering what was written. |
 
 ### 7.12 Observability (FR-OBS)
 

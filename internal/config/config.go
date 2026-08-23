@@ -17,8 +17,6 @@ package config
 import (
 	"fmt"
 	"time"
-
-	"go.sovrenix.com/larri/internal/core"
 )
 
 // IdleAction is what happens when a rig goes unused.
@@ -49,14 +47,14 @@ type Budget struct {
 
 // Config is the resolved, non-secret settings.
 type Config struct {
-	Providers         []string                 `yaml:"providers" json:"providers"`
-	LocalPort         int                      `yaml:"local_port" json:"local_port"`
-	MaxConcurrentRigs int                      `yaml:"max_concurrent_rigs" json:"max_concurrent_rigs"`
-	Idle              Idle                     `yaml:"idle" json:"idle"`
-	Budget            Budget                   `yaml:"budget" json:"budget"`
-	Clients           []string                 `yaml:"clients" json:"clients"`
-	RankWeights       RankWeights              `yaml:"rank_weights" json:"rank_weights"`
-	Profiles          map[string]core.Criteria `yaml:"profiles,omitempty" json:"profiles,omitempty"`
+	Providers         []string           `yaml:"providers" json:"providers"`
+	LocalPort         int                `yaml:"local_port" json:"local_port"`
+	MaxConcurrentRigs int                `yaml:"max_concurrent_rigs" json:"max_concurrent_rigs"`
+	Idle              Idle               `yaml:"idle" json:"idle"`
+	Budget            Budget             `yaml:"budget" json:"budget"`
+	Clients           []string           `yaml:"clients" json:"clients"`
+	RankWeights       RankWeights        `yaml:"rank_weights" json:"rank_weights"`
+	Profiles          map[string]Profile `yaml:"profiles,omitempty" json:"profiles,omitempty"`
 }
 
 // RankWeights are the scoring weights of DES §8.

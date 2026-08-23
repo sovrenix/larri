@@ -1540,6 +1540,52 @@ report it rather than infer it (FR-UI-03). The `Exposure` column is the load-bea
 addition: the read-only set is identical for both drivers, while the consequential set is
 opt-in for the chat pane for the reasons in §14.4.4.
 
+### 14.2.1 Configuration Is Edited in Its Own Command
+
+Criteria editing lives in `larri config`, not on the spending path, and the reasoning is the
+same one that governs every other surface here: **a command that spends money must not
+surprise the operator.**
+
+`larri up --model X` opening a form would interview someone who asked to rent hardware, and
+an interrupted form leaves the worst question a tool can leave — *did anything happen?* So
+the spending path never prompts. When there is no configuration it writes one from the
+defaults, says that it did, and proceeds; FR-CFG-01 already holds that configuration is an
+optimisation rather than a prerequisite, and a wizard on the critical path contradicts it.
+
+That leaves first run genuinely non-blocking, which matters beyond aesthetics. `larri mcp`
+speaks JSON-RPC on stdio: a terminal prompt there produces a protocol stream that never
+speaks again, and an agent host that hangs with no output and no error. `Invocation.MCP`
+exists precisely to prevent that and was set nowhere until first-run configuration made it
+load-bearing.
+
+**What editing buys is the preview.** The question an operator actually has is not "what is
+the syntax for a price ceiling" but "is *this* ceiling too low" — and that is a question the
+market answers in a second, for free, through the same survey `larri offers` runs. Editing a
+number and watching the eligible offers change is the case where a terminal UI is genuinely
+better than flags, rather than merely prettier than them.
+
+**Two rules keep saved criteria from becoming a trap.**
+
+First, *a profile that applies is a profile that is shown.* FR-CRIT-05 originally forbade any
+reuse of criteria on a bare `larri up`, on the grounds that reapplying what was typed a
+fortnight ago can buy hardware nobody intended. That reasoning was right about the hazard and
+wrong about its cause: the danger is **silence**, not reuse. A `default` profile may
+therefore apply, provided the whole of it — model, filters, ceilings — is printed before
+anything is searched.
+
+Second, *money read from a file is announced every time* (FR-CFG-08). FR-CFG-03 already
+required disclosure when configuration is *created*; this extends it to every run that
+*uses* it, because a stale limit is harmful in both directions and the two failures look
+nothing alike:
+
+| Stale setting | How it fails | What it looks like |
+|---|---|---|
+| Ceiling too low | Nothing is rentable | "no offer satisfies the criteria" — a market problem, not a config one |
+| Ceiling too high, or budget removed | Everything is rentable | Nothing at all, until the invoice |
+
+The second is the one that costs money, and it is invisible by construction. A line of output
+is a cheap price for making it visible.
+
 ### 14.3 TUI
 
 Bubble Tea: offers table with score breakdown, provisioning progress with per-phase bytes,

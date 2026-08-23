@@ -88,7 +88,7 @@ func TestProfilesAreNamedNotImplicit(t *testing.T) {
 	if c.Profiles != nil {
 		t.Error("no profiles exist until one is saved by name")
 	}
-	c.Profiles = map[string]core.Criteria{
+	c.Profiles = map[string]Profile{
 		"coder": {GPUModel: []string{"A100"}, MaxPriceHr: 1.50},
 	}
 	if _, ok := c.Profiles["coder"]; !ok {

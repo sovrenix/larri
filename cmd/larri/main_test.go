@@ -151,3 +151,32 @@ func TestEveryCommandIsDocumentedInTheUsage(t *testing.T) {
 		}
 	}
 }
+
+// FR-CFG-02, enforced by inspection because the failure is invisible in
+// testing and catastrophic in use: a stdio protocol server that opens a
+// terminal prompt hands its host a process that produces no output and never
+// exits. Invocation.MCP exists for exactly this and was set nowhere in the
+// codebase until first-run config made it matter.
+func TestMCPDeclaresItselfNonInteractive(t *testing.T) {
+	src, err := os.ReadFile("mcp.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "MCP: true") {
+		t.Error("cmdMCP does not declare itself non-interactive, so it may be prompted")
+	}
+}
+
+// Configuration creation must never depend on a terminal. EnsureExists writes
+// and returns; nothing in the spending path may open a form.
+func TestSpendingCommandsNeverOpenAForm(t *testing.T) {
+	for _, f := range []string{"main.go", "tui.go", "mcp.go", "inspect.go"} {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(src), "tui.NewEditor") {
+			t.Errorf("%s opens the criteria editor; editing belongs in `larri config`", f)
+		}
+	}
+}

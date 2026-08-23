@@ -42,6 +42,7 @@ const usage = `larri — Local Agent for Remote Rigging of Inference
   larri resume  rebuild the tunnel to a rig that outlived the last process
   larri offers  search and rank without spending anything
   larri orphans find and destroy resources local state does not account for
+  larri config  edit saved criteria, previewing what they would rent
   larri tui     bring a rig up under a live dashboard
   larri mcp     expose the lifecycle as MCP tools for Claude Code and other agents
   larri status  what is running, what it costs, and why past rigs ended
@@ -70,6 +71,8 @@ func main() {
 		err = cmdOffers(ctx, os.Args[2:])
 	case "orphans":
 		err = cmdOrphans(ctx, os.Args[2:])
+	case "config":
+		err = cmdConfig(ctx, os.Args[2:])
 	case "tui":
 		err = cmdTUI(ctx, os.Args[2:])
 	case "mcp":
@@ -108,16 +111,28 @@ func openStore() (*state.Store, error) { return state.Open(stateDir()) }
 // trap however well reasoned. The privacy notice rides along for the same
 // reason — it is the single most consequential fact about the product, and it
 // is not conditional on there being a human watching.
-func firstRun(cfg config.Config, mode config.Mode) {
-	fmt.Println("  first run   adopting built-in defaults")
-	for _, d := range cfg.Disclosures() {
-		mark := " "
-		if d.Destructive {
-			mark = "!"
+// firstRun states the destructive defaults when there is no configuration to
+// state them from (FR-CFG-03).
+//
+// Conditional on there being no file, because once one exists the settings
+// actually in force are disclosed individually by Resolution.Disclose — which
+// is more precise, and printing both trains the operator to skim past the
+// line that matters.
+//
+// The privacy notice is not conditional on anything. It is the single most
+// consequential fact about the product and it prints on every run.
+func firstRun(cfg config.Config, mode config.Mode, haveFile bool) {
+	if !haveFile {
+		fmt.Println("  defaults    no configuration file; adopting the built-in defaults")
+		for _, d := range cfg.Disclosures() {
+			mark := " "
+			if d.Destructive {
+				mark = "!"
+			}
+			fmt.Printf("            %s %-14s %-22s (%s)\n", mark, d.Setting, d.Value, d.ChangeWith)
 		}
-		fmt.Printf("            %s %-14s %-22s (%s)\n", mark, d.Setting, d.Value, d.ChangeWith)
+		fmt.Println()
 	}
-	fmt.Println()
 	fmt.Println(notice.PrivacyFull())
 	fmt.Println()
 	if !mode.Interactive() {
@@ -142,24 +157,62 @@ func cmdUp(ctx context.Context, args []string) error {
 	idleFor := fs.Duration("idle-timeout", 0, "reclaim after this long without operator inference (0: use the default)")
 	idleAct := fs.String("idle-action", "", "destroy or warn (default: destroy)")
 	budget := fs.Float64("budget", 0, "spend ceiling in $; destroys on breach after a warning")
+	profile := fs.String("profile", "", "saved profile to layer under the flags (default: the one named 'default')")
 	_ = fs.Parse(args)
 
-	if *model == "" {
-		return errors.New("--model is required")
+	// Which flags the operator actually passed, so that a flag set to a value
+	// equal to its default still beats the file. Without this, --max-price 0
+	// could not turn a saved ceiling off.
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	res, err := config.Resolve(config.Request{
+		Profile: *profile, SetFlags: set,
+		// First run writes a defaults file and says so. It never opens a
+		// form: `up` is a command that spends, and an operator who asked to
+		// rent hardware should not be interviewed first (FR-CFG-01).
+		Ensure: config.DetectMode(config.Invocation{ForceNonInteractive: *yes}, os.Getenv).Interactive(),
+	})
+	if err != nil {
+		return err
 	}
-	cfg := config.Default()
+	if res.Created {
+		fmt.Printf("  config      created %s with the built-in defaults\n", config.Path())
+		fmt.Printf("              edit it with: larri config\n")
+	}
+	applyProfile(res.Profile, set, model, quant, ctxLen, gpu, maxPrice, disk, minRel, port, engine)
+	if res.Name != "" {
+		// FR-CRIT-05 forbids *silently* reusing criteria. A named default
+		// profile may apply to a bare `larri up` only because this line makes
+		// it visible in full — not merely the parts that spend.
+		fmt.Printf("  profile     %s — %s\n", res.Name, res.Profile.Summary())
+	}
+	for _, d := range res.Disclose {
+		fmt.Printf("  ! %-12s %s from %s\n", d.Setting, d.Value, d.From)
+	}
+
+	// Checked after the profile is applied, because a profile that names a
+	// model is precisely what makes a bare `larri up` a valid invocation
+	// (FR-CRIT-04). Checking first would make the saved model unusable.
+	if *model == "" {
+		return errors.New("no model: pass --model, or save one with 'larri config'")
+	}
+
+	cfg := res.Config
 	if *idleFor != 0 {
 		cfg.Idle.Timeout = *idleFor
 	}
 	if *idleAct != "" {
 		cfg.Idle.Action = config.IdleAction(*idleAct)
 	}
-	cfg.Budget.MaxUSD = *budget
+	if set["budget"] {
+		cfg.Budget.MaxUSD = *budget
+	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
 	mode := config.DetectMode(config.Invocation{ForceNonInteractive: *yes}, os.Getenv)
-	firstRun(cfg, mode)
+	firstRun(cfg, mode, res.File != "")
 
 	key := os.Getenv("VASTAI_API_KEY")
 	if key == "" {
@@ -253,7 +306,7 @@ func cmdUp(ctx context.Context, args []string) error {
 
 	crit := core.Criteria{MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk}
 	if *gpu != "" {
-		crit.GPUModel = []string{*gpu}
+		crit.GPUModel = splitList(*gpu)
 	}
 	req := daemon.UpRequest{
 		Criteria:  crit,

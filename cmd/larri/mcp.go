@@ -33,6 +33,15 @@ func cmdMCP(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
 	_ = fs.Parse(args)
 
+	// FR-CFG-02, stated rather than assumed. Invocation.MCP exists for this
+	// and was set nowhere: a stdio protocol server that ever opened a
+	// terminal prompt would hand its host a process that produces no output
+	// and never exits, which is the worst shape a hang can take.
+	mode := config.DetectMode(config.Invocation{MCP: true}, os.Getenv)
+	if mode.Interactive() {
+		return errors.New("mcp must never run interactively")
+	}
+
 	st, err := openStore()
 	if err != nil {
 		return err

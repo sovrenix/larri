@@ -151,10 +151,38 @@ larri up --model Qwen/Qwen3-Coder-30B \
 | `larri resume` | Rebuild the tunnel to a rig that outlived the last process |
 | `larri offers` | Search and rank without spending anything |
 | `larri orphans` | Find and destroy resources that local state does not account for |
+| `larri config` | Edit saved criteria, with a live preview of what they would rent |
 | `larri tui` | The same lifecycle under a live dashboard: cost, idle, health, `d` to destroy |
 | `larri mcp` | Expose the lifecycle as MCP tools for Claude Code and other agents |
 
 A web console with graphs and a chat pane is designed (§14.4) but not built.
+
+### Saved criteria
+
+`larri config` opens an editor over a named profile and previews what it would rent as you
+type. Nothing is spent — it is the same search `larri offers` runs.
+
+```
+  ▸ max price $/hr  0.40
+    ceiling; a stale one fails as 'no offer satisfies the criteria'
+
+  what this would rent  (nothing is spent)
+   → RTX 3060           12GB   $0.036/hr  rel 1.00
+     RTX A2000          11GB   $0.036/hr  rel 1.00
+```
+
+Profiles layer *under* your flags — `--max-price` on the command line always wins — and a
+profile that applies is always printed in full, so a bare `larri up` never runs on criteria
+you cannot see:
+
+```
+  profile     default — Qwen/Qwen2.5-1.5B-Instruct @ fp16 · RTX 3060 · ≤$0.050/hr
+  ! max-price    $0.050/hr from profile default
+  ! budget       $3.00 then destroy from config
+```
+
+Editing is deliberately **not** on the spending path: `larri up` never opens a form. On first
+run it writes a defaults file, tells you it did, and carries on.
 
 ### Not spending money by accident
 

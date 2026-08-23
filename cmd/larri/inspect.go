@@ -94,7 +94,7 @@ func cmdOffers(ctx context.Context, args []string) error {
 	}
 	crit := core.Criteria{MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk}
 	if *gpu != "" {
-		crit.GPUModel = []string{*gpu}
+		crit.GPUModel = splitList(*gpu)
 	}
 
 	sv, err := o.Offers(ctx, daemon.UpRequest{Criteria: crit, Model: spec, DiskGB: *disk})
