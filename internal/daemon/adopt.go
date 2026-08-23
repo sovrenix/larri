@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"go.sovrenix.com/larri/internal/core"
+	"go.sovrenix.com/larri/internal/deadman"
 	"go.sovrenix.com/larri/internal/errs"
 	"go.sovrenix.com/larri/internal/provider"
 	"go.sovrenix.com/larri/internal/runtime"
@@ -127,6 +128,23 @@ func (o *Orchestrator) Adopt(ctx context.Context, rigID string) (*Live, error) {
 		return live, err
 	}
 	o.emit("adopt", "found %s serving %s on port %d", o.Runtime.Kind(), ep.Model, ep.Port)
+
+	// Re-arm, because the watchdog this rig was left with has been counting
+	// the whole time LARRI was gone and may be moments from acting. Arming
+	// resets its clock and replaces it, which is the same operation.
+	if o.DeadmanDeadline >= 0 {
+		cfg := deadman.Config{
+			Deadline:    o.deadmanDeadline(),
+			RuntimePort: ep.Port,
+			RuntimeLog:  o.runtimeLogPath(),
+		}
+		if err := deadman.Arm(ctx, sess, cfg); err != nil {
+			o.warn("deadman", "could not re-arm the host watchdog: %s", shortErr(err))
+		} else {
+			o.emit("deadman", "host watchdog re-armed (%s)", cfg.Deadline.Round(time.Minute))
+			live.beating = o.startBeating(sess)
+		}
+	}
 
 	// ---- rebuild the tunnel on the port clients already point at ---------
 	//

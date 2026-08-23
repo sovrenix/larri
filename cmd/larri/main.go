@@ -157,6 +157,9 @@ func cmdUp(ctx context.Context, args []string) error {
 	idleAct := fs.String("idle-action", "", "destroy or warn (default: destroy)")
 	budget := fs.Float64("budget", 0, "spend ceiling in $; destroys on breach after a warning")
 	profile := fs.String("profile", "", "saved profile to layer under the flags (default: the one named 'default')")
+	deadman := fs.Duration("host-watchdog", 0,
+		"how long the host waits without hearing from larri before stopping itself "+
+			"(0: derive from --idle-timeout; -1: disable)")
 	_ = fs.Parse(args)
 
 	// Which flags the operator actually passed, so that a flag set to a value
@@ -301,6 +304,13 @@ func cmdUp(ctx context.Context, args []string) error {
 		},
 		Deadline: 30 * time.Minute,
 		Events:   events,
+
+		// The host enforces its own deadline, so an idle rig stops costing
+		// money even if this process is killed. Derived from the local
+		// timeout and always longer, so the supervisor — which can tell a
+		// busy rig from an idle one — acts first.
+		IdleTimeout:     cfg.Idle.Timeout,
+		DeadmanDeadline: *deadman,
 	}
 
 	crit := core.Criteria{MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk}

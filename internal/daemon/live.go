@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"go.sovrenix.com/larri/internal/core"
+	"go.sovrenix.com/larri/internal/deadman"
 	"go.sovrenix.com/larri/internal/errs"
 	"go.sovrenix.com/larri/internal/runtime"
 	"go.sovrenix.com/larri/internal/secret"
@@ -41,6 +42,7 @@ type Live struct {
 
 	keys    *sshx.KeyPair
 	ssh     *sshx.Client
+	beating context.CancelFunc
 	forward *sshx.Forward
 	proxy   *wire.Proxy
 	cancel  context.CancelFunc
@@ -50,6 +52,12 @@ type Live struct {
 // that is Down's job, and conflating them would make a dropped connection look
 // like a teardown.
 func (l *Live) Close() error {
+	// The heartbeat stops first. From here the host is on its own clock,
+	// which is the entire point: whatever killed this process cannot also
+	// have stopped the watchdog.
+	if l.beating != nil {
+		l.beating()
+	}
 	if l.cancel != nil {
 		l.cancel()
 	}
@@ -101,6 +109,31 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 
 	live.ssh = client
 	sess := client.Session()
+
+	// ---- arm the dead-man switch ----------------------------------------
+	//
+	// Before the bootstrap, not after it, because the image pull and weight
+	// download are the longest and most expensive window there is — and the
+	// one where a killed LARRI leaves the biggest bill. The host is armed the
+	// moment it can be told anything at all.
+	if o.DeadmanDeadline >= 0 {
+		cfg := deadman.Config{
+			Deadline:    o.deadmanDeadline(),
+			RuntimePort: o.runtimePort(),
+			RuntimeLog:  o.runtimeLogPath(),
+		}
+		if err := deadman.Arm(ctx, sess, cfg); err != nil {
+			// Not fatal. A rig that serves without a backstop is worse than
+			// one with it and better than none at all — but the operator is
+			// told, because they may be relying on it.
+			o.warn("deadman", "could not arm the host watchdog: %s", shortErr(err))
+		} else {
+			o.emit("deadman", "host will stop serving if larri goes quiet for %s "+
+				"(containment, not a teardown — destroy to stop the bill)",
+				cfg.Deadline.Round(time.Minute))
+			live.beating = o.startBeating(sess)
+		}
+	}
 
 	// ---- re-verify sizing against the hardware actually placed -----------
 	//
@@ -816,4 +849,57 @@ func (l *Live) Activity() *wire.Activity {
 		return nil
 	}
 	return &l.proxy.Activity
+}
+
+// startBeating tells the host LARRI is still here, on its own goroutine.
+//
+// Separate from the supervisor because it has to run during bring-up too —
+// the window before a rig serves is the longest one, and a LARRI that dies
+// mid-pull is exactly what the watchdog exists for.
+func (o *Orchestrator) startBeating(sess runtime.Session) context.CancelFunc {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		t := time.NewTicker(deadman.BeatInterval)
+		defer t.Stop()
+		var missed int
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			bctx, bcancel := context.WithTimeout(ctx, 30*time.Second)
+			err := deadman.Beat(bctx, sess)
+			bcancel()
+			if err == nil {
+				missed = 0
+				continue
+			}
+			// A missed beat is not an emergency: the deadline is many
+			// intervals wide precisely so a blip has room to recover. It is
+			// worth reporting once it stops looking like a blip.
+			missed++
+			if missed == 3 {
+				o.warn("deadman", "%d heartbeats missed; the host will stop itself if this continues", missed)
+			}
+		}
+	}()
+	return cancel
+}
+
+// deadmanDeadline is how long the host waits before considering LARRI gone.
+func (o *Orchestrator) deadmanDeadline() time.Duration {
+	if o.DeadmanDeadline > 0 {
+		return o.DeadmanDeadline
+	}
+	return deadman.Deadline(o.IdleTimeout)
+}
+
+// runtimePort is the loopback port the runtime serves on, so the watchdog can
+// see requests in flight. Zero when the runtime has not said.
+func (o *Orchestrator) runtimePort() int {
+	if p, ok := o.Runtime.(interface{ Port() int }); ok {
+		return p.Port()
+	}
+	return 8000
 }

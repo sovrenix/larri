@@ -29,6 +29,7 @@ import (
 
 	"go.sovrenix.com/larri/internal/config"
 	"go.sovrenix.com/larri/internal/core"
+	"go.sovrenix.com/larri/internal/deadman"
 	"go.sovrenix.com/larri/internal/provider/vastai"
 	"go.sovrenix.com/larri/internal/rank"
 	"go.sovrenix.com/larri/internal/runtime"
@@ -221,12 +222,17 @@ func TestE2ERentServeDestroy(t *testing.T) {
 		live.Close()
 
 		adopted, err := o.Adopt(ctx, rig.ID)
-		if adopted != nil {
-			t.Cleanup(func() { adopted.Close() })
-		}
 		if err != nil {
+			if adopted != nil {
+				adopted.Close()
+			}
 			t.Fatalf("resume: %v", err)
 		}
+		// Deliberately no t.Cleanup here. Subtest cleanups run when *that*
+		// subtest ends, which would close this connection before the later
+		// ones use it — and the watchdog subtest needs a live session on the
+		// same host. The parent's deferred Close covers it, which is why it
+		// closes whatever `live` points at rather than a captured pointer.
 		live = adopted
 
 		// AC-6.1: the same local port, or clients would need reconfiguring
@@ -273,6 +279,103 @@ func TestE2ERentServeDestroy(t *testing.T) {
 			t.Fatal("no completion came back through the rebuilt tunnel")
 		}
 		t.Logf("model said after resume: %q", strings.TrimSpace(out.Choices[0].Message.Content))
+	})
+
+	// The dead-man switch, proven on the machine it protects.
+	//
+	// Everything else about it can be tested in a shell. What cannot is
+	// whether halting a marketplace container actually ends the compute
+	// charge — that is a claim about someone else's billing system, and a
+	// wrong answer here would mean the whole feature bounds nothing.
+	t.Run("host watchdog halts an abandoned rig", func(t *testing.T) {
+		if os.Getenv("LARRI_E2E_DEADMAN") != "yes" {
+			t.Skip("set LARRI_E2E_DEADMAN=yes to test the watchdog (adds ~4 minutes)")
+		}
+		sess := live.ssh.Session()
+
+		st, err := deadman.Status(ctx, sess)
+		if err != nil {
+			t.Fatalf("watchdog status: %v", err)
+		}
+		t.Logf("before: %s", strings.TrimSpace(st))
+		if !strings.Contains(st, "armed") {
+			t.Fatal("the rig was never armed")
+		}
+
+		// Re-arm impatiently and stop beating: exactly what a killed LARRI
+		// looks like to the host, minus the waiting.
+		if err := deadman.Arm(ctx, sess, deadman.Config{
+			Deadline: deadman.MinDeadline, RuntimePort: 8000,
+			RuntimeLog: o.runtimeLogPath(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if live.beating != nil {
+			live.beating()
+			live.beating = nil
+		}
+		// Backdate the heartbeat past the deadline rather than wait it out.
+		if _, err := sess.Run(ctx,
+			"touch -d '2 hours ago' /var/run/larri/heartbeat"); err != nil {
+			t.Fatalf("backdate heartbeat: %v", err)
+		}
+		t.Log("heartbeat backdated; larri is now indistinguishable from dead")
+
+		deadline := time.Now().Add(4 * time.Minute)
+		for time.Now().Before(deadline) {
+			time.Sleep(20 * time.Second)
+			inst, err := p.Get(ctx, rig.Instance.InstanceID)
+			if err != nil || inst == nil {
+				continue
+			}
+			t.Logf("  provider says: running=%v status=%q", inst.Running, inst.Status)
+			if !inst.Running {
+				t.Logf("PASS: the host stopped itself; compute billing has ended")
+				return
+			}
+		}
+		// A *fresh* connection to read the verdict.
+		//
+		// The existing session cannot be trusted here and that is the point:
+		// the watchdog signals PID 1, which on these images is what serves
+		// ssh, so the act of firing kills the connection that was watching
+		// for it. An earlier version of this diagnostic read through the old
+		// session and got two empty strings — which looked like "the
+		// watchdog did nothing" and actually meant "the watchdog worked".
+		var wlog, ps1 string
+		if hk, c2, derr := o.pinAndDial(ctx, rig.Instance, live.keys); derr == nil {
+			defer c2.Close()
+			_ = hk
+			s2 := c2.Session()
+			if b, err := s2.Run(ctx, "cat "+deadman.LogPath+" 2>/dev/null | tail -20"); err == nil {
+				wlog = strings.TrimSpace(string(b))
+			}
+			if b, err := s2.Run(ctx, `echo "pid1=$(cat /proc/1/comm 2>/dev/null)"; `+
+				`echo "runtime=$(pgrep -f '[v]llm serve' >/dev/null && echo alive || echo stopped)"`); err == nil {
+				ps1 = strings.TrimSpace(string(b))
+			}
+		} else {
+			t.Logf("could not reconnect to read the verdict: %v", derr)
+		}
+		t.Logf("watchdog log:\n%s", wlog)
+		t.Logf("host: %s", ps1)
+
+		// What this subtest can actually establish is that the watchdog
+		// fired and the rig stopped serving. Whether the provider then stops
+		// charging is a claim about someone else's billing system, and two
+		// runs say it does not — so that is reported, not asserted.
+		switch {
+		case strings.Contains(wlog, "attempting halt"):
+			t.Log("the watchdog fired and stopped the runtime; the instance still " +
+				"bills, so containment is what this buys on vast — not a teardown")
+		case wlog == "":
+			t.Error("could not read the watchdog log, so nothing was established")
+		default:
+			t.Errorf("the watchdog did not act within 4 minutes of the deadline:\n%s", wlog)
+		}
+		if strings.Contains(ps1, "runtime=alive") {
+			t.Error("the runtime was still serving after the watchdog fired")
+		}
 	})
 
 	// The teardown under test, rather than the cleanup safety net.

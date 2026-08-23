@@ -117,5 +117,9 @@ func newOrchestrator(st *state.Store, runtimeKind string, events chan<- daemon.E
 		Policy:      rank.DefaultPolicy(),
 		Deadline:    30 * time.Minute,
 		Events:      events,
+
+		// An agent-driven rig needs this most: nothing about an MCP host
+		// guarantees it will still be there in an hour.
+		IdleTimeout: config.Default().Idle.Timeout,
 	}, nil
 }

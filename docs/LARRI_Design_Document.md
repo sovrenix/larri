@@ -1351,6 +1351,89 @@ minting a fresh SSH key rather than recovering the lost one, and re-attaching to
 server rather than relaunching it. The tunnel is rebuilt on the same local port, so clients
 recover with no reconfiguration.
 
+### 12.4.1 The Host Enforces Its Own Deadline (FR-SUP-17)
+
+Everything above runs in the local process, which means it stops running when that process
+does. A killed terminal, a closed laptop, a lost network — and the idle timeout the operator
+was relying on simply ceases to exist while the instance keeps billing. **A guarantee that
+depends on someone's laptop staying awake is not much of a guarantee** — and reclamation is
+the promise this product is built around, so it was the weakest thing in the design.
+
+So the host is armed to stop itself.
+
+**What the host is allowed to do is the binding constraint.** The obvious design — let the
+instance destroy itself through the provider API — is unavailable, because it means writing
+an account-scoped key onto a machine whose operator is not you and has root. That key can
+destroy every instance on the account, not merely this one. No idle-timeout guarantee is
+worth that trade (§15.4).
+
+The watchdog therefore uses only powers the host already holds over itself: it stops the
+runtime, then attempts to halt the container.
+
+**And halting does not demonstrably stop the bill on Vast.** Two live runs backdated the
+heartbeat past the deadline and watched the instance keep reporting `running` for four
+minutes afterwards. The evidence points at the watchdog firing and the provider simply not
+treating a self-ended container as a stopped instance — the SSH session died at exactly the
+moment the script would have signalled PID 1, which on these images is what serves ssh. (That
+detail also broke the first diagnostic, which read the verdict through the connection the
+watchdog had just killed and got two empty strings: it looked like "the watchdog did nothing"
+and meant "the watchdog worked".)
+
+So the honest description is **containment, not a cost guarantee**:
+
+| | Effect | Status |
+|---|---|---|
+| Stop the runtime | The rig stops serving; VRAM is released | Works |
+| Halt the container | Would end compute billing | **Not established on Vast** |
+| Destroy the instance | Ends the bill | Provider call, from the operator's machine only |
+
+Containment is worth having on its own — an abandoned rig that stops answering prompts is a
+smaller problem than one that keeps answering them — but it is not the reclamation guarantee
+this section set out to provide, and calling it one would be telling an operator the opposite
+of the truth about money. Ending the bill still requires `larri down`, or `larri orphans` for
+a rig nobody is tracking.
+
+**Two signals, never one.** A watchdog that halted purely on elapsed time would be wrong
+expensively. A missed heartbeat says the *operator* is gone; it says nothing about whether
+the *host* is doing something worth keeping — a 40 GB weight download, a checkpoint loading
+into VRAM, a generation still running for a request whose tunnel dropped. Halting through any
+of those discards exactly the work a returning operator would want to resume, which they have
+already paid for.
+
+The rule is the one §12.2.1 settled for readiness, applied again: **act on silence, not on the
+clock.** The deadline only opens the question. The host must then also be quiet:
+
+| Probe | What it catches |
+|---|---|
+| GPU utilisation | a generation still running |
+| Established connections to the runtime port | a request in flight whose client is gone |
+| Runtime log growth | a download or a checkpoint load |
+| Network delta | phases that log nothing |
+
+A busy host keeps its grace, up to `MaxGrace` — because a machine that looks busy forever is
+still a machine nobody is using, and one stuck process pegging a core should not bill
+indefinitely.
+
+**The layering is deliberate.** The host's deadline is always at least twice the local idle
+timeout and never below fifteen minutes, so the supervisor — which can actually tell a busy
+rig from an idle one — always acts first. The watchdog firing means LARRI is gone, not that
+the rig was idle. It is armed *before* the bootstrap rather than after, because the image
+pull and weight download are the longest and most expensive window, and the one where a
+killed LARRI leaves the biggest bill.
+
+**What remains unsettled** is whether any host-side action can end billing on a marketplace
+provider that bills for a rented container regardless of what is running in it. Vast exposes
+no scheduled-end or TTL parameter on instance creation, so there is no provider-side
+alternative either. The next experiment is a direct one: rent a cheap instance, establish
+what PID 1 is and which of `halt`/`poweroff`/`kill 1` the container is permitted, and watch
+whether the provider's view changes. Until that is run, the table above is the claim.
+
+**What it does not defend against** is a hostile host operator. They have root; they can kill
+the watchdog, lie about the clock, or keep billing regardless. This exists to survive LARRI
+dying, not to survive the machine's owner — and nothing running on their hardware could do
+the latter. Stating that is not a caveat buried in a footnote; it is the boundary of the
+claim.
+
 ### 12.5 Budget Ceilings Destroy (Q-03, resolved)
 
 A breached ceiling destroys, matching idle reclamation (Q-11) and for the same reason: the

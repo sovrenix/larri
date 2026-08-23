@@ -67,6 +67,19 @@ type Orchestrator struct {
 	// activity probe, which costs the provider nothing.
 	BootPollInterval time.Duration
 
+	// DeadmanDeadline is how long the *host* waits, without hearing from
+	// LARRI, before deciding it has been abandoned and stopping itself.
+	//
+	// Zero derives it from IdleTimeout; negative disables the watchdog
+	// entirely, which is a choice an operator can make and should have to
+	// make deliberately.
+	DeadmanDeadline time.Duration
+
+	// IdleTimeout is the local reclamation window, used only to derive the
+	// host's deadline so the two cannot invert. The local supervisor is the
+	// one that enforces it — this field does not.
+	IdleTimeout time.Duration
+
 	// AuthStallTimeout ends the wait for a host to accept the rig key once
 	// the provider stops reporting anything new. Zero means three minutes.
 	//
