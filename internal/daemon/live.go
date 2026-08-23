@@ -700,3 +700,25 @@ func isAuthFailure(err error) bool {
 // idleSince renders how long a runtime has been quiet, rounded to something a
 // person reads rather than parses.
 func idleSince(t time.Time) time.Duration { return time.Since(t).Round(time.Second) }
+
+// RuntimeLogs reads the runtime's log from the host of a serving rig.
+//
+// It needs the live SSH session rather than the rig snapshot, because the log
+// lives on the rented machine and the snapshot is only what LARRI recorded
+// about it. A caller holding a rig but not a Live cannot have this.
+func (o *Orchestrator) RuntimeLogs(ctx context.Context, live *Live, tail int) (io.ReadCloser, error) {
+	if live == nil || live.ssh == nil {
+		return nil, errs.Newf(errs.ClassModelFailure, "daemon.RuntimeLogs",
+			"rig has no ssh session")
+	}
+	return o.Runtime.Logs(ctx, live.ssh.Session(), tail)
+}
+
+// Activity exposes what the data plane has seen, for surfaces that display it.
+// Nil when the rig has no proxy, which is the case before it serves.
+func (l *Live) Activity() *wire.Activity {
+	if l == nil || l.proxy == nil {
+		return nil
+	}
+	return &l.proxy.Activity
+}

@@ -43,6 +43,8 @@ const usage = `larri — Local Agent for Remote Rigging of Inference
   larri resume  rebuild the tunnel to a rig that outlived the last process
   larri offers  search and rank without spending anything
   larri orphans find and destroy resources local state does not account for
+  larri tui     bring a rig up under a live dashboard
+  larri mcp     expose the lifecycle as MCP tools for Claude Code and other agents
   larri status  what is running, what it costs, and why past rigs ended
   larri version build metadata
 
@@ -69,6 +71,10 @@ func main() {
 		err = cmdOffers(ctx, os.Args[2:])
 	case "orphans":
 		err = cmdOrphans(ctx, os.Args[2:])
+	case "tui":
+		err = cmdTUI(ctx, os.Args[2:])
+	case "mcp":
+		err = cmdMCP(ctx, os.Args[2:])
 	case "status":
 		err = cmdStatus(ctx, os.Args[2:])
 	case "version", "--version", "-v":
