@@ -30,6 +30,14 @@ func Pick(spec core.ModelSpec, plan core.SizingPlan, gpuCount int) core.RuntimeK
 	ref := strings.ToLower(spec.Ref)
 	quant := strings.ToLower(spec.Quantization)
 
+	// Source first, because it is the only unambiguous signal. Every Ollama
+	// model is GGUF-quantised, so once a tag has been inspected and its real
+	// quantisation recorded, the GGUF test below matches it too — and picking
+	// llama.cpp for an ollama:// reference would try to fetch a registry blob
+	// from Hugging Face.
+	if spec.Source == core.SourceOllamaRegistry {
+		return core.RuntimeOllama
+	}
 	if strings.HasSuffix(ref, ".gguf") {
 		return core.RuntimeLlamaCpp
 	}
@@ -37,9 +45,6 @@ func Pick(spec core.ModelSpec, plan core.SizingPlan, gpuCount int) core.RuntimeK
 		if strings.Contains(quant, q) {
 			return core.RuntimeLlamaCpp
 		}
-	}
-	if spec.Source == core.SourceOllamaRegistry {
-		return core.RuntimeOllama
 	}
 	if plan.FitsInVRAM && gpuCount >= 1 {
 		return core.RuntimeVLLM
@@ -51,6 +56,8 @@ func Pick(spec core.ModelSpec, plan core.SizingPlan, gpuCount int) core.RuntimeK
 // it is using the engine it is using.
 func PickReason(spec core.ModelSpec, plan core.SizingPlan, gpuCount int) string {
 	switch Pick(spec, plan, gpuCount) {
+	case core.RuntimeOllama:
+		return "ollama registry reference"
 	case core.RuntimeLlamaCpp:
 		if strings.HasSuffix(strings.ToLower(spec.Ref), ".gguf") {
 			return "gguf weights"
@@ -61,8 +68,6 @@ func PickReason(spec core.ModelSpec, plan core.SizingPlan, gpuCount int) string 
 			}
 		}
 		return "does not fit in vram; offloading layers to cpu"
-	case core.RuntimeOllama:
-		return "ollama registry reference"
 	default:
 		return "fits in vram"
 	}

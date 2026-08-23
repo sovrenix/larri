@@ -142,3 +142,60 @@ func TestAdoptAcceptsALoopbackDaemon(t *testing.T) {
 		t.Errorf("got %s:%d", ep.Host, ep.Port)
 	}
 }
+
+// Sizing must come from the artefact that will actually be served, not from
+// what the operator typed. An Ollama tag ships one quantisation and they do
+// not choose it.
+func TestInfoDerivesParamsFromTheBlobAndItsQuantisation(t *testing.T) {
+	// A 1.5B model at Q4_K_M: 940 MB of weights at 4.83 bits each.
+	i := Info{
+		WeightBytes: 986048512, BitsPerWeight: 4.83,
+		Layers: 28, HiddenSize: 1536, KVHeads: 2, HeadDim: 128,
+	}
+	p := i.Params()
+	if p < 1.4 || p > 1.8 {
+		t.Errorf("params = %.2fB, want about 1.5B", p)
+	}
+	// It must round-trip: sizing recomputes weights as params × bits ÷ 8, and
+	// that has to land back on the blob size it came from.
+	back := p * 1e9 * i.BitsPerWeight / 8
+	if diff := back - float64(i.WeightBytes); diff > 1e6 || diff < -1e6 {
+		t.Errorf("weights round-trip is off by %.0f bytes", diff)
+	}
+}
+
+func TestInfoWithoutQuantisationHasNoParams(t *testing.T) {
+	if p := (Info{WeightBytes: 1 << 30}).Params(); p != 0 {
+		t.Errorf("params = %v from a model whose quantisation is unknown", p)
+	}
+}
+
+// Bare names live under library/; a namespaced one does not.
+func TestSplitRef(t *testing.T) {
+	for _, c := range []struct{ in, repo, tag string }{
+		{"qwen2.5:1.5b", "library/qwen2.5", "1.5b"},
+		{"llama3.1", "library/llama3.1", "latest"},
+		{"myorg/custom:v2", "myorg/custom", "v2"},
+	} {
+		repo, tag := splitRef(c.in)
+		if repo != c.repo || tag != c.tag {
+			t.Errorf("splitRef(%q) = %q,%q want %q,%q", c.in, repo, tag, c.repo, c.tag)
+		}
+	}
+}
+
+// A model with no grouped-query attention has no head_count_kv, and every
+// head carries its own KV. Falling back to head_count is the correct reading;
+// defaulting to something smaller would understate the cache.
+func TestFactsCarryTheArchitectureThroughToSizing(t *testing.T) {
+	f := Info{
+		Ref: "m:1b", WeightBytes: 1 << 30, BitsPerWeight: 8,
+		Layers: 16, HiddenSize: 2048, KVHeads: 16, HeadDim: 128, MaxContextLen: 8192,
+	}.Facts()
+	if f.Layers != 16 || f.KVHeads != 16 || f.HeadDim != 128 || f.MaxContextLen != 8192 {
+		t.Errorf("facts = %+v", f)
+	}
+	if err := f.Validate(); err != nil {
+		t.Errorf("facts from a real header should be sizable: %v", err)
+	}
+}

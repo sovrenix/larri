@@ -26,7 +26,6 @@ import (
 	"go.sovrenix.com/larri/internal/rank"
 	"go.sovrenix.com/larri/internal/runtime/vllm"
 	"go.sovrenix.com/larri/internal/secret"
-	"go.sovrenix.com/larri/internal/sizing"
 	"go.sovrenix.com/larri/internal/state"
 )
 
@@ -223,11 +222,12 @@ func cmdUp(ctx context.Context, args []string) error {
 		Ref: *model, Source: core.SourceHuggingFace, ServedName: name,
 		Quantization: *quant, ContextLen: *ctxLen,
 	}
-	if strings.Contains(*model, ":") && !strings.Contains(*model, "/") {
-		// "llama3.1:70b" is an Ollama tag; "org/repo" is Hugging Face. The
-		// shapes are unambiguous, so asking the operator to also pass
-		// --runtime would be asking them to repeat themselves.
+	if isOllamaRef(*model) {
 		spec.Source = core.SourceOllamaRegistry
+	}
+	resolver, err := prepareSpec(ctx, &spec)
+	if err != nil {
+		return err
 	}
 	eng, err := pickRuntime(*engine, spec)
 	if err != nil {
@@ -241,7 +241,7 @@ func cmdUp(ctx context.Context, args []string) error {
 	o := &daemon.Orchestrator{
 		Store: st, Provider: p, Runtime: eng,
 		LabelSealer: sealer,
-		Resolver:    sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
+		Resolver:    resolver,
 		Policy: rank.Policy{
 			ReliabilityFloor: *minRel,
 			OutlierFactor:    rank.DefaultPolicy().OutlierFactor,

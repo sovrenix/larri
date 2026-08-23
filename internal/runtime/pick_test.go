@@ -47,3 +47,20 @@ func TestPickFollowsTheHeuristic(t *testing.T) {
 		})
 	}
 }
+
+// The ordering bug this pins: once an Ollama tag has been inspected, its real
+// quantisation is recorded — and every Ollama model is GGUF-quantised, so a
+// quantisation test that ran first would route "qwen2.5:1.5b" to llama.cpp,
+// which would then try to fetch a registry blob from Hugging Face.
+func TestOllamaSourceOutranksItsGGUFQuantisation(t *testing.T) {
+	spec := core.ModelSpec{
+		Ref: "qwen2.5:1.5b", Source: core.SourceOllamaRegistry,
+		Quantization: "Q4_K_M", // read from the model's own header
+	}
+	if got := Pick(spec, core.SizingPlan{FitsInVRAM: true}, 1); got != core.RuntimeOllama {
+		t.Errorf("Pick = %s, want ollama", got)
+	}
+	if r := PickReason(spec, core.SizingPlan{FitsInVRAM: true}, 1); r != "ollama registry reference" {
+		t.Errorf("reason = %q", r)
+	}
+}

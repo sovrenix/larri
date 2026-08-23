@@ -77,7 +77,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		Ref: *model, Source: core.SourceHuggingFace, ServedName: name,
 		Quantization: *quant, ContextLen: *ctxLen,
 	}
-	if strings.Contains(*model, ":") && !strings.Contains(*model, "/") {
+	if isOllamaRef(*model) {
 		spec.Source = core.SourceOllamaRegistry
 	}
 

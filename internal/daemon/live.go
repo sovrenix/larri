@@ -216,7 +216,7 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 	}
 	unreachable := o.EndpointStallLimit
 	if unreachable == 0 {
-		unreachable = 90 * time.Second
+		unreachable = 3 * time.Minute
 	}
 	var (
 		lastSeen    string

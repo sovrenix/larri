@@ -18,7 +18,6 @@ import (
 	"go.sovrenix.com/larri/internal/provider/vastai"
 	"go.sovrenix.com/larri/internal/rank"
 	"go.sovrenix.com/larri/internal/secret"
-	"go.sovrenix.com/larri/internal/sizing"
 )
 
 // cmdOffers ranks the market without spending anything.
@@ -52,6 +51,16 @@ func cmdOffers(ctx context.Context, args []string) error {
 		Ref: *model, Source: core.SourceHuggingFace, ServedName: "preview",
 		Quantization: *quant, ContextLen: *ctxLen,
 	}
+	// The same reading `up` applies, because a preview that classified the
+	// reference differently would rank a different market than the one `up`
+	// rents from.
+	if isOllamaRef(*model) {
+		spec.Source = core.SourceOllamaRegistry
+	}
+	resolver, err := prepareSpec(ctx, &spec)
+	if err != nil {
+		return err
+	}
 	eng, err := pickRuntime(*engine, spec)
 	if err != nil {
 		return err
@@ -75,7 +84,7 @@ func cmdOffers(ctx context.Context, args []string) error {
 
 	o := &daemon.Orchestrator{
 		Provider: p, Runtime: eng,
-		Resolver: sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
+		Resolver: resolver,
 		Policy: rank.Policy{
 			ReliabilityFloor: *minRel,
 			OutlierFactor:    rank.DefaultPolicy().OutlierFactor,

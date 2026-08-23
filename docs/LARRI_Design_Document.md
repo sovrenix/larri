@@ -2572,7 +2572,7 @@ after the plan has partly happened is the same drift this document exists to pre
 | **M0** | Done |
 | **M1** | Done, verified on live hardware across repeated paid runs |
 | **M2** | Mostly done — reconciliation, orphan sweep, `STOPPED` semantics, idle reclamation, budget ceilings, health checks, restart adoption (§11.4). Crash injection and preemption recovery outstanding |
-| **M3** | Partial — llama.cpp implemented and **live-verified** (GTX 1060, $0.016/hr, serving a GGUF the vLLM path cannot run at all); Ollama implemented but not yet run on live hardware; `offers` and `--dry-run` done. **RunPod not started**, so the provider abstraction has never been proven against a second provider |
+| **M3** | Runtimes done — vLLM, llama.cpp and Ollama all **live-verified**, the latter two on GTX 1060s at under two cents an hour, hardware the vLLM path cannot use at any price. `offers` and `--dry-run` done. **RunPod not started**, so the provider abstraction has never been proven against a second provider |
 | **M4** | Partial — tool registry, MCP server and TUI done. Daemon API, web UI, chat pane and client config writers outstanding |
 | **M5** | Not started |
 
@@ -2581,11 +2581,14 @@ Two of these are worth naming as risks rather than as remaining work:
 - **The provider abstraction is unproven.** One adapter is not an abstraction, it is an
   interface shaped like the thing behind it. Whatever RunPod turns out to need is the real
   test of §5, and some of it will be a change to the interface rather than to the adapter.
-- **Ollama is untested against reality.** It passes its unit tests, which proves the command
-  lines are built as intended and nothing more. This risk was written when it covered
-  llama.cpp too, and taking llama.cpp live immediately produced four bugs no unit test could
-  have found: three deadlines that measured elapsed time instead of silence (§12.2.1.1), and
-  a daemon watching the wrong log file. There is no reason to expect Ollama to be different.
+- **The runtime abstraction now has three implementations and is better for it.** This entry
+  used to read "two runtimes are untested against reality". Taking them live produced five
+  bugs no unit test could have found — three deadlines measuring elapsed time instead of
+  silence, a daemon watching vLLM's log file whatever engine was running, and a selection
+  heuristic that routed Ollama tags to llama.cpp once their real quantisation was known
+  (§12.2.1.1). Every one was a place where the abstraction had a vLLM-shaped assumption
+  baked into it, and none was visible until a second engine met real hardware. Which is the
+  argument for RunPod, below, stated in the past tense.
 
 ### 20.1 Why M1 Is Large
 

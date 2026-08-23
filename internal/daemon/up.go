@@ -85,7 +85,8 @@ type Orchestrator struct {
 	HostProbeInterval time.Duration
 
 	// EndpointStallLimit is how long an advertised SSH endpoint may refuse
-	// connections before the host is judged dead. Zero means ninety seconds.
+	// connections **while the provider reports nothing new** before the host
+	// is judged dead. Zero means three minutes.
 	//
 	// This is the signal that catches a contract reporting running while its
 	// container never starts — the provider's status cannot see that and the
@@ -99,9 +100,20 @@ type Orchestrator struct {
 	// the cheap tier, and none of it was predicted by the provider's
 	// reliability score: every failed machine scored 0.94 or better.
 	//
-	// So the limit is three times the worst observed success, which keeps the
-	// dominant cost of a fallback chain — waiting on machines that were never
-	// going to work — proportionate to how long working ones actually take.
+	// That reasoning produced ninety seconds and held until llama.cpp and
+	// Ollama went to live hardware — which meant, for the first time, cards
+	// that cost two cents an hour. The eleven rentals behind it were all on
+	// the faster tier. On a GTX 1060 the gap between an image finishing its
+	// pull and sshd answering repeatedly exceeded ninety seconds, and hosts
+	// that were working were discarded at the last moment before they came
+	// up.
+	//
+	// So the number is now three minutes, and the trade is lopsided in its
+	// favour: waiting the extra ninety seconds on a genuinely dead host costs
+	// about $0.0005, while discarding a live one costs the whole image pull
+	// again somewhere else. The clock is also progress-driven now (§12.2.1.1)
+	// — it only runs while the provider reports nothing new — so a dead host
+	// is silent from the start and still caught early.
 	EndpointStallLimit time.Duration
 
 	// ColdStartLimit is how long the runtime may produce NO output at all

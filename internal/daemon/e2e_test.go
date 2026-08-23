@@ -122,12 +122,24 @@ func TestE2ERentServeDestroy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
 	defer cancel()
 
+	spec := core.ModelSpec{
+		Ref: model, Source: core.SourceHuggingFace,
+		ServedName: "e2e", Quantization: e2eQuant(), ContextLen: 4096,
+	}
+	if engName == "ollama" {
+		spec.Source = core.SourceOllamaRegistry
+		info, ierr := ollama.Inspect(ctx, model)
+		if ierr != nil {
+			t.Fatalf("inspect %s: %v", model, ierr)
+		}
+		spec.Quantization = info.Quantization
+		o.Resolver = ollama.Resolver{}
+		t.Logf("weights: %s %s", info.Quantization, sizing.HumanBytes(uint64(info.WeightBytes)))
+	}
+
 	live, err := o.UpAndServe(ctx, UpRequest{
-		Criteria: core.Criteria{MaxPriceHr: maxPrice, MinReliability: 0.90, DiskGB: 40},
-		Model: core.ModelSpec{
-			Ref: model, Source: core.SourceHuggingFace,
-			ServedName: "e2e", Quantization: e2eQuant(), ContextLen: 4096,
-		},
+		Criteria:  core.Criteria{MaxPriceHr: maxPrice, MinReliability: 0.90, DiskGB: 40},
+		Model:     spec,
 		DiskGB:    40,
 		HFToken:   secret.New(os.Getenv("HF_TOKEN")),
 		LocalPort: 0, // kernel-chosen, so a stray local 8000 cannot fail the run
@@ -411,6 +423,8 @@ func e2eRuntime(t *testing.T, model string) (runtime.Runtime, string) {
 		r.SetGGUF(file)
 		return r, "llamacpp"
 	case "ollama":
+		// The tag carries its own quantisation and architecture; nothing
+		// about an ollama reference is resolvable through Hugging Face.
 		return ollama.New(), "ollama"
 	default:
 		return vllm.New(), "vllm"
