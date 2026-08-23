@@ -20,25 +20,40 @@
 // So the watchdog uses only powers the host already holds over itself: it
 // stops the runtime, then attempts to halt the container.
 //
-// # What is proven, and what is not
+// # A Vast container cannot stop its own billing
 //
-// Stopping the runtime works, and it is worth having on its own: an abandoned
-// rig stops answering prompts and releases VRAM. That is containment — the
-// model is no longer serving anyone, including whoever might reach it.
+// This was measured rather than assumed. A probe rented an instance and tried
+// every method in turn, giving the provider two minutes to notice each:
 //
-// **Halting is not proven to stop billing on Vast.** Two live runs backdated
-// the heartbeat past the deadline and watched the instance keep reporting
-// `running` for four minutes afterwards. The evidence points at the watchdog
-// firing — the SSH session died at exactly the moment it would have signalled
-// PID 1 — with the provider simply not treating a container that ends itself
-// as a stopped instance. That is a claim about someone else's billing system
-// and it has not been settled, so nothing here asserts it.
+//	pid1 = bash /.launch        dockerenv = yes    (own pid namespace)
+//	CapBnd = 00000000a80405fb   → CAP_SYS_BOOT clear
 //
-// The honest reading, until it is settled: this is a **containment** measure,
-// not a cost guarantee. Ending the bill still requires a provider call from
-// the operator's machine — `larri down`, or `larri orphans` for a rig nobody
-// is tracking. The messages this package produces say exactly that and no
-// more.
+//	halt -f       → "Failed to halt: Operation not permitted"   still running
+//	poweroff -f   → refused                                     still running
+//	kill -TERM 1  → rc=0, signal delivered                      still running
+//	kill -KILL 1  → rc=0                                        still running
+//
+// The capability bound explains the first two: without CAP_SYS_BOOT the kernel
+// refuses, and no amount of privilege inside the container changes that.
+// Signalling PID 1 is permitted and does nothing useful — Vast's launcher is
+// restarted, and the rental is billed for regardless of what runs inside it.
+//
+// So the halt is attempted and expected to fail here. It stays because it is
+// provider-neutral and another provider may permit it; it is logged as an
+// attempt, never as an outcome.
+//
+// # What this actually buys: containment, not cost
+//
+// Stopping the runtime works, and is worth having on its own. An abandoned rig
+// stops answering prompts and releases VRAM — the model is no longer serving
+// anyone, including whoever else might reach it. That is a security property,
+// not a financial one.
+//
+// **Ending the bill is not achievable from inside a marketplace container.**
+// It needs a provider call from the operator's machine: `larri down`, or
+// `larri orphans` for a rig nothing is tracking. Every message this package
+// produces says exactly that and no more, and a test fails if one promises
+// otherwise.
 //
 // # Two signals, never one
 //

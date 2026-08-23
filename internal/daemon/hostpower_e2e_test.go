@@ -51,21 +51,62 @@ func TestHostSelfStopPowers(t *testing.T) {
 	if sel.Selected == nil {
 		t.Fatal("no offer")
 	}
-	keys, err := sshx.NewKeyPair()
-	if err != nil {
-		t.Fatal(err)
+	// A real tag, not `latest`: vastai/base-image publishes only versioned
+	// tags, and asking for one that does not exist produces a container that
+	// never starts — which looks exactly like a dead host at the ssh probe
+	// and cost five rentals to tell apart.
+	image := os.Getenv("LARRI_PROBE_IMAGE")
+	if image == "" {
+		image = "vastai/base-image:cuda-12.9.2-auto"
 	}
-	// A tiny image: this probe is about the container's powers, not about
-	// serving anything.
-	inst, err := p.Create(ctx, sel.Selected.Offer, provider.CreateSpec{
-		Image: "alpine:latest", DiskGB: 16, Label: "larri-probe",
-		OnStart: keys.OnStartScript(),
-	})
-	if err != nil {
-		t.Fatal(err)
+
+	// Fall back across hosts, because roughly half of the cheap tier never
+	// answers (§12.2.2) and a probe without fallback mostly measures that
+	// instead of what it came to measure.
+	var (
+		inst   *core.Instance
+		client *sshx.Client
+		keys   *sshx.KeyPair
+	)
+	o := &Orchestrator{Provider: p, BootPollInterval: 15 * time.Second,
+		BootCap: 10 * time.Minute, BootStallTimeout: 5 * time.Minute,
+		EndpointStallLimit: 3 * time.Minute}
+
+	for attempt, cand := range eligible(sel, 5) {
+		if attempt > 0 {
+			t.Logf("--- attempt %d ---", attempt+1)
+		}
+		keys, err = sshx.NewKeyPair()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, cerr := p.Create(ctx, cand.Offer, provider.CreateSpec{
+			Image: image, DiskGB: 16, Label: "larri-probe",
+			OnStart: keys.OnStartScript(),
+		})
+		if cerr != nil {
+			t.Logf("create: %v", cerr)
+			continue
+		}
+		t.Logf("rented %s (%s $%.3f/hr)", got.InstanceID, cand.Offer.GPUModel, cand.Offer.PriceHr)
+
+		live, werr := o.waitForSSH(ctx, &core.Rig{Instance: got})
+		if werr == nil {
+			_, c, derr := o.pinAndDial(ctx, live, keys)
+			if derr == nil {
+				inst, client = got, c
+				break
+			}
+			werr = derr
+		}
+		t.Logf("unusable: %v", shortErr(werr))
+		dctx, dcancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		_ = p.Destroy(dctx, got.InstanceID)
+		dcancel()
 	}
-	t.Logf("rented %s (%s $%.3f/hr)", inst.InstanceID, sel.Selected.Offer.GPUModel,
-		sel.Selected.Offer.PriceHr)
+	if inst == nil {
+		t.Fatal("no host came up")
+	}
 	defer func() {
 		dctx, dcancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer dcancel()
@@ -74,58 +115,82 @@ func TestHostSelfStopPowers(t *testing.T) {
 		}
 		t.Logf("destroyed %s", inst.InstanceID)
 	}()
-
-	o := &Orchestrator{Provider: p, BootPollInterval: 15 * time.Second,
-		BootCap: 12 * time.Minute, BootStallTimeout: 6 * time.Minute}
-	rig := &core.Rig{Instance: inst}
-	live, err := o.waitForSSH(ctx, rig)
-	if err != nil {
-		t.Fatalf("ssh never came up: %v", err)
-	}
-	_, client, err := o.pinAndDial(ctx, live, keys)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
 	defer client.Close()
 	sess := client.Session()
 
-	// What is this container, and what is it allowed to do?
-	probe := `echo "pid1=$(ps -p 1 -o comm= 2>/dev/null || cat /proc/1/comm)"; ` +
+	// Everything worth knowing, gathered before anything is broken — the
+	// stop attempts below may take sshd with them.
+	probe := `echo "pid1=$(cat /proc/1/comm 2>/dev/null)"; ` +
+		`echo "pid1cmd=$(tr '\0' ' ' < /proc/1/cmdline 2>/dev/null | cut -c1-60)"; ` +
 		`echo "halt=$(command -v halt || echo missing)"; ` +
 		`echo "poweroff=$(command -v poweroff || echo missing)"; ` +
 		`echo "shutdown=$(command -v shutdown || echo missing)"; ` +
 		`echo "capbnd=$(grep CapBnd /proc/self/status | awk '{print $2}')"; ` +
-		`echo "incontainer=$(test -f /.dockerenv && echo yes || echo no)"`
+		`echo "dockerenv=$(test -f /.dockerenv && echo yes || echo no)"; ` +
+		`echo "pidns=$(readlink /proc/self/ns/pid)"`
 	out, err := sess.Run(ctx, probe)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
-	t.Logf("host powers:\n%s", strings.TrimSpace(string(out)))
+	t.Logf("what this container is:\n%s", strings.TrimSpace(string(out)))
 
-	// Does halting actually work? Try each in turn and report what happened.
+	// Each stop method in turn. The provider's view is the verdict and needs
+	// no ssh, which matters because a successful attempt ends the session
+	// that issued it.
 	for _, attempt := range []struct{ name, cmd string }{
-		{"halt -f", "halt -f 2>&1 || echo 'refused: '$?"},
-		{"poweroff -f", "poweroff -f 2>&1 || echo 'refused: '$?"},
-		{"kill -TERM 1", "kill -TERM 1 2>&1 || echo 'refused: '$?"},
-		{"kill -KILL 1", "kill -KILL 1 2>&1 || echo 'refused: '$?"},
+		{"halt -f", "halt -f 2>&1; echo rc=$?"},
+		{"poweroff -f", "poweroff -f 2>&1; echo rc=$?"},
+		{"kill -TERM 1", "kill -TERM 1 2>&1; echo rc=$?"},
+		{"kill -KILL 1", "kill -KILL 1 2>&1; echo rc=$?"},
 	} {
-		r, _ := sess.Run(ctx, attempt.cmd)
-		t.Logf("  %-14s → %s", attempt.name, strings.TrimSpace(string(r)))
+		r, rerr := sess.Run(ctx, attempt.cmd)
+		msg := strings.TrimSpace(string(r))
+		if rerr != nil {
+			msg = "session died: " + shortErr(rerr)
+		}
+		t.Logf("  %-14s → %s", attempt.name, msg)
 
-		// Give the provider a moment, then ask whether it noticed.
-		time.Sleep(30 * time.Second)
-		cur, err := p.Get(ctx, inst.InstanceID)
-		if err != nil || cur == nil {
-			t.Logf("  %-14s → provider: gone/unreadable (%v)", attempt.name, err)
-			t.Log("VERDICT: the container can stop itself")
+		// Give the provider time to notice, checking as it goes.
+		stopped := false
+		for i := 0; i < 6; i++ {
+			time.Sleep(20 * time.Second)
+			cur, gerr := p.Get(ctx, inst.InstanceID)
+			if gerr != nil {
+				continue
+			}
+			if cur == nil {
+				t.Logf("  %-14s → provider: instance gone", attempt.name)
+				t.Log("VERDICT: the container CAN stop itself, and the bill ends with it")
+				return
+			}
+			if !cur.Running {
+				t.Logf("  %-14s → provider: running=false status=%q after %ds",
+					attempt.name, cur.Status, (i+1)*20)
+				t.Log("VERDICT: the container CAN stop itself; compute billing ends")
+				stopped = true
+				break
+			}
+		}
+		if stopped {
 			return
 		}
-		t.Logf("  %-14s → provider: running=%v status=%q", attempt.name, cur.Running, cur.Status)
-		if !cur.Running {
-			t.Log("VERDICT: the container can stop itself, and the provider notices")
-			return
+		cur, _ := p.Get(ctx, inst.InstanceID)
+		if cur != nil {
+			t.Logf("  %-14s → provider: still running=%v status=%q after 2m",
+				attempt.name, cur.Running, cur.Status)
 		}
 	}
 	t.Log("VERDICT: a vast container CANNOT stop its own billing — " +
 		"the host-side halt is not a viable backstop on this provider")
+}
+
+// eligible returns the cheapest usable offers, so the probe can fall back.
+func eligible(sel rank.Result, n int) []rank.Candidate {
+	out := make([]rank.Candidate, 0, n)
+	for _, c := range sel.Candidates {
+		if c.Eligible() && len(out) < n {
+			out = append(out, c)
+		}
+	}
+	return out
 }

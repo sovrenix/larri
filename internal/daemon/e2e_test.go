@@ -281,12 +281,14 @@ func TestE2ERentServeDestroy(t *testing.T) {
 		t.Logf("model said after resume: %q", strings.TrimSpace(out.Choices[0].Message.Content))
 	})
 
-	// The dead-man switch, proven on the machine it protects.
+	// The dead-man switch, on the machine it protects.
 	//
-	// Everything else about it can be tested in a shell. What cannot is
-	// whether halting a marketplace container actually ends the compute
-	// charge — that is a claim about someone else's billing system, and a
-	// wrong answer here would mean the whole feature bounds nothing.
+	// It asserts containment — the watchdog fires and the rig stops serving —
+	// and deliberately not that billing stops. TestHostSelfStopPowers
+	// established that a Vast container cannot end its own billing at all:
+	// CAP_SYS_BOOT is not in the bound, and signalling PID 1 achieves
+	// nothing. Asserting a stop here would be asserting something measured to
+	// be impossible.
 	t.Run("host watchdog halts an abandoned rig", func(t *testing.T) {
 		if os.Getenv("LARRI_E2E_DEADMAN") != "yes" {
 			t.Skip("set LARRI_E2E_DEADMAN=yes to test the watchdog (adds ~4 minutes)")
@@ -321,19 +323,8 @@ func TestE2ERentServeDestroy(t *testing.T) {
 		}
 		t.Log("heartbeat backdated; larri is now indistinguishable from dead")
 
-		deadline := time.Now().Add(4 * time.Minute)
-		for time.Now().Before(deadline) {
-			time.Sleep(20 * time.Second)
-			inst, err := p.Get(ctx, rig.Instance.InstanceID)
-			if err != nil || inst == nil {
-				continue
-			}
-			t.Logf("  provider says: running=%v status=%q", inst.Running, inst.Status)
-			if !inst.Running {
-				t.Logf("PASS: the host stopped itself; compute billing has ended")
-				return
-			}
-		}
+		// Long enough for the 30s check interval to come round several times.
+		time.Sleep(2 * time.Minute)
 		// A *fresh* connection to read the verdict.
 		//
 		// The existing session cannot be trusted here and that is the point:

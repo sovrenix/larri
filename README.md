@@ -208,6 +208,10 @@ larri up --budget 5.00                              # destroys on breach, after 
 ```
 
 Both are enforced by a supervisor that runs for as long as `larri up` (or `larri tui`) does.
+If that process dies, the host itself stops serving after a longer deadline — but **that is
+containment, not a refund**: a rented container cannot end its own billing (measured, §12.4.1).
+The remedy for a rig orphaned by a crash is `larri orphans`, which finds instances by their
+provider-side label even when local state is gone.
 Idleness counts **operator inference only** — LARRI's own health checks are excluded, or the
 timer would reset every thirty seconds and never fire. The budget counts storage as well as
 GPU time, because a `STOPPED` rig keeps billing for the former after the latter stops.

@@ -1370,28 +1370,50 @@ worth that trade (§15.4).
 The watchdog therefore uses only powers the host already holds over itself: it stops the
 runtime, then attempts to halt the container.
 
-**And halting does not demonstrably stop the bill on Vast.** Two live runs backdated the
-heartbeat past the deadline and watched the instance keep reporting `running` for four
-minutes afterwards. The evidence points at the watchdog firing and the provider simply not
-treating a self-ended container as a stopped instance — the SSH session died at exactly the
-moment the script would have signalled PID 1, which on these images is what serves ssh. (That
-detail also broke the first diagnostic, which read the verdict through the connection the
-watchdog had just killed and got two empty strings: it looked like "the watchdog did nothing"
-and meant "the watchdog worked".)
+**And a Vast container cannot stop its own billing.** This was measured, not assumed. A probe
+rented an instance and tried every method in turn, allowing the provider two minutes to notice
+each:
+
+```
+pid1 = bash /.launch        dockerenv = yes     (own pid namespace)
+CapBnd = 00000000a80405fb   → CAP_SYS_BOOT clear
+
+halt -f       → "Failed to halt: Operation not permitted"    still running
+poweroff -f   → refused                                      still running
+kill -TERM 1  → rc=0, signal delivered                       still running
+kill -KILL 1  → rc=0                                         still running
+```
+
+The capability bound explains the first two: without `CAP_SYS_BOOT` the kernel refuses, and
+no amount of root inside the container changes that. Signalling PID 1 is permitted and
+achieves nothing — the launcher is restarted, and the rental bills regardless of what runs
+inside it.
 
 So the honest description is **containment, not a cost guarantee**:
 
 | | Effect | Status |
 |---|---|---|
-| Stop the runtime | The rig stops serving; VRAM is released | Works |
-| Halt the container | Would end compute billing | **Not established on Vast** |
-| Destroy the instance | Ends the bill | Provider call, from the operator's machine only |
+| Stop the runtime | The rig stops serving; VRAM is released | **Works** |
+| Halt the container | Would end compute billing | **Impossible on Vast** (measured) |
+| Destroy the instance | Ends the bill | Provider call, operator's machine only |
 
-Containment is worth having on its own — an abandoned rig that stops answering prompts is a
-smaller problem than one that keeps answering them — but it is not the reclamation guarantee
-this section set out to provide, and calling it one would be telling an operator the opposite
-of the truth about money. Ending the bill still requires `larri down`, or `larri orphans` for
-a rig nobody is tracking.
+Containment is worth having — an abandoned rig that stops answering prompts is a smaller
+problem than one that keeps answering, and it is a security property even when it is not a
+financial one. But it is not the reclamation guarantee this section set out to provide, and
+calling it one would tell an operator the opposite of the truth about money.
+
+**The wider conclusion is worth stating plainly: on a marketplace provider, teardown cannot be
+guaranteed against local process death.** Real clouds make autostop work because an instance
+can shut itself down and billing follows instance state. A rented container has neither
+property — it cannot power itself off, and it is billed as a rental rather than as a running
+workload. Vast also exposes no scheduled-end or TTL parameter on instance creation, so there
+is no provider-side substitute.
+
+That leaves exactly one remedy for a rig orphaned by a dead LARRI, and it is the one already
+built: **`larri orphans`**, which finds resources by their provider-side label rather than by
+local records — precisely because the situation it addresses is the one where the local
+records are gone (§11.3). The dead-man switch reduces what an abandoned rig *does*; only the
+orphan sweep reduces what it *costs*.
 
 **Two signals, never one.** A watchdog that halted purely on elapsed time would be wrong
 expensively. A missed heartbeat says the *operator* is gone; it says nothing about whether
@@ -1420,13 +1442,6 @@ rig from an idle one — always acts first. The watchdog firing means LARRI is g
 the rig was idle. It is armed *before* the bootstrap rather than after, because the image
 pull and weight download are the longest and most expensive window, and the one where a
 killed LARRI leaves the biggest bill.
-
-**What remains unsettled** is whether any host-side action can end billing on a marketplace
-provider that bills for a rented container regardless of what is running in it. Vast exposes
-no scheduled-end or TTL parameter on instance creation, so there is no provider-side
-alternative either. The next experiment is a direct one: rent a cheap instance, establish
-what PID 1 is and which of `halt`/`poweroff`/`kill 1` the container is permitted, and watch
-whether the provider's view changes. Until that is run, the table above is the claim.
 
 **What it does not defend against** is a hostile host operator. They have root; they can kill
 the watchdog, lie about the clock, or keep billing regardless. This exists to survive LARRI
