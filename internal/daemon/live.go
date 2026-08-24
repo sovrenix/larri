@@ -17,6 +17,7 @@ import (
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/deadman"
 	"go.sovrenix.com/larri/internal/errs"
+	"go.sovrenix.com/larri/internal/provider"
 	"go.sovrenix.com/larri/internal/runtime"
 	"go.sovrenix.com/larri/internal/secret"
 	"go.sovrenix.com/larri/internal/sizing"
@@ -253,6 +254,7 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 	}
 	var (
 		lastEndpoint core.Instance
+		lastLogLine  string
 		lastSeen     string
 		changedAt    = time.Now()
 		deadline     = time.Now().Add(cap)
@@ -320,6 +322,21 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 				everSpoke = true
 			}
 			if inst != nil {
+				// A provider that narrates its boot in logs rather than in a
+				// status field still gets a progress-driven wait. RunPod's
+				// desiredStatus is RUNNING from the first second and never
+				// changes; its log says "Pulling from", "Status: Image is up
+				// to date", "start container: begin". Same signal, different
+				// source — and without it the wait falls back to a fixed
+				// clock, which is what §12.2.1 exists to avoid.
+				if line, ok := o.latestBootLog(ctx, rig); ok && line != lastLogLine {
+					lastLogLine = line
+					changedAt = time.Now()
+					if !endpointAt.IsZero() {
+						endpointAt = time.Now()
+					}
+					o.emit("boot", "%s", line)
+				}
 				if now := describeBoot(inst); now != lastSeen {
 					o.emit("boot", "%s", now)
 					lastSeen, changedAt = now, time.Now()
@@ -920,4 +937,29 @@ func (o *Orchestrator) runtimePort() int {
 		return p.Port()
 	}
 	return 8000
+}
+
+// latestBootLog returns the newest line a provider has to offer about a
+// booting instance, if it offers any.
+//
+// Only the last line, deliberately. This drives a *progress* decision — has
+// anything happened since we last looked — and for that the tail is the whole
+// answer. Streaming the lot into the event feed would bury the phases an
+// operator is watching for under docker layer noise.
+func (o *Orchestrator) latestBootLog(ctx context.Context, rig *core.Rig) (string, bool) {
+	if rig.Instance == nil {
+		return "", false
+	}
+	lctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+
+	lines, ok := provider.BootLogOf(lctx, o.Provider, rig.Instance.InstanceID, 20)
+	if !ok || len(lines) == 0 {
+		return "", false
+	}
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if len(last) > 160 {
+		last = last[:160]
+	}
+	return last, last != ""
 }

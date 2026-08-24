@@ -155,7 +155,13 @@ func (p *Provider) Create(ctx context.Context, o core.Offer, spec provider.Creat
 	if spec.SSHPublicKey != "" {
 		req.Env["PUBLIC_KEY"] = spec.SSHPublicKey
 	}
-	req.DockerStartCmd = startCommand(spec.OnStart)
+	// Entrypoint *and* command. Setting only the command leaves the image's
+	// ENTRYPOINT in place and hands it the script as arguments — on a vLLM
+	// image that produced "vllm serve: error: argument
+	// --compilation-config", which is the engine rejecting a shell script as
+	// a flag. The pod then died on repeat and never ran sshd at all.
+	req.DockerEntrypoint = []string{"/bin/bash", "-c"}
+	req.DockerStartCmd = []string{startScript(spec.OnStart)}
 
 	var created pod
 	if err := p.c.rest(ctx, "POST", "/pods", req, &created); err != nil {
@@ -254,6 +260,7 @@ type createRequest struct {
 	VolumeInGb        int               `json:"volumeInGb,omitempty"`
 	VolumeMountPath   string            `json:"volumeMountPath,omitempty"`
 	Env               map[string]string `json:"env,omitempty"`
+	DockerEntrypoint  []string          `json:"dockerEntrypoint,omitempty"`
 	DockerStartCmd    []string          `json:"dockerStartCmd,omitempty"`
 }
 
@@ -374,7 +381,7 @@ func shortest(err error) string {
 //   - `sleep infinity` at the end, because when the start command exits the
 //     pod does — and a pod that dies the moment sshd is ready is worse than
 //     one that never started.
-func startCommand(onStart string) []string {
+func startScript(onStart string) string {
 	script := `set -e
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server
@@ -394,5 +401,5 @@ service ssh start || /usr/sbin/sshd
 		script += "{ " + onStart + " ; } || true\n"
 	}
 	script += "sleep infinity\n"
-	return []string{"bash", "-c", script}
+	return script
 }

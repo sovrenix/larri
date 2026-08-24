@@ -150,3 +150,41 @@ func Report(p Provider, onDrift func(error), onNotice func(string)) {
 		r.SetOnNotice(onNotice)
 	}
 }
+
+// BootLogger is implemented by providers that can report what an instance is
+// doing before SSH is reachable.
+//
+// LARRI's bring-up waits are progress-driven: they end on *silence*, not on a
+// clock, because a fixed deadline throws away a half-finished image pull and
+// starts the same one somewhere else (§12.2.1). That design needs a signal,
+// and until now it read the provider's status text — which works on a provider
+// that narrates its boot and not on one that does not.
+//
+// Vast narrates: "loading", then per-layer pull progress. RunPod's
+// desiredStatus is RUNNING from the first second and never changes, whether
+// the image is pulling or the pod is serving — so on RunPod the
+// progress-driven wait had nothing to key on and degenerated into the fixed
+// clock it was designed to replace.
+//
+// A provider that keeps logs can answer the same question from a different
+// source, which is what this is for. Optional, because a provider that offers
+// neither status nor logs is still usable — it just gets the fixed clock.
+type BootLogger interface {
+	// BootLog returns the most recent output for an instance, oldest first.
+	// It must work before SSH is up; that is the entire point.
+	BootLog(ctx context.Context, instanceID string, tail int) ([]string, error)
+}
+
+// BootLogOf reads an instance's boot log, or returns false if the provider
+// cannot supply one.
+func BootLogOf(ctx context.Context, p Provider, instanceID string, tail int) ([]string, bool) {
+	bl, ok := p.(BootLogger)
+	if !ok {
+		return nil, false
+	}
+	lines, err := bl.BootLog(ctx, instanceID, tail)
+	if err != nil {
+		return nil, false
+	}
+	return lines, true
+}

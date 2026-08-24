@@ -56,7 +56,7 @@ down with absence confirmed at the provider.
 | Area | State |
 |---|---|
 | Lifecycle: `up` · `down` · `status` · `resume` · `offers` · `orphans` | **Working, live-verified** |
-| Providers | **Vast.ai** end-to-end. **RunPod** searches and its API is live-verified, but cannot serve yet — RunPod supplies no SSH, so the image must run `sshd` and upstream engine images do not |
+| Providers | **Vast.ai** and **RunPod**, both live-verified end to end. `larri resume` works on Vast only — RunPod cannot add a key to a running pod |
 | Runtimes | **vLLM, llama.cpp and Ollama — all three live-verified** |
 | Cost safety: journal, orphan sweep, idle timeout, budget ceiling, health checks | **Working** |
 | Surfaces: `mcp` (Model Context Protocol) · `tui` (dashboard) | **Working** |

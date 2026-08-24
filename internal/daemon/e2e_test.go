@@ -223,6 +223,26 @@ func TestE2ERentServeDestroy(t *testing.T) {
 		live.Close()
 
 		adopted, err := o.Adopt(ctx, rig.ID)
+
+		// Reconnection needs the provider to install a fresh key on a running
+		// instance, and not every provider can. RunPod has no such call: its
+		// key is supplied at creation and there is no way to add another
+		// later. That is a limitation to report, not a failure to hide —
+		// FR-SUP-16 requires such a rig be described as *destroyable but not
+		// reconnectable*, and the teardown below proves the first half.
+		if _, canAttach := o.Provider.(provider.KeyAttacher); !canAttach {
+			if adopted != nil {
+				adopted.Close()
+			}
+			if err == nil {
+				t.Fatal("a provider that cannot attach a key reported a successful resume")
+			}
+			if !strings.Contains(err.Error(), "teardown only") {
+				t.Errorf("the refusal should say the rig is still destroyable: %v", err)
+			}
+			t.Logf("resume unavailable on this provider, as expected: %v", shortErr(err))
+			return
+		}
 		if err != nil {
 			if adopted != nil {
 				adopted.Close()

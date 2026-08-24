@@ -442,7 +442,7 @@ func TestNothingRentableIsAnError(t *testing.T) {
 // pod must run a real sshd, and upstream engine images carry none —
 // vllm/vllm-openai:latest has no sshd binary at all. The adapter installs one.
 func TestStartCommandInstallsSSHBecauseRunpodDoesNot(t *testing.T) {
-	got := strings.Join(startCommand(""), " ")
+	got := startScript("")
 	for _, want := range []string{"openssh-server", "authorized_keys", "$PUBLIC_KEY"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("start command missing %q:\n%s", want, got)
@@ -460,7 +460,7 @@ func TestStartCommandInstallsSSHBecauseRunpodDoesNot(t *testing.T) {
 // LARRI's own key installation runs after sshd exists, and its failure must
 // not strand the pod — the key is already installed by then.
 func TestStartCommandChainsOnStartWithoutStrandingThePod(t *testing.T) {
-	got := strings.Join(startCommand("echo larri-onstart"), " ")
+	got := startScript("echo larri-onstart")
 	if !strings.Contains(got, "echo larri-onstart") {
 		t.Errorf("onstart was dropped:\n%s", got)
 	}
@@ -496,5 +496,36 @@ func TestGetAsksForTheNetworkingFields(t *testing.T) {
 	}
 	if inst.SSHPort != 40068 {
 		t.Errorf("ssh port = %d", inst.SSHPort)
+	}
+}
+
+// dockerStartCmd overrides CMD, not ENTRYPOINT. Setting only the command
+// leaves the image's entrypoint in place and hands it the script as
+// arguments — which on a vLLM image produced "vllm serve: error: argument
+// --compilation-config", the engine rejecting a shell script as a flag. The
+// pod died on repeat and sshd never ran.
+func TestCreateOverridesTheEntrypointNotJustTheCommand(t *testing.T) {
+	var got createRequest
+	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/graphql") {
+			w.Write([]byte(catalogueJSON))
+			return
+		}
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"id":"pod1","desiredStatus":"RUNNING"}`))
+	})
+	if _, err := p.Create(context.Background(),
+		core.Offer{OfferID: "NVIDIA GeForce RTX 4090", GPUCount: 1},
+		provider.CreateSpec{Image: "vllm/vllm-openai:latest", Label: "larri:01X"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.DockerEntrypoint) == 0 {
+		t.Fatal("the image's entrypoint was left in place; the script becomes its arguments")
+	}
+	if got.DockerEntrypoint[0] != "/bin/bash" {
+		t.Errorf("entrypoint = %v", got.DockerEntrypoint)
+	}
+	if len(got.DockerStartCmd) != 1 || !strings.Contains(got.DockerStartCmd[0], "openssh-server") {
+		t.Errorf("start command = %v", got.DockerStartCmd)
 	}
 }

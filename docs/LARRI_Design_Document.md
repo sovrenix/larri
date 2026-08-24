@@ -1161,10 +1161,29 @@ limit ends it exactly as before.
 
 *`desiredStatus` is `RUNNING` from the first second and never changes.* Vast narrates its
 boot — "loading", then per-layer pull progress — and LARRI's waits are progress-driven
-because of it (§12.2.1.1). RunPod narrates nothing: the same word from creation until
-teardown, whether the image is pulling or the pod is serving. So on RunPod the progress-driven
-reset has no signal to key on, and the wait degenerates to the fixed clock it was designed to
-replace.
+because of it (§12.2.1.1). RunPod's status field narrates nothing: the same word from
+creation until teardown, whether the image is pulling or the pod is serving.
+
+**Its logs narrate perfectly, though**, and that is where the signal came from. A boot log
+reads `create container`, `Pulling from`, `Status: Image is up to date`, `start container:
+begin`, and then whatever the container writes. So the progress-driven wait keeps working on
+a provider with no useful status field: `BootLogger` is an optional capability, LARRI asks
+for the newest line each poll, and a line it has not seen resets the stall clock exactly as a
+changed status would. Same rule — act on silence, not on the clock — fed from whichever
+source a provider actually has.
+
+That capability also settled the question that had blocked everything else. The pod was not
+slow; it was *dying*, and the log said so in one line:
+
+```
+container: vllm serve: error: argument --compilation-config/-cc: 1 validation error
+```
+
+`dockerStartCmd` overrides the image's **CMD**, not its ENTRYPOINT. LARRI's setup script was
+being handed to `vllm serve` as command-line flags, the engine rejected it, and the pod
+restarted forever — never reaching the line that installs sshd. Setting `dockerEntrypoint`
+as well is the fix, and no amount of waiting would have found it: the same log that provides
+the progress signal is the only place that failure was visible at all.
 
 #### The blocker: SSH is the provider's job on Vast and the image's job on RunPod
 
@@ -1188,22 +1207,28 @@ requirement has been `plan` since M1 and has now acquired a forcing reason, beca
 
 RunPod documents the workaround — a container start command that installs `openssh-server`,
 appends `$PUBLIC_KEY` to `authorized_keys`, starts the daemon and holds the pod open with
-`sleep infinity` — and LARRI's adapter now emits exactly that. It is the right shape and it
-is not sufficient on a 15 GB engine image: a controlled pod ran ten minutes without sshd ever
-answering, because the start command cannot run until the pull finishes, and nothing in the
-API says whether it has. The two problems compound — a slow invisible pull and a setup step
-that only begins after it.
+`sleep infinity` — and LARRI's adapter emits exactly that, with LARRI's own key installation
+chained after in a way that cannot strand the pod.
 
-Their own note points at the answer: *"all of this is now automated through our custom
-tensorflow, pytorch, and 'Runpod stack' images."* An image that already carries sshd needs no
-start-command install and no wait for one. That is **FR-RT-11** — project-maintained,
-digest-pinned runtime images — which has been `plan` since M1 and is now the thing standing
-between RunPod and a working `larri up`.
+**This works.** A live rig on an RTX 4090: sshd up, host key pinned, vLLM bootstrapped and
+launched, a completion round-tripped through the tunnel, destroyed with absence confirmed —
+$0.0145 for two and a half minutes.
+
+Pre-baked images (**FR-RT-11**) remain worth building, but the argument is now cost rather
+than capability: installing `openssh-server` on every bring-up spends a minute of billed time
+doing what an image could have carried. That is an optimisation, not a prerequisite.
 
 This is §20's stated risk arriving on schedule: *whatever RunPod turns out to need will
-change the interface rather than merely add to it.* It did, twice over — image selection is
-not purely a runtime concern, and a provider that narrates nothing breaks a wait built on
-narration.
+change the interface rather than merely add to it.* It did — `BootLogger` exists because a
+provider with no useful status field still has to be waited on, and that is a new thing the
+interface can be asked for rather than a new thing every adapter must supply.
+
+**One capability RunPod does not have.** Reconnecting to a rig after a restart needs a fresh
+key installed on a running instance, and RunPod has no call for it — its key is supplied at
+creation and cannot be added to afterwards. So `larri resume` refuses on RunPod, saying the
+rig is *destroyable but not reconnectable* (FR-SUP-16), which is exactly the case that
+requirement was written for. Teardown never depended on SSH (FR-SEC-18), so the rig remains
+killable; only reattachment is lost.
 
 
 ### 11.4 Adopting a Rig After a Restart (FR-SUP-07)

@@ -55,7 +55,10 @@ type Client struct {
 	Key        secret.Secret
 	RESTURL    string
 	GraphQLURL string
-	HTTP       *http.Client
+	// LogsURL is a printf template taking the pod id and a tail count. Its
+	// own field because RunPod serves logs from a different host than pods.
+	LogsURL string
+	HTTP    *http.Client
 }
 
 // NewClient builds a client.

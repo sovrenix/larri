@@ -114,24 +114,12 @@ instead, which is why bring-up depends on discovering the launcher at runtime.
 
 ## The two risks worth naming
 
-**RunPod can search but cannot yet serve.** Its API contract is now fully verified against
-the live service — search, create, get, list and destroy all pass the conformance suite with
-a real key, and `larri offers --provider runpod` works without an account at all. What blocks
-`larri up` is not the adapter. **RunPod supplies no usable SSH** — its terminal access is a
-proxy with no port forwarding, which is the one thing LARRI's tunnel is — so the pod must run
-a real `sshd`, and upstream engine images carry none (`vllm/vllm-openai:latest` has no `sshd`
-binary). The adapter now emits RunPod's documented install-and-start command, which is the
-right shape and still not enough on a 15 GB image: a controlled pod ran ten minutes without
-sshd answering, because the start command cannot begin until the pull finishes and
-`desiredStatus` says `RUNNING` throughout either way.
-
-The fix is **FR-RT-11** — project-maintained images carrying the engine *and* sshd, which is
-what RunPod's own base images do. It was `plan` and is now the single prerequisite for RunPod
-end-to-end.
-
-*(The abstraction question this entry used to raise is answered: adding RunPod changed the
-`Offer` contract — reliability became optional, host exclusion became conditional — but not
-the `Provider` interface itself. §5.4 records what had to move.)*
+**RunPod is live-verified end to end**, with one capability gap. A real rig on an RTX 4090:
+sshd installed by the start command, host key pinned, vLLM launched, a completion
+round-tripped through the tunnel, destroyed with absence confirmed. The gap is
+reconnection — `larri resume` needs a fresh key installed on a running instance and RunPod
+has no such call, so it refuses with *destroyable but not reconnectable* (FR-SUP-16).
+Teardown never depended on SSH, so the rig stays killable.
 
 **Teardown cannot be guaranteed against local process death.** Measured, not assumed: a
 marketplace container cannot end its own billing — `CAP_SYS_BOOT` is absent from its
