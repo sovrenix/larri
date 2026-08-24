@@ -174,6 +174,15 @@ func Run(t *testing.T, h Harness) {
 	})
 }
 
+// RunSearchContract asserts the search half of the contract on its own.
+//
+// For a provider whose catalogue can be read without credentials while its
+// lifecycle cannot — RunPod publishes prices unauthenticated — this verifies
+// the half that is verifiable rather than skipping both. Half a contract
+// checked against reality is worth more than a whole one checked against a
+// stub.
+func RunSearchContract(t *testing.T, h Harness) { runSearchContract(t, h) }
+
 // runSearchContract asserts what the ranker needs from every Search result.
 //
 // Selection is downstream of normalisation, and a field an adapter forgets to

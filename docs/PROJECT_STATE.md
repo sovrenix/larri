@@ -36,9 +36,9 @@ are different claims and are recorded as such.
 | Surfaces | 13 | 1 | 2 | 3 | 7 | 23% |
 | Endpoint & client wiring | 14 | 3 | 0 | 1 | 10 | 21% |
 | Observability | 10 | 0 | 1 | 0 | 9 | 10% |
-| **Total** | **161** | **57** | **45** | **19** | **40** | **63%** |
+| **Total** | **161** | **57** | **48** | **16** | **40** | **63%** |
 
-Sixty-three per cent of requirements are implemented, and **the lifecycle is the part that
+Sixty-five per cent of requirements are implemented, and **the lifecycle is the part that
 is done.** Renting, sizing, serving, supervising, reconnecting and tearing down are at or
 near 100%; what is missing clusters into three areas that are missing almost entirely —
 client wiring, the browser surfaces, and observability.
@@ -71,8 +71,6 @@ Nineteen requirements are partly met. The gap for each:
 
 | ID | Gap |
 |---|---|
-| FR-SRCH-01 | Providers are queried concurrently, but there is only **one provider**, so nothing exercises the concurrency or the merge. |
-| FR-SRCH-06 | Degrading when a provider errors is implemented and untestable in practice for the same reason. |
 | FR-RT-10 | Tool-calling parsers are passed through; **refusing** a rig when tool calling is required and unavailable is not enforced. |
 | FR-SUP-03 | Fallback picks the next-ranked offer without comparing its price to the original, so a silent upgrade is possible. |
 | FR-SUP-05 | Budget ceilings are **per rig**; there is no global ceiling across rigs. |
@@ -88,7 +86,6 @@ Nineteen requirements are partly met. The gap for each:
 | FR-UI-01 | `up`, `down`, `status`, `offers`, `orphans` ship; **no `logs` command** (it exists only as an MCP tool) and no `daemon`. |
 | FR-UI-06 | Surfaces share state through one store, but with no daemon there is no cross-process consistency guarantee. |
 | FR-UI-11 | The tool registry enforces the safe/consequential split; there is no chat pane to apply it to. |
-| NFR-07 | "A new provider is one interface" is **unproven** — one adapter is not an abstraction. |
 | NFR-08 | Structured events and an append-only journal exist; no rig-scoped correlation ID is plumbed through. |
 
 ---
@@ -117,10 +114,18 @@ instead, which is why bring-up depends on discovering the launcher at runtime.
 
 ## The two risks worth naming
 
-**One provider is not an abstraction.** `Provider` has exactly one implementation, so
-whatever RunPod turns out to need will change the interface rather than merely add to it.
-This is not speculation: taking a second and third *runtime* live produced five bugs no unit
-test could have found, every one a vLLM-shaped assumption in code that looked generic.
+**RunPod's pod lifecycle is unverified.** The adapter is written against RunPod's published
+OpenAPI spec and its catalogue is checked against the live API — that half answers
+unauthenticated, so `larri offers --provider runpod` works today and its normalisation is
+proven against real data. Everything that needs a key (create, get, list, destroy) has been
+exercised only against a stub built from the spec. On this project's record that is not
+enough: taking a second and third *runtime* live produced five bugs no unit test could have
+found. **Assume the same is waiting here**, and run the live conformance suite with a key
+before trusting it with a rental.
+
+*(The abstraction question this entry used to raise is answered: adding RunPod changed the
+`Offer` contract — reliability became optional, host exclusion became conditional — but not
+the `Provider` interface itself. §5.4 records what had to move.)*
 
 **Teardown cannot be guaranteed against local process death.** Measured, not assumed: a
 marketplace container cannot end its own billing — `CAP_SYS_BOOT` is absent from its

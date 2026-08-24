@@ -56,7 +56,7 @@ down with absence confirmed at the provider.
 | Area | State |
 |---|---|
 | Lifecycle: `up` · `down` · `status` · `resume` · `offers` · `orphans` | **Working, live-verified** |
-| Providers | **Vast.ai.** RunPod is not implemented |
+| Providers | **Vast.ai live-verified.** RunPod implemented — its catalogue is verified against the live API (`larri offers --provider runpod` needs no account), but the pod lifecycle is **unverified**: no key was available to test it |
 | Runtimes | **vLLM, llama.cpp and Ollama — all three live-verified** |
 | Cost safety: journal, orphan sweep, idle timeout, budget ceiling, health checks | **Working** |
 | Surfaces: `mcp` (Model Context Protocol) · `tui` (dashboard) | **Working** |
@@ -93,7 +93,7 @@ criteria → search offers across providers → rank → provision → bootstrap
         → supervise → destroy on command
 ```
 
-The provider is **Vast.ai** (RunPod is designed for but not built). Runtimes are **vLLM**,
+Providers are **Vast.ai** and **RunPod**. Runtimes are **vLLM**,
 **llama.cpp**, and **Ollama**. The whole thing is a single static Go binary with no runtime
 dependencies — and three build ones: `x/crypto`, `x/term`, `yaml.v3`.
 

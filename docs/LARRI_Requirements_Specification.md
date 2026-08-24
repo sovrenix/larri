@@ -246,14 +246,14 @@ which is precisely the condition `--interruptible` expresses.
 
 | ID | Pri | Status | Requirement |
 |---|---|---|---|
-| FR-SRCH-01 | M | `part` | Query all enabled providers concurrently and normalize results into a single `Offer` type. |
+| FR-SRCH-01 | M | `done` | Query all enabled providers concurrently and normalize results into a single `Offer` type. |
 | FR-SRCH-02 | M | `live` | Filter offers by both the operator's criteria and the computed VRAM requirement from §7.1. |
 | FR-SRCH-03 | M | `live` | **Select the cheapest offer that meets the criteria and passes the safety floors.** Criteria are a hard filter; fit is a filter, not a scoring term — once the model is known to run, VRAM headroom has no further business competing with price. Every exclusion records a typed reason and evidence, and the selection prints what it rejected alongside what it chose: an operator asking "why not the cheap one" gets the reason, not a score. |
 | FR-SRCH-09 | M | `live` | Apply a reliability floor and a price-outlier floor before selecting on price. Both are configurable and both are overridable, but neither may be bypassed by accident: selecting on price alone steers toward exactly what a host harvesting prompts would list. |
 | FR-SRCH-10 | M | `done` | Break ties deterministically, so the same market yields the same selection and a choice can be reproduced in a bug report. |
 | FR-SRCH-04 | M | `live` | Present ranked candidates with per-offer price, specs, provider, and score before purchase when run interactively. |
 | FR-SRCH-05 | S | `live` | Support `--dry-run`: full search, rank, and plan output with zero spend. |
-| FR-SRCH-06 | M | `part` | Degrade gracefully when one provider errors or rate-limits — continue with the rest and report the omission explicitly rather than silently narrowing the search. |
+| FR-SRCH-06 | M | `done` | Degrade gracefully when one provider errors or rate-limits — continue with the rest and report the omission explicitly rather than silently narrowing the search. |
 | FR-SRCH-07 | C | `plan` | Watch mode: poll until an offer meeting criteria appears below a target price. |
 | FR-SRCH-08 | M | `live` | Treat a price anomalously low for the hardware class as a signal rather than a bargain, measured against the **class median** with a robust spread and a minimum sample size — never against the mean, which a long tail of overpriced listings renders meaningless. Exclude and report; never silently drop, and never silently select. |
 
@@ -461,7 +461,7 @@ All four surfaces are clients of one daemon API. No lifecycle logic lives in a s
 | NFR-04 | Latency | `live` | `larri down` confirms destruction within 60 s under normal provider behaviour. |
 | NFR-05 | Truthfulness | `live` | Progress and readiness reporting reflects verified reality. `READY` implies a completion has round-tripped. |
 | NFR-06 | Portability | `done` | Single static Go binary. Linux and macOS. **No runtime dependencies at all** — SSH is spoken in-process rather than by driving an external client, so there is nothing to install and nothing to be missing. |
-| NFR-07 | Extensibility | `part` | A new provider or runtime is added by implementing one interface, with no changes to core, ranking, wiring, or state code. |
+| NFR-07 | Extensibility | `done` | A new provider or runtime is added by implementing one interface, with no changes to core, ranking, wiring, or state code. |
 | NFR-08 | Observability | `part` | Structured logs with a rig-scoped correlation ID; every provider request/response recorded at debug level with secrets redacted. OpenTelemetry traces and metrics cover the lifecycle, with export opt-in and the self-contained path requiring no external service. |
 | NFR-09 | Testability | `live` | The full lifecycle is exercisable against fakes with zero spend. No test issues a real create. |
 | NFR-10 | Licensing | `done` | GPL-3.0-or-later, copyright Sovrenix Inc. Every source file carries an SPDX short-form header. Dependencies must be GPL-3.0-compatible, audited before entering `go.mod`. |

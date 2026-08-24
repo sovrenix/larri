@@ -1082,6 +1082,57 @@ its place immediately, by finding two things a stub never could:
 One check was written and removed: that `Search` honours a price ceiling. The ranker is
 authoritative for criteria and applies the ceiling itself, so requiring adapters to filter
 client-side would have been asserting a contract LARRI does not need.
+### 5.5 RunPod: a Catalogue, Not a Marketplace
+
+The second adapter, and the one the abstraction was shaped for. What it needed is recorded
+here because the differences are structural rather than cosmetic — and because the next
+provider will differ again.
+
+**Two APIs, because neither does the other's half.** RunPod's REST v2 owns the pod lifecycle
+and publishes no prices: `costPerHr` exists only once a pod does, and there is no catalogue
+endpoint. Price is load-bearing — selection ranks on it, every ceiling is denominated in it —
+so `Search` reads the GraphQL catalogue, which lists each GPU type with its on-demand and
+spot price. That catalogue answers **unauthenticated**, which is why `larri offers --provider
+runpod` works with no account at all, and why its normalisation could be verified against
+live data without a key.
+
+**An offer is a class of hardware, not a box.** RunPod sells "NVIDIA GeForce RTX 4090" and
+places the pod itself. So its offers report no `MachineID` — there is no host to name — and
+no reliability, because there is no host to score. Both absences are load-bearing rather than
+missing data, and both were made safe before the adapter existed (§5.4).
+
+**The two APIs disagree with each other.** The catalogue advertises 48 GPU types; `POST
+/pods` accepts 45. The difference includes a literal `"unknown"` and several MIG partitions —
+**three of them priced**, one at $0.50/hr for 32 GB, which ranks well enough to be chosen.
+Two defences, because matching the create enum exactly would mean embedding 45 strings that
+go stale the week RunPod adds hardware:
+
+- Obvious non-types are dropped at normalisation.
+- A create rejected for an unplaceable GPU type is re-classified as a **host** failure. The
+  default for a 400 is model-attributable — *the next host fails identically* — which is
+  right for a bad image and wrong here, where the next *type* may be perfectly available.
+  Without that, the first such selection ends the run instead of moving on.
+
+**Four smaller shape differences**, all absorbed inside the adapter:
+
+| LARRI | RunPod |
+|---|---|
+| `SSHPublicKey` | No such field — the key goes in `env.PUBLIC_KEY`, which the images read at start-up |
+| `OnStart` (runs alongside the entrypoint) | `dockerStartCmd` **replaces** it, so the command is chained ahead of a `sleep infinity` rather than left to exit and take the pod with it |
+| `DiskGB` (one number) | `containerDiskInGb` (wiped on stop) **and** `volumeInGb` (persists, bills while stopped). Weights go on the volume: re-downloading tens of gigabytes after an interruption costs more than the storage |
+| `Label` | No tags — the marker rides in `name`, normalised to the bare rig ID at the adapter boundary |
+
+That last row is where the shared conformance suite earned its keep for the second time: the
+adapter stored the prefixed `larri:<id>` form and the contract failed on the first run, which
+is exactly the drift the suite was written for after the fake and the Vast adapter diverged
+the same way.
+
+**What is not verified.** Everything needing a key. The catalogue is checked against the live
+API; create, get, list and destroy have met only a stub built from the published spec. This
+project's record is that unit tests do not catch what matters here — five live-only bugs
+across two runtimes — so the pod lifecycle should be treated as unproven until someone runs
+the conformance suite with a key.
+
 
 ### 11.4 Adopting a Rig After a Restart (FR-SUP-07)
 

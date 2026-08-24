@@ -12,6 +12,7 @@ import (
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/provider"
+	_ "go.sovrenix.com/larri/internal/provider/runpod"
 	_ "go.sovrenix.com/larri/internal/provider/vastai"
 	"go.sovrenix.com/larri/internal/runtime"
 	"go.sovrenix.com/larri/internal/runtime/llamacpp"

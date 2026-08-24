@@ -36,12 +36,13 @@ func cmdOffers(ctx context.Context, args []string) error {
 	minRel := fs.Float64("min-reliability", 0.90, "reliability floor")
 	engine := fs.String("runtime", "", "vllm, llamacpp or ollama (default: chosen from the model)")
 	top := fs.Int("top", 10, "how many to show")
+	providerName := fs.String("provider", "", "which provider to search (default: the only one compiled in)")
 	_ = fs.Parse(args)
 
 	if *model == "" {
 		return errors.New("--model is required")
 	}
-	prov, err := openProvider("")
+	prov, err := openProvider(*providerName)
 	if err != nil {
 		return err
 	}
@@ -108,10 +109,17 @@ func cmdOffers(ctx context.Context, args []string) error {
 		if sv.Selection.Selected != nil && c.Offer.OfferID == sv.Selection.Selected.Offer.OfferID {
 			mark = "→ " // what `up` would rent right now
 		}
-		fmt.Printf("  %s%-2d %-18s %-6s $%-9.3f %-6.2f %s\n",
+		// An unreported score prints as a dash, not as 0.00. A catalogue
+		// provider publishes none, and rendering that as zero reads as the
+		// worst possible host rather than as "no data".
+		rel := "—"
+		if c.Offer.HasReliability() {
+			rel = fmt.Sprintf("%.2f", c.Offer.Reliability)
+		}
+		fmt.Printf("  %s%-2d %-18s %-6s $%-9.3f %-6s %s\n",
 			mark, i+1, c.Offer.GPUModel,
 			fmt.Sprintf("%dGB", c.Offer.VRAMTotalGB()),
-			c.Offer.PriceHr, c.Offer.Reliability, c.Offer.Provider)
+			c.Offer.PriceHr, rel, c.Offer.Provider)
 	}
 	if len(rows) == 0 {
 		fmt.Println("\n  no offer satisfies the criteria")
@@ -130,6 +138,7 @@ func cmdOrphans(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("orphans", flag.ExitOnError)
 	destroy := fs.Bool("destroy", false, "destroy every orphan found, confirming absence")
 	yes := fs.Bool("yes", false, "do not prompt")
+	orphanProvider := fs.String("provider", "", "which provider to sweep (default: the only one compiled in)")
 	_ = fs.Parse(args)
 
 	st, err := openStore()
@@ -138,7 +147,7 @@ func cmdOrphans(ctx context.Context, args []string) error {
 	}
 	defer st.Close()
 
-	prov, err := openProvider("")
+	prov, err := openProvider(*orphanProvider)
 	if err != nil {
 		return err
 	}
