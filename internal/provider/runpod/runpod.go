@@ -391,6 +391,25 @@ if [ -n "$PUBLIC_KEY" ]; then
 fi
 chmod 600 /root/.ssh/authorized_keys
 mkdir -p /run/sshd
+
+# Harden before starting, because on RunPod this daemon is on a public IP.
+#
+# Vast fronts SSH with its own proxy; RunPod maps port 22 straight onto a
+# routable address, so the distribution default is not a detail — it is the
+# configuration facing the internet. Key-only, root by key only, no
+# challenge-response, and the pinned host key does the rest (FR-SEC-04).
+printf '%s\n' \
+  'PasswordAuthentication no' \
+  'PermitEmptyPasswords no' \
+  'ChallengeResponseAuthentication no' \
+  'KbdInteractiveAuthentication no' \
+  'PermitRootLogin prohibit-password' \
+  > /etc/ssh/sshd_config.d/larri.conf 2>/dev/null || \
+  printf '%s\n' \
+  'PasswordAuthentication no' \
+  'PermitEmptyPasswords no' \
+  'PermitRootLogin prohibit-password' >> /etc/ssh/sshd_config
+
 service ssh start || /usr/sbin/sshd
 `
 	if onStart != "" {

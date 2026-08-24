@@ -529,3 +529,24 @@ func TestCreateOverridesTheEntrypointNotJustTheCommand(t *testing.T) {
 		t.Errorf("start command = %v", got.DockerStartCmd)
 	}
 }
+
+// On RunPod the daemon is on a public IP — Vast fronts SSH with a proxy,
+// RunPod maps port 22 straight onto a routable address. So the distribution
+// default is not a detail; it is the configuration facing the internet.
+func TestStartCommandHardensSSHBecauseItIsInternetFacing(t *testing.T) {
+	got := startScript("")
+	for _, want := range []string{
+		"PasswordAuthentication no",
+		"PermitEmptyPasswords no",
+		"PermitRootLogin prohibit-password",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("sshd not hardened, missing %q:\n%s", want, got)
+		}
+	}
+	// Hardening has to land before the daemon starts, or the first window is
+	// served with the defaults.
+	if strings.Index(got, "PasswordAuthentication no") > strings.Index(got, "service ssh start") {
+		t.Error("the daemon starts before it is hardened")
+	}
+}
