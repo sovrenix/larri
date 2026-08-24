@@ -61,11 +61,11 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 
 	wantSpot := c.Interruptible == core.Allow || c.Interruptible == core.Require
 	out := make([]core.Offer, 0, len(data.GPUTypes))
-	var unpriced int
+	dropped := map[dropReason]int{}
 	for _, g := range data.GPUTypes {
-		o, ok := g.normalise(wantSpot)
+		o, why, ok := g.normalise(wantSpot)
 		if !ok {
-			unpriced++
+			dropped[why]++
 			continue
 		}
 		if !matches(o, c) {
@@ -73,11 +73,18 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 		}
 		out = append(out, o)
 	}
-	if unpriced > 0 {
-		// Worth saying: an operator looking for an A5000 that RunPod lists
-		// but cannot place should hear that it was dropped, not conclude
-		// LARRI does not know about it.
-		p.notice("runpod: %d gpu types have no price and were skipped", unpriced)
+	// Said out loud, and by reason. An operator looking for an RTX 3070 that
+	// RunPod lists at $0.13 should hear that it is out of stock, rather than
+	// conclude LARRI does not know about it — and "out of stock" is a
+	// different fact from "too expensive" or "not real hardware".
+	for _, why := range []dropReason{dropOutOfStock, dropUnpriced, dropUnpurchasable} {
+		if n := dropped[why]; n > 0 {
+			p.notice("runpod: %d gpu types skipped (%s)", n, why)
+		}
+	}
+	if len(out) == 0 {
+		return nil, errs.Newf(errs.ClassCriteriaUnsatisfiable, "runpod.Search",
+			"nothing rentable: %d types listed, all skipped or filtered", len(data.GPUTypes))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PriceHr < out[j].PriceHr })
 	return out, nil
@@ -319,8 +326,14 @@ func createClass(err error) error {
 	}
 	e := strings.ToLower(err.Error())
 	switch {
+	// "There are no instances currently available" is the message RunPod
+	// actually returns, observed live. An earlier guess at the wording missed
+	// it, which would have left the fallback dormant exactly when it was
+	// needed.
 	case strings.Contains(e, "gputype"), strings.Contains(e, "gpu type"),
+		strings.Contains(e, "no instances currently available"),
 		strings.Contains(e, "no longer any instances available"),
+		strings.Contains(e, "instances available"),
 		strings.Contains(e, "unavailable"), strings.Contains(e, "capacity"),
 		strings.Contains(e, "out of stock"):
 		return errs.Newf(errs.ClassHostFailure, "runpod.Create",

@@ -30,7 +30,9 @@ import (
 	"go.sovrenix.com/larri/internal/config"
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/deadman"
-	"go.sovrenix.com/larri/internal/provider/vastai"
+	"go.sovrenix.com/larri/internal/provider"
+	_ "go.sovrenix.com/larri/internal/provider/runpod"
+	_ "go.sovrenix.com/larri/internal/provider/vastai"
 	"go.sovrenix.com/larri/internal/rank"
 	"go.sovrenix.com/larri/internal/runtime"
 	"go.sovrenix.com/larri/internal/runtime/llamacpp"
@@ -45,10 +47,7 @@ func TestE2ERentServeDestroy(t *testing.T) {
 	if os.Getenv("LARRI_E2E_SPEND") != "yes" {
 		t.Skip("set LARRI_E2E_SPEND=yes to rent real hardware")
 	}
-	vastKey := os.Getenv("VASTAI_API_KEY")
-	if vastKey == "" {
-		t.Skip("VASTAI_API_KEY not set")
-	}
+
 	// A small ungated model, so the run tests LARRI rather than an access
 	// approval queue.
 	model := os.Getenv("LARRI_E2E_MODEL")
@@ -63,9 +62,11 @@ func TestE2ERentServeDestroy(t *testing.T) {
 	}
 	defer st.Close()
 
-	p := vastai.New(secret.New(vastKey))
-	p.OnNotice = func(m string) { t.Logf("notice: %s", m) }
-	p.OnDrift = func(e error) { t.Errorf("SHAPE DRIFT: %v", e) }
+	p, provName := e2eProvider(t)
+	provider.Report(p,
+		func(e error) { t.Errorf("SHAPE DRIFT: %v", e) },
+		func(m string) { t.Logf("notice: %s", m) })
+	t.Logf("provider: %s", provName)
 
 	events := make(chan Event, 256)
 	done := make(chan struct{})
@@ -392,7 +393,7 @@ func TestE2ERentServeDestroy(t *testing.T) {
 // sweepOrphans destroys anything still carrying a LARRI label, by label rather
 // than by what the happy path recorded — because the failure that matters is
 // the one where the happy path did not record it.
-func sweepOrphans(t *testing.T, p *vastai.Provider, st *state.Store) {
+func sweepOrphans(t *testing.T, p provider.Provider, st *state.Store) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -533,4 +534,23 @@ func e2eQuant() string {
 		return "Q4_K_M"
 	}
 	return "fp16"
+}
+
+// e2eProvider selects the provider under test.
+//
+// The live suite is where provider-shaped assumptions surface, so it has to be
+// runnable against each of them — a suite that only ever exercised the first
+// adapter would leave the second in exactly the state the first was in before
+// its eleven live-only bugs were found.
+func e2eProvider(t *testing.T) (provider.Provider, string) {
+	t.Helper()
+	name := os.Getenv("LARRI_E2E_PROVIDER")
+	if name == "" {
+		name = "vastai"
+	}
+	p, err := provider.Open(name)
+	if err != nil {
+		t.Skipf("provider %s unavailable: %v", name, err)
+	}
+	return p, name
 }

@@ -22,16 +22,19 @@ import (
 const catalogueJSON = `{"data":{"gpuTypes":[
  {"id":"NVIDIA GeForce RTX 4090","displayName":"RTX 4090","memoryInGb":24,
   "secureCloud":true,"communityCloud":true,"maxGpuCount":8,
-  "lowestPrice":{"minimumBidPrice":0.34,"uninterruptablePrice":0.69}},
+  "lowestPrice":{"minimumBidPrice":0.34,"uninterruptablePrice":0.69,"stockStatus":"Medium"}},
  {"id":"NVIDIA A100 80GB PCIe","displayName":"A100 PCIe","memoryInGb":80,
   "secureCloud":true,"communityCloud":true,"maxGpuCount":8,
-  "lowestPrice":{"minimumBidPrice":1.19,"uninterruptablePrice":1.19}},
+  "lowestPrice":{"minimumBidPrice":1.19,"uninterruptablePrice":1.19,"stockStatus":"High"}},
  {"id":"NVIDIA RTX A5000","displayName":"RTX A5000","memoryInGb":24,
   "secureCloud":true,"communityCloud":true,"maxGpuCount":8,
-  "lowestPrice":{"minimumBidPrice":null,"uninterruptablePrice":null}},
+  "lowestPrice":{"minimumBidPrice":null,"uninterruptablePrice":null,"stockStatus":null}},
+ {"id":"NVIDIA GeForce RTX 3070","displayName":"RTX 3070","memoryInGb":8,
+  "secureCloud":true,"communityCloud":true,"maxGpuCount":8,
+  "lowestPrice":{"minimumBidPrice":0.13,"uninterruptablePrice":0.13,"stockStatus":"Low"}},
  {"id":"AMD Instinct MI300X OAM","displayName":"MI300X","memoryInGb":192,
   "secureCloud":true,"communityCloud":false,"maxGpuCount":8,
-  "lowestPrice":{"minimumBidPrice":0.5,"uninterruptablePrice":0.5}}
+  "lowestPrice":{"minimumBidPrice":0.5,"uninterruptablePrice":0.5,"stockStatus":"High"}}
 ]}}`
 
 func testProvider(t *testing.T, h http.HandlerFunc) *Provider {
@@ -60,7 +63,7 @@ func catalogueOnly(t *testing.T) *Provider {
 func TestUnpricedGpuTypesAreDropped(t *testing.T) {
 	var noticed string
 	p := catalogueOnly(t)
-	p.OnNotice = func(m string) { noticed = m }
+	p.OnNotice = func(m string) { noticed += m + "; " }
 
 	offers, err := p.Search(context.Background(), core.Criteria{})
 	if err != nil {
@@ -74,7 +77,7 @@ func TestUnpricedGpuTypesAreDropped(t *testing.T) {
 			t.Error("an unpriced type was offered as rentable")
 		}
 	}
-	if !strings.Contains(noticed, "no price") {
+	if !strings.Contains(noticed, "skipped") {
 		t.Errorf("the operator was not told anything was skipped: %q", noticed)
 	}
 }
@@ -363,5 +366,73 @@ func TestUnplaceableGpuTypeFallsBackInsteadOfAborting(t *testing.T) {
 	if errs.ClassOf(createClass(bad)) != errs.ClassModelFailure {
 		t.Error("a bad image was reclassified as a host failure; the fallback would " +
 			"retry it on every host")
+	}
+}
+
+// Stock status predicts whether a create succeeds, measured against the live
+// API: an A40 (High) and an RTX 4090 (Medium) both created on request, while
+// an RTX 3070 (Low) was refused with "there are no instances currently
+// available".
+//
+// So a Low-stock type is not offered. It would otherwise be *chosen* — the
+// RTX 3070 is the cheapest thing RunPod lists — and the operator would watch
+// the cheapest option fail every time.
+func TestOutOfStockTypesAreNotOffered(t *testing.T) {
+	var noticed string
+	p := catalogueOnly(t)
+	p.OnNotice = func(m string) { noticed += m + "; " }
+
+	offers, err := p.Search(context.Background(), core.Criteria{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range offers {
+		if strings.Contains(o.GPUModel, "3070") {
+			t.Error("a Low-stock type was offered; it is the cheapest listed and " +
+				"would be selected, then refused at create")
+		}
+	}
+	if !strings.Contains(noticed, "out of stock") {
+		t.Errorf("the operator was not told why it vanished: %q", noticed)
+	}
+	// High and Medium both stay.
+	var kinds []string
+	for _, o := range offers {
+		kinds = append(kinds, o.GPUModel)
+	}
+	if len(offers) != 3 {
+		t.Errorf("kept %v; want the High and Medium stock types", kinds)
+	}
+}
+
+func TestInStockAcceptsOnlyWhatCreates(t *testing.T) {
+	str := func(s string) *string { return &s }
+	for _, c := range []struct {
+		in   *string
+		want bool
+	}{
+		{str("High"), true}, {str("Medium"), true}, {str("medium"), true},
+		{str("Low"), false}, {nil, false}, {str(""), false},
+	} {
+		if got := inStock(c.in); got != c.want {
+			label := "nil"
+			if c.in != nil {
+				label = *c.in
+			}
+			t.Errorf("inStock(%q) = %v, want %v", label, got, c.want)
+		}
+	}
+}
+
+// A catalogue that lists nothing rentable must say so as an unsatisfiable
+// criteria error, not return an empty slice that reads as a working search
+// with no matches.
+func TestNothingRentableIsAnError(t *testing.T) {
+	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":{"gpuTypes":[{"id":"unknown","displayName":"x",
+		  "memoryInGb":0,"lowestPrice":{"uninterruptablePrice":null,"stockStatus":null}}]}}`))
+	})
+	if _, err := p.Search(context.Background(), core.Criteria{}); err == nil {
+		t.Fatal("an empty catalogue read as a successful search")
 	}
 }

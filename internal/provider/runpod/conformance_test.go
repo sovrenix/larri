@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/provider/providertest"
@@ -91,6 +92,92 @@ func TestRunpodConformance(t *testing.T) {
 		// Reaching EXITED needs a real pod; the stub would only be asserting
 		// its own behaviour.
 	})
+}
+
+// The whole contract against the real API, including the half that spends.
+//
+// Gated on an explicit spend flag rather than on the key alone: the create
+// checks rent real pods, and a suite that started billing because a key
+// happened to be in the environment would be the sort of surprise this program
+// exists to prevent.
+func TestRunpodConformanceLive(t *testing.T) {
+	if os.Getenv("LARRI_E2E_SPEND") != "yes" {
+		t.Skip("set LARRI_E2E_SPEND=yes to rent real pods")
+	}
+	key := os.Getenv("RUNPOD_API_KEY")
+	if key == "" {
+		t.Skip("RUNPOD_API_KEY not set")
+	}
+	p := New(secret.New(key))
+	p.OnDrift = func(err error) { t.Errorf("SHAPE DRIFT: %v", err) }
+	p.OnNotice = func(m string) { t.Logf("notice: %s", m) }
+
+	// The cheapest type the catalogue currently offers, so the create checks
+	// cost as little as possible.
+	offers, err := p.Search(context.Background(), core.Criteria{})
+	if err != nil {
+		t.Fatalf("catalogue: %v", err)
+	}
+	if len(offers) == 0 {
+		t.Fatal("catalogue is empty")
+	}
+	cheapest := offers[0]
+	t.Logf("using %s at $%.3f/hr", cheapest.GPUModel, cheapest.PriceHr)
+
+	// Registered before anything can fail, and sweeping by label rather than
+	// by what the happy path recorded — because the failure that matters is
+	// the one where the happy path did not record it.
+	t.Cleanup(func() { sweepRunpod(t, p) })
+
+	providertest.Run(t, providertest.Harness{
+		Provider: p,
+		AbsentID: "pod-does-not-exist",
+		AnOffer:  func(*testing.T) core.Offer { return cheapest },
+	})
+}
+
+// sweepRunpod destroys anything still carrying a LARRI marker.
+func sweepRunpod(t *testing.T, p *Provider) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	all, err := p.List(ctx)
+	if err != nil {
+		t.Errorf("SWEEP FAILED to list: %v — CHECK THE RUNPOD CONSOLE", err)
+		return
+	}
+	var left []string
+	for _, inst := range all {
+		if _, ours := inst.RigID(); !ours {
+			continue
+		}
+		t.Logf("sweep: destroying %s (%s)", inst.InstanceID, inst.Labels[core.LabelRawKey])
+		if err := p.Destroy(ctx, inst.InstanceID); err != nil {
+			t.Errorf("sweep: destroy %s: %v", inst.InstanceID, err)
+		}
+		left = append(left, inst.InstanceID)
+	}
+	if len(left) == 0 {
+		return
+	}
+	for i := 0; i < 12; i++ {
+		time.Sleep(5 * time.Second)
+		all, err = p.List(ctx)
+		if err != nil {
+			continue
+		}
+		var remaining int
+		for _, inst := range all {
+			if _, ours := inst.RigID(); ours {
+				remaining++
+			}
+		}
+		if remaining == 0 {
+			t.Log("sweep: confirmed absent")
+			return
+		}
+	}
+	t.Errorf("SWEEP UNCONFIRMED for %v — CHECK THE RUNPOD CONSOLE", left)
 }
 
 // The catalogue half of the contract, against the real API.

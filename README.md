@@ -56,7 +56,7 @@ down with absence confirmed at the provider.
 | Area | State |
 |---|---|
 | Lifecycle: `up` · `down` · `status` · `resume` · `offers` · `orphans` | **Working, live-verified** |
-| Providers | **Vast.ai live-verified.** RunPod implemented — its catalogue is verified against the live API (`larri offers --provider runpod` needs no account), but the pod lifecycle is **unverified**: no key was available to test it |
+| Providers | **Vast.ai** end-to-end. **RunPod** searches and its API is live-verified, but cannot serve yet — RunPod supplies no SSH, so the image must run `sshd` and upstream engine images do not |
 | Runtimes | **vLLM, llama.cpp and Ollama — all three live-verified** |
 | Cost safety: journal, orphan sweep, idle timeout, budget ceiling, health checks | **Working** |
 | Surfaces: `mcp` (Model Context Protocol) · `tui` (dashboard) | **Working** |

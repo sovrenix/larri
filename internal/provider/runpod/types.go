@@ -21,6 +21,11 @@ type gpuType struct {
 	LowestPrice    *struct {
 		MinimumBidPrice      *float64 `json:"minimumBidPrice"`
 		UninterruptablePrice *float64 `json:"uninterruptablePrice"`
+		// StockStatus is High, Medium, Low or absent, and it predicts whether
+		// a create succeeds. Measured, not assumed: an A40 (High) and an RTX
+		// 4090 (Medium) both created on request, while an RTX 3070 (Low) was
+		// refused with "there are no instances currently available".
+		StockStatus *string `json:"stockStatus"`
 	} `json:"lowestPrice"`
 }
 
@@ -32,20 +37,37 @@ type gpuType struct {
 const catalogueQuery = `query {
   gpuTypes {
     id displayName memoryInGb secureCloud communityCloud maxGpuCount
-    lowestPrice(input: {gpuCount: 1}) { minimumBidPrice uninterruptablePrice }
+    lowestPrice(input: {gpuCount: 1}) { minimumBidPrice uninterruptablePrice stockStatus }
   }
 }`
 
+// dropReason says why a catalogue entry cannot be offered, or "" if it can.
+type dropReason string
+
+const (
+	dropUnpriced      dropReason = "no price"
+	dropOutOfStock    dropReason = "out of stock"
+	dropUnpurchasable dropReason = "not a rentable type"
+)
+
 // normalise turns a catalogue entry into an offer LARRI can rank.
 //
-// Returns ok=false for a type with no price. RunPod publishes about ten of
-// those at any time — hardware it lists but cannot currently place — and an
-// offer with no price is one selection cannot rank, every ceiling ignores, and
-// cost accounting cannot follow. Dropping them is the honest reading of "no
-// price": not free, unavailable.
-func (g gpuType) normalise(interruptible bool) (core.Offer, bool) {
+// Entries are dropped for three reasons and all three are the same reason: an
+// offer LARRI cannot actually rent is worse than no offer, because selection
+// will choose it and the operator will watch it fail.
+//
+//   - **No price.** Selection cannot rank it, no ceiling applies to it, and
+//     cost accounting cannot follow it. "No price" means unavailable, not
+//     free.
+//   - **Out of stock.** Measured rather than assumed: an A40 (High) and an
+//     RTX 4090 (Medium) both created on request, while an RTX 3070 (Low) was
+//     refused outright. Stock is re-read on every search, so this is current
+//     reality rather than a permanent exclusion — a type that comes back into
+//     stock comes back into the list.
+//   - **Not purchasable.** The catalogue advertises types POST /pods rejects.
+func (g gpuType) normalise(interruptible bool) (core.Offer, dropReason, bool) {
 	if g.LowestPrice == nil {
-		return core.Offer{}, false
+		return core.Offer{}, dropUnpriced, false
 	}
 	var price float64
 	switch {
@@ -54,13 +76,16 @@ func (g gpuType) normalise(interruptible bool) (core.Offer, bool) {
 	case g.LowestPrice.UninterruptablePrice != nil:
 		price = *g.LowestPrice.UninterruptablePrice
 	default:
-		return core.Offer{}, false
+		return core.Offer{}, dropUnpriced, false
 	}
 	if price <= 0 || g.MemoryInGb <= 0 || g.ID == "" {
-		return core.Offer{}, false
+		return core.Offer{}, dropUnpriced, false
 	}
 	if !purchasable(g.ID) {
-		return core.Offer{}, false
+		return core.Offer{}, dropUnpurchasable, false
+	}
+	if !inStock(g.LowestPrice.StockStatus) {
+		return core.Offer{}, dropOutOfStock, false
 	}
 	name := g.DisplayName
 	if name == "" {
@@ -87,7 +112,22 @@ func (g gpuType) normalise(interruptible bool) (core.Offer, bool) {
 		// the floor skips offers that report none rather than rejecting the
 		// whole catalogue.
 		ComputeCapability: computeCapability(g.ID),
-	}, true
+	}, "", true
+}
+
+// inStock reports whether a type can currently be placed.
+//
+// High and Medium both created on request; Low did not, and absent means the
+// catalogue has nothing to say.
+func inStock(status *string) bool {
+	if status == nil {
+		return false
+	}
+	switch strings.ToLower(*status) {
+	case "high", "medium":
+		return true
+	}
+	return false
 }
 
 // computeCapability maps a GPU type to its architecture level ×100.

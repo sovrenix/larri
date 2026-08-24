@@ -1127,11 +1127,47 @@ adapter stored the prefixed `larri:<id>` form and the contract failed on the fir
 is exactly the drift the suite was written for after the fake and the Vast adapter diverged
 the same way.
 
-**What is not verified.** Everything needing a key. The catalogue is checked against the live
-API; create, get, list and destroy have met only a stub built from the published spec. This
-project's record is that unit tests do not catch what matters here — five live-only bugs
-across two runtimes — so the pod lifecycle should be treated as unproven until someone runs
-the conformance suite with a key.
+**Two things the live run measured that no stub could.**
+
+*Stock status decides whether a create succeeds.* The catalogue publishes a price for
+hardware it cannot currently place, and the cheapest listing is usually one of those. Tested
+directly: an A40 (`High`) and an RTX 4090 (`Medium`) both created on request, while an RTX
+3070 (`Low`) — the cheapest thing RunPod lists — was refused with *"there are no instances
+currently available"*. Low-stock types are therefore not offered at all. Twenty-six of the
+forty-eight listed types were skipped on that basis, which sounds drastic until you notice
+the alternative: selection choosing the cheapest option and watching it fail, every time.
+Stock is re-read on every search, so a type that comes back into stock comes back into the
+list.
+
+*The unavailability message was not the one guessed.* The fallback matched `"no longer any
+instances available"`; RunPod says `"no instances currently available"`. Close enough to
+read past, different enough that the fallback would have stayed dormant precisely when it was
+needed — a 500 classifies as transient and would have retried the same unavailable type
+instead of moving to the next one.
+
+#### The blocker: SSH is the provider's job on Vast and the image's job on RunPod
+
+`larri up --provider runpod` does not work yet, and the reason is not in the adapter.
+
+Vast supplies SSH itself. Its `runtype: ssh` machinery installs the key and fronts the
+instance with a proxy, so **any image is reachable** — which is why LARRI has always been
+able to run a stock `vllm/vllm-openai` image and tunnel into it.
+
+RunPod supplies none. A pod is reachable only if the *image* runs `sshd` and reads
+`PUBLIC_KEY` at start-up, which RunPod's own base images do and upstream engine images do
+not. Verified rather than assumed: `vllm/vllm-openai:latest` has no `sshd` binary at all, and
+a live pod duly published an endpoint that never answered — LARRI waited three minutes, saw
+no progress, and correctly moved on.
+
+So the transport assumption LARRI is built on — *the SSH tunnel is the only way in* — holds
+on Vast by an accident of Vast's design. Making it hold generally means the image has to
+carry sshd, which is **FR-RT-11**: project-maintained, digest-pinned runtime images. That
+requirement has been `plan` since M1 and has now acquired a forcing reason, because
+`Runtime.Image()` chooses for the engine while the provider has requirements of the choice.
+
+This is §20's stated risk arriving on schedule: *whatever RunPod turns out to need will
+change the interface rather than merely add to it.* It did — the change is that image
+selection is not purely a runtime concern.
 
 
 ### 11.4 Adopting a Rig After a Restart (FR-SUP-07)
