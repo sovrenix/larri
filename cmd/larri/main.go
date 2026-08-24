@@ -22,7 +22,7 @@ import (
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
 	"go.sovrenix.com/larri/internal/notice"
-	"go.sovrenix.com/larri/internal/provider/vastai"
+	"go.sovrenix.com/larri/internal/provider"
 	"go.sovrenix.com/larri/internal/rank"
 	"go.sovrenix.com/larri/internal/runtime/vllm"
 	"go.sovrenix.com/larri/internal/secret"
@@ -157,6 +157,7 @@ func cmdUp(ctx context.Context, args []string) error {
 	idleAct := fs.String("idle-action", "", "destroy or warn (default: destroy)")
 	budget := fs.Float64("budget", 0, "spend ceiling in $; destroys on breach after a warning")
 	profile := fs.String("profile", "", "saved profile to layer under the flags (default: the one named 'default')")
+	providerName := fs.String("provider", "", "which provider to rent from (default: the only one compiled in)")
 	deadman := fs.Duration("host-watchdog", 0,
 		"how long the host waits without hearing from larri before stopping itself "+
 			"(0: derive from --idle-timeout; -1: disable)")
@@ -216,9 +217,9 @@ func cmdUp(ctx context.Context, args []string) error {
 	mode := config.DetectMode(config.Invocation{ForceNonInteractive: *yes}, os.Getenv)
 	firstRun(cfg, mode, res.File != "")
 
-	key := os.Getenv("VASTAI_API_KEY")
-	if key == "" {
-		return errors.New("VASTAI_API_KEY is not set")
+	prov, err := openProvider(*providerName)
+	if err != nil {
+		return err
 	}
 	st, err := openStore()
 	if err != nil {
@@ -256,9 +257,8 @@ func cmdUp(ctx context.Context, args []string) error {
 	}()
 	defer close(events)
 
-	p := vastai.New(secret.New(key))
-	p.OnNotice = func(m string) { fmt.Printf("  ! search     %s\n", m) }
-	p.OnDrift = func(e error) { fmt.Printf("  ! drift      %v\n", e) }
+	p := prov
+	provider.Report(p, func(e error) { fmt.Printf("  ! drift      %v\n", e) }, func(m string) { fmt.Printf("  ! search     %s\n", m) })
 
 	// Sealing the provider-side marker is configuration, so an unset key is a
 	// reported state rather than a silent one: the operator should know their
@@ -396,9 +396,9 @@ func cmdDown(ctx context.Context, args []string) error {
 	}
 	defer st.Close()
 
-	key := os.Getenv("VASTAI_API_KEY")
-	if key == "" {
-		return errors.New("VASTAI_API_KEY is not set")
+	prov, err := openProvider("")
+	if err != nil {
+		return err
 	}
 	rigs, err := st.List()
 	if err != nil {
@@ -432,7 +432,7 @@ func cmdDown(ctx context.Context, args []string) error {
 	defer close(events)
 
 	o := &daemon.Orchestrator{
-		Store: st, Provider: vastai.New(secret.New(key)),
+		Store: st, Provider: prov,
 		Runtime: vllm.New(), Events: events,
 	}
 	if err := o.Down(ctx, target, nil); err != nil {
@@ -510,9 +510,9 @@ func cmdResume(ctx context.Context, args []string) error {
 	}
 	defer st.Close()
 
-	key := os.Getenv("VASTAI_API_KEY")
-	if key == "" {
-		return errors.New("VASTAI_API_KEY is not set")
+	prov, err := openProvider("")
+	if err != nil {
+		return err
 	}
 	rigs, err := st.List()
 	if err != nil {
@@ -547,7 +547,7 @@ func cmdResume(ctx context.Context, args []string) error {
 	defer close(events)
 
 	o := &daemon.Orchestrator{
-		Store: st, Provider: vastai.New(secret.New(key)),
+		Store: st, Provider: prov,
 		Runtime: vllm.New(), Events: events,
 	}
 	live, err := o.Adopt(ctx, target.ID)

@@ -442,3 +442,64 @@ func TestRequestsIdentifyLarriAndItsVersion(t *testing.T) {
 		t.Error("User-Agent carries no version")
 	}
 }
+
+// A provider's error body is not safe to quote.
+//
+// Found by running the conformance suite against the live API: a malformed
+// instance id returns 400, and Vast's 400 body contains the caller's entire
+// authenticated context — api_key included. That body went verbatim into an
+// error, and errors here reach logs, journal entries and MCP tool results. A
+// bad request id was enough to write the account key into all three.
+func TestProviderErrorsNeverQuoteTheApiKey(t *testing.T) {
+	const key = "6c01008299ab42d0f570c7616d34d914f4aade9b335b9f9952f323b22e7797c8"
+	c := NewClient(secret.New(key))
+
+	body := []byte(`{"success":false,"error":"invalid_args","msg":"error 400/1782: ` +
+		`Invalid args: invalid json: {'id': 'x', 'user_id': 550307, 'key_type': 'api', ` +
+		`'api_key': '` + key + `'}"}`)
+
+	got := c.redactBody(body)
+	if strings.Contains(got, key) {
+		t.Fatalf("the api key survived redaction:\n%s", got)
+	}
+	if !strings.Contains(got, "***") {
+		t.Errorf("nothing was redacted: %s", got)
+	}
+	// The rest must survive, or the error stops being diagnosable.
+	if !strings.Contains(got, "invalid_args") {
+		t.Errorf("redaction destroyed the diagnostic: %s", got)
+	}
+}
+
+// Redaction must not depend on holding the secret: a provider echoing back
+// some *other* credential would otherwise pass straight through.
+func TestUnknownCredentialsAreRedactedByShape(t *testing.T) {
+	c := NewClient(secret.New("our-own-key-value-here"))
+	for _, body := range []string{
+		`{"token": "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"}`,
+		`{"password":"hunter2hunter2hunter2"}`,
+		`{'api_key': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}`,
+		`{"authorization": "Bearer sk-abcdefghijklmnop"}`,
+	} {
+		got := c.redactBody([]byte(body))
+		if !strings.Contains(got, "***") {
+			t.Errorf("not redacted: %s → %s", body, got)
+		}
+		for _, leaked := range []string{"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+			"hunter2hunter2hunter2", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"} {
+			if strings.Contains(got, leaked) {
+				t.Errorf("credential survived: %s", got)
+			}
+		}
+	}
+}
+
+// And an ordinary error must come through intact, or redaction has made every
+// failure harder to diagnose in exchange for the one that mattered.
+func TestOrdinaryErrorsAreLeftAlone(t *testing.T) {
+	c := NewClient(secret.New("our-own-key-value-here"))
+	body := `{"success":false,"error":"no such instance","msg":"instance 48429759 not found"}`
+	if got := c.redactBody([]byte(body)); got != body {
+		t.Errorf("an innocent body was mangled:\n  in:  %s\n  out: %s", body, got)
+	}
+}

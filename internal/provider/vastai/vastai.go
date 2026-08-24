@@ -10,7 +10,9 @@ package vastai
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -224,8 +226,18 @@ func (p *Provider) Get(ctx context.Context, instanceID string) (*core.Instance, 
 	return &inst, nil
 }
 
+// isNotFound reports a provider saying the thing is not there.
+//
+// Matched on the response, not a status code: do() has already turned the
+// response into an error by the time this sees it, and the message is what
+// survives that. Vast says it two ways — the status, and a no_such_instance
+// body — so both are accepted.
 func isNotFound(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "http 404")
+	if err == nil {
+		return false
+	}
+	e := strings.ToLower(err.Error())
+	return strings.Contains(e, "http 404") || strings.Contains(e, "no_such_instance")
 }
 
 // List returns every instance on the account, running or not, across all pages.
@@ -278,12 +290,22 @@ func (p *Provider) List(ctx context.Context) ([]core.Instance, error) {
 
 // Destroy removes an instance. A nil error is a claim, not proof: absence from
 // List is the evidence teardown checks (FR-DEL-03).
+// Destroy removes an instance, and treats one that is already gone as done.
+//
+// The 404 case is not a nicety. Teardown retries when it cannot confirm
+// absence (FR-DEL-04), so the second attempt after a *successful* first one
+// meets "no_such_instance" — and returning that as an error would report a rig
+// LARRI had correctly destroyed as a teardown that failed, which is the loudest
+// false alarm this program can raise. Found by running the conformance suite
+// against the live API; the stub had been answering 200.
 func (p *Provider) Destroy(ctx context.Context, instanceID string) error {
 	err := p.c.do(ctx, "DELETE", fmt.Sprintf(pathDestroy, instanceID), nil, nil)
-	if err != nil && !isDrift(err) {
+	switch {
+	case err == nil, isDrift(err), isNotFound(err):
+		return nil
+	default:
 		return err
 	}
-	return nil
 }
 
 func isDrift(err error) bool {
@@ -362,3 +384,19 @@ func (p *Provider) AttachSSHKey(ctx context.Context, instanceID, publicKey strin
 }
 
 var _ provider.KeyAttacher = (*Provider)(nil)
+
+func init() {
+	provider.Register("vastai", func() (provider.Provider, error) {
+		key := os.Getenv("VASTAI_API_KEY")
+		if key == "" {
+			return nil, errors.New("set VASTAI_API_KEY to a vast.ai api key")
+		}
+		return New(secret.New(key)), nil
+	})
+}
+
+// SetOnDrift and SetOnNotice implement provider.Reporter.
+func (p *Provider) SetOnDrift(f func(error))   { p.OnDrift = f }
+func (p *Provider) SetOnNotice(f func(string)) { p.OnNotice = f }
+
+var _ provider.Reporter = (*Provider)(nil)

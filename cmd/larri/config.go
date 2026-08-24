@@ -16,9 +16,7 @@ import (
 	"go.sovrenix.com/larri/internal/config"
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
-	"go.sovrenix.com/larri/internal/provider/vastai"
 	"go.sovrenix.com/larri/internal/rank"
-	"go.sovrenix.com/larri/internal/secret"
 	"go.sovrenix.com/larri/internal/term"
 	"go.sovrenix.com/larri/internal/tui"
 )
@@ -172,8 +170,8 @@ func pickAndEdit(ctx context.Context, file string, cfg config.Config,
 func previewFunc(ctx context.Context) func(config.Profile) term.Cmd {
 	return func(p config.Profile) term.Cmd {
 		return func() term.Msg {
-			key := os.Getenv("VASTAI_API_KEY")
-			if key == "" {
+			prov, err := openProvider("")
+			if err != nil {
 				return tui.PreviewMsg{Err: errors.New("VASTAI_API_KEY is not set, so offers cannot be previewed")}
 			}
 			spec := core.ModelSpec{
@@ -195,7 +193,7 @@ func previewFunc(ctx context.Context) func(config.Profile) term.Cmd {
 				return tui.PreviewMsg{Err: err}
 			}
 			o := &daemon.Orchestrator{
-				Provider: vastai.New(secret.New(key)), Runtime: eng,
+				Provider: prov, Runtime: eng,
 				Resolver: resolver, Policy: rank.DefaultPolicy(),
 			}
 			crit := p.Criteria()

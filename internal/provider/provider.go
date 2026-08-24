@@ -115,3 +115,38 @@ func sortStrings(s []string) {
 		}
 	}
 }
+
+// Reporter is implemented by providers that can report on their own
+// translation of a provider's API.
+//
+// Two different things, both adapter-specific and neither belonging on the
+// Provider interface, because a provider that does no normalisation has
+// nothing to say:
+//
+//   - Drift: a response no longer matching what the adapter expects. Silent
+//     drift is how a field quietly becomes zero and a ceiling stops applying.
+//   - Notices: advisory facts about a query, such as a result set that hit a
+//     server-side cap and is therefore not the whole market.
+//
+// Optional, so surfaces ask rather than assume — the CLI reached into the
+// concrete Vast adapter for these, which compiled only while there was exactly
+// one provider.
+type Reporter interface {
+	SetOnDrift(func(error))
+	SetOnNotice(func(string))
+}
+
+// Report wires callbacks into a provider that supports them, and does nothing
+// for one that does not.
+func Report(p Provider, onDrift func(error), onNotice func(string)) {
+	r, ok := p.(Reporter)
+	if !ok {
+		return
+	}
+	if onDrift != nil {
+		r.SetOnDrift(onDrift)
+	}
+	if onNotice != nil {
+		r.SetOnNotice(onNotice)
+	}
+}

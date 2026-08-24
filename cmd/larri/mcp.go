@@ -16,7 +16,6 @@ import (
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
 	"go.sovrenix.com/larri/internal/mcpsrv"
-	"go.sovrenix.com/larri/internal/provider/vastai"
 	"go.sovrenix.com/larri/internal/rank"
 	"go.sovrenix.com/larri/internal/secret"
 	"go.sovrenix.com/larri/internal/sizing"
@@ -94,8 +93,8 @@ func cmdMCP(ctx context.Context, args []string) error {
 
 // newOrchestrator builds one configured from the environment.
 func newOrchestrator(st *state.Store, runtimeKind string, events chan<- daemon.Event) (*daemon.Orchestrator, error) {
-	key := os.Getenv("VASTAI_API_KEY")
-	if key == "" {
+	prov, err := openProvider("")
+	if err != nil {
 		return nil, errors.New("VASTAI_API_KEY is not set")
 	}
 	labelKey, _, err := config.ResolveLabelKey(os.Getenv, os.ReadFile)
@@ -111,7 +110,7 @@ func newOrchestrator(st *state.Store, runtimeKind string, events chan<- daemon.E
 		return nil, err
 	}
 	return &daemon.Orchestrator{
-		Store: st, Provider: vastai.New(secret.New(key)), Runtime: eng,
+		Store: st, Provider: prov, Runtime: eng,
 		LabelSealer: sealer,
 		Resolver:    sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
 		Policy:      rank.DefaultPolicy(),

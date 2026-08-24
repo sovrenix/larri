@@ -378,10 +378,15 @@ func TestFallbackExcludesTheWholeMachineNotJustTheOffer(t *testing.T) {
 
 // Providers that do not report a machine fall back to per-offer exclusion,
 // which is weaker but never worse than nothing.
-func TestMachineKeyFallsBackToOfferID(t *testing.T) {
+// Amended: this asserted that an offer with no machine falls back to its own
+// id, and that fallback was the bug. A catalogue provider's "offer" is a class
+// of hardware, so excluding it after one failure would take every RTX 4090 out
+// of the running — when retrying is exactly right, because the next pod lands
+// on a different machine.
+func TestMachineKeyOnlyNamesRealMachines(t *testing.T) {
 	o := core.Offer{Provider: "p", OfferID: "abc"}
-	if machineKey(o) != "p:oabc" {
-		t.Errorf("machineKey = %q", machineKey(o))
+	if machineKey(o) != "" {
+		t.Errorf("machineKey = %q; an unidentifiable host must not become an exclusion", machineKey(o))
 	}
 	o.MachineID = "44221"
 	if machineKey(o) != "p:m44221" {
@@ -458,5 +463,41 @@ func TestOrchestratorSealsTheMarkerWhenAKeyIsConfigured(t *testing.T) {
 	opened, ok := core.DecodeLabelWith(raw, sealer)
 	if !ok || opened.Model != rig.Model.Ref {
 		t.Errorf("sealed marker did not round trip: %+v", opened)
+	}
+}
+
+// The exclusion list is about hosts, and only a provider that names hosts has
+// any. A catalogue provider sells a GPU type and chooses the machine itself,
+// so excluding its "offer" after one failure would take every RTX 4090 out of
+// the running — when retrying is exactly right, because the next pod lands
+// somewhere else.
+func TestOffersWithoutAMachineAreNeverExcluded(t *testing.T) {
+	catalogue := []core.Offer{
+		{Provider: "catalogue", OfferID: "RTX 4090", GPUModel: "RTX 4090", PriceHr: 0.40},
+		{Provider: "catalogue", OfferID: "A100", GPUModel: "A100", PriceHr: 1.20},
+	}
+	// Whatever the previous attempt recorded, nothing here can be excluded.
+	tried := []string{machineKey(catalogue[0]), "catalogue:oRTX 4090", ""}
+	got := withoutMachines(catalogue, tried)
+	if len(got) != len(catalogue) {
+		t.Fatalf("kept %d of %d offers; a nameless host was excluded", len(got), len(catalogue))
+	}
+	if machineKey(catalogue[0]) != "" {
+		t.Errorf("machineKey invented a host: %q", machineKey(catalogue[0]))
+	}
+}
+
+// And where hosts *are* named, exclusion still works — the fallback's whole
+// purpose is not retrying the machine that just failed.
+func TestNamedMachinesAreStillExcluded(t *testing.T) {
+	market := []core.Offer{
+		{Provider: "market", OfferID: "a", MachineID: "m1", GPUModel: "RTX 4090", PriceHr: 0.40},
+		{Provider: "market", OfferID: "b", MachineID: "m1", GPUModel: "RTX 4090", PriceHr: 0.42},
+		{Provider: "market", OfferID: "c", MachineID: "m2", GPUModel: "RTX 4090", PriceHr: 0.44},
+	}
+	got := withoutMachines(market, []string{machineKey(market[0])})
+	if len(got) != 1 || got[0].MachineID != "m2" {
+		t.Fatalf("got %d offers (%v); both listings on the failed machine should be gone",
+			len(got), got)
 	}
 }

@@ -75,9 +75,19 @@ type Offer struct {
 	Region        string  `json:"region"`
 	PriceHr       float64 `json:"price_hr"`
 	Interruptible bool    `json:"interruptible"`
-	Reliability   float64 `json:"reliability"`   // normalised 0..1
-	NetDownMbps   float64 `json:"net_down_mbps"` // download time is billed time
-	CUDAVersion   string  `json:"cuda_version,omitempty"`
+	// Reliability is the provider's own score, normalised 0..1. **Zero means
+	// the provider does not report one**, which is not the same as a host
+	// that always fails — no marketplace lists those. Ask HasReliability
+	// rather than comparing against zero.
+	//
+	// The distinction has teeth: a catalogue-style provider (a GPU type with
+	// availability, rather than a named machine) has nothing to report, and a
+	// reliability floor applied to its offers would reject every one of them
+	// with "reliability 0.00 below floor 0.90" — a rejection that reads like
+	// a market with nothing in it.
+	Reliability float64 `json:"reliability"`   // normalised 0..1; 0 = unreported
+	NetDownMbps float64 `json:"net_down_mbps"` // download time is billed time
+	CUDAVersion string  `json:"cuda_version,omitempty"`
 
 	// ComputeCapability is the GPU architecture level times 100 — 610 for
 	// Pascal, 700 for Volta, 890 for Ada. It is a *selection* input, not a
@@ -222,3 +232,10 @@ type Rig struct {
 
 // Billable reports whether this rig currently costs money.
 func (r *Rig) Billable() bool { return r.State.Billable() }
+
+// HasReliability reports whether the provider supplied a reliability score.
+//
+// Named rather than left as a comparison against zero, so the convention lives
+// in one place and a floor cannot be applied to a provider that has nothing to
+// measure.
+func (o Offer) HasReliability() bool { return o.Reliability > 0 }

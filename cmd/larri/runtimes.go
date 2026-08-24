@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"go.sovrenix.com/larri/internal/core"
+	"go.sovrenix.com/larri/internal/provider"
+	_ "go.sovrenix.com/larri/internal/provider/vastai"
 	"go.sovrenix.com/larri/internal/runtime"
 	"go.sovrenix.com/larri/internal/runtime/llamacpp"
 	"go.sovrenix.com/larri/internal/runtime/ollama"
@@ -115,4 +117,20 @@ func securityNotes(r runtime.Runtime) []string {
 		return n.SecurityNotes()
 	}
 	return nil
+}
+
+// openProvider resolves the provider to use.
+//
+// One call site for what was six copies of `vastai.New(os.Getenv(...))`. The
+// duplication was harmless while there was one provider and would have been
+// six edits and a missed one the moment there were two.
+func openProvider(name string) (provider.Provider, error) {
+	if name == "" {
+		d, err := provider.Default()
+		if err != nil {
+			return nil, err
+		}
+		name = d
+	}
+	return provider.Open(name)
 }

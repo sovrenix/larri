@@ -1027,6 +1027,62 @@ Two failure modes this closes:
   found; the reconciler's job is to surface the pair rather than to pick one, because
   choosing which of two billing instances to destroy is an operator decision (FR-SUP-03).
 
+### 5.4 Preparing for a Second Provider
+
+One adapter is not an abstraction; it is an interface shaped like the thing behind it. Before
+RunPod is written, the places where that shape shows have to be found — and looking for them
+turned up four, three of which are bugs today rather than obstacles tomorrow.
+
+**A reliability floor applied to a provider that reports none rejects everything.** Vast
+scores each host; a catalogue provider sells a GPU *type* and has nothing per-host to report.
+Every offer would have arrived at `0.00`, the 0.90 floor would have excluded all of them, and
+the operator would have read "no offer satisfies the criteria" — a market with nothing in it,
+for what was a modelling mistake. Zero now means *unreported*, named as `Offer.HasReliability`
+so the convention lives in one place, and the floor applies only where there is a score.
+
+**Host exclusion assumed offers name hosts.** The fallback list exists so a retry does not
+land on the machine that just failed. Where a provider chooses the machine itself, its offer
+id is a class of hardware — and excluding it after one failure would take every RTX 4090 out
+of the running, when retrying is exactly right. An unidentifiable host is now not excluded at
+all; `MaxHostAttempts` still bounds the retrying, without throwing away the hardware the
+operator asked for.
+
+**Surfaces reached into the concrete adapter.** Drift and notice callbacks were set directly
+on the Vast type from six call sites, which compiled only while there was one provider. They
+are a `Reporter` capability now, asked for rather than assumed — the same pattern the runtime
+layer already uses for `Adopter` and `LogWriter`.
+
+**Provider construction was hardcoded in six places.** A registry replaces it, with each
+adapter registering itself and resolving its own credential — so an operator is told which
+variable to set rather than which package to edit. With one provider registered there is no
+choice to make; with several, LARRI refuses to guess, because choosing a provider is choosing
+whose account gets billed.
+
+#### What the conformance suite had to learn first
+
+The suite is the only thing that keeps two adapters honest, and it was too thin to do it: six
+checks, none touching the properties most likely to diverge. It now asserts that `Search`
+fills every field selection reads — provider, id, GPU model, price, VRAM, no duplicates, and
+reliability inside 0..1 if reported — and that a **stopped instance stays visible to `Get` and
+`List`**, which is the single most expensive thing an adapter can get wrong (R-13).
+
+It also runs against the **live** API when a key is present, read-only and free. That earned
+its place immediately, by finding two things a stub never could:
+
+- **A credential leak.** Vast answers a malformed instance id with a 400 whose body contains
+  the caller's entire authenticated context — `api_key` included. That body went verbatim
+  into an error, and errors here reach logs, journal entries and MCP tool results. Bodies are
+  now redacted both by exact match on the key LARRI holds and by shape, so a provider echoing
+  back some *other* secret is caught too (FR-SEC-02).
+- **A destroy that was not idempotent.** Teardown retries when it cannot confirm absence
+  (FR-DEL-04), so the second attempt after a successful first meets `no_such_instance` — and
+  returning that as an error would report a correctly destroyed rig as a failed teardown. The
+  adapter already had an `isNotFound`; `Destroy` simply was not using it.
+
+One check was written and removed: that `Search` honours a price ceiling. The ranker is
+authoritative for criteria and applies the ceiling itself, so requiring adapters to filter
+client-side would have been asserting a contract LARRI does not need.
+
 ### 11.4 Adopting a Rig After a Restart (FR-SUP-07)
 
 Reconciliation says *adopt*; this is what adoption costs and how it is paid.

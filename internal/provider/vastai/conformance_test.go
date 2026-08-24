@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/provider/providertest"
+	"go.sovrenix.com/larri/internal/secret"
 )
 
 // A stub of the Vast API, faithful enough to run the shared contract. It is
@@ -31,7 +33,10 @@ func (s *stubAPI) handler(t *testing.T) http.HandlerFunc {
 		defer s.mu.Unlock()
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/api/v0/bundles"):
-			fmt.Fprint(w, `{"offers":[]}`)
+			// A realistic offer, not an empty list: the search half of the
+			// contract checks normalisation, and an adapter that returns
+			// nothing passes it vacuously.
+			fmt.Fprintf(w, `{"offers":[%s]}`, realisticOffer)
 
 		case strings.HasPrefix(r.URL.Path, "/api/v0/asks/"):
 			var body createRequest
@@ -85,6 +90,33 @@ func TestVastaiConformance(t *testing.T) {
 		Provider: p,
 		AnOffer: func(*testing.T) core.Offer {
 			return core.Offer{Provider: "vastai", OfferID: "9182736", PriceHr: 1.29}
+		},
+	})
+}
+
+// The same contract against the real API.
+//
+// A stub asserts that the adapter parses what we believe Vast returns; only
+// this asserts that Vast still returns it. Read-only and free — Search and
+// List cost nothing — so it runs whenever a key is present rather than behind
+// a spend gate.
+func TestVastaiConformanceLive(t *testing.T) {
+	key := os.Getenv("VASTAI_API_KEY")
+	if key == "" {
+		t.Skip("VASTAI_API_KEY not set")
+	}
+	p := New(secret.New(key))
+	p.OnDrift = func(err error) { t.Errorf("SHAPE DRIFT: %v", err) }
+
+	providertest.Run(t, providertest.Harness{
+		Provider: p,
+		// Nothing here may spend, so the create half is skipped and the
+		// read half — where response-shape drift would show — is not.
+		SkipCreate: true,
+		Criteria:   core.Criteria{MinReliability: 0.90, DiskGB: 40},
+		AnOffer: func(t *testing.T) core.Offer {
+			t.Fatal("the live suite must not create")
+			return core.Offer{}
 		},
 	})
 }

@@ -15,9 +15,8 @@ import (
 	"go.sovrenix.com/larri/internal/config"
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
-	"go.sovrenix.com/larri/internal/provider/vastai"
+	"go.sovrenix.com/larri/internal/provider"
 	"go.sovrenix.com/larri/internal/rank"
-	"go.sovrenix.com/larri/internal/secret"
 )
 
 // cmdOffers ranks the market without spending anything.
@@ -42,9 +41,9 @@ func cmdOffers(ctx context.Context, args []string) error {
 	if *model == "" {
 		return errors.New("--model is required")
 	}
-	key := os.Getenv("VASTAI_API_KEY")
-	if key == "" {
-		return errors.New("VASTAI_API_KEY is not set")
+	prov, err := openProvider("")
+	if err != nil {
+		return err
 	}
 
 	spec := core.ModelSpec{
@@ -79,8 +78,8 @@ func cmdOffers(ctx context.Context, args []string) error {
 	}()
 	defer close(events)
 
-	p := vastai.New(secret.New(key))
-	p.OnNotice = func(m string) { fmt.Printf("  ! search     %s\n", m) }
+	p := prov
+	provider.Report(p, nil, func(m string) { fmt.Printf("  ! search     %s\n", m) })
 
 	o := &daemon.Orchestrator{
 		Provider: p, Runtime: eng,
@@ -139,9 +138,9 @@ func cmdOrphans(ctx context.Context, args []string) error {
 	}
 	defer st.Close()
 
-	key := os.Getenv("VASTAI_API_KEY")
-	if key == "" {
-		return errors.New("VASTAI_API_KEY is not set")
+	prov, err := openProvider("")
+	if err != nil {
+		return err
 	}
 	events := make(chan daemon.Event, 32)
 	go func() {
@@ -164,7 +163,7 @@ func cmdOrphans(ctx context.Context, args []string) error {
 		return err
 	}
 	o := &daemon.Orchestrator{
-		Store: st, Provider: vastai.New(secret.New(key)),
+		Store: st, Provider: prov,
 		LabelSealer: sealer, Events: events,
 	}
 

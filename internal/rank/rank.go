@@ -160,7 +160,12 @@ func classify(o core.Offer, c core.Criteria, fits FitFunc, p Policy,
 			return ReasonVRAM, detail
 		}
 	}
-	if p.ReliabilityFloor > 0 && o.Reliability < p.ReliabilityFloor {
+	// The floor applies only where there is a score to apply it to. A
+	// provider that reports none is not a provider whose every host has
+	// failed — it is one that lists GPU types rather than named machines, and
+	// filtering its whole catalogue out would present an empty market as the
+	// answer.
+	if p.ReliabilityFloor > 0 && o.HasReliability() && o.Reliability < p.ReliabilityFloor {
 		return ReasonReliability, fmt.Sprintf("reliability %.2f below floor %.2f",
 			o.Reliability, p.ReliabilityFloor)
 	}

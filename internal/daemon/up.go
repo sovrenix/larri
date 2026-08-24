@@ -486,13 +486,24 @@ func (o *Orchestrator) teardownAfterFailure(rig *core.Rig, code core.ReasonCode,
 	}
 }
 
-// machineKey identifies the physical host behind an offer, falling back to the
-// offer itself when the provider does not report one.
+// machineKey identifies the physical host behind an offer, or "" when the
+// provider cannot name one.
+//
+// The exclusion list exists to stop a fallback retrying a *host* that just
+// failed. That only means something where offers name hosts. A catalogue
+// provider sells a GPU type and picks the machine itself, so its "offer id" is
+// a class of hardware — and excluding it after one bad pod would take every
+// RTX 4090 out of the running for the rest of the attempt, when retrying is
+// exactly right: the next pod lands somewhere else.
+//
+// So an unidentifiable host is not excluded at all. MaxHostAttempts still
+// bounds the retrying; what it must not do is bound it by throwing away the
+// hardware the operator asked for.
 func machineKey(o core.Offer) string {
-	if o.MachineID != "" {
-		return o.Provider + ":m" + o.MachineID
+	if o.MachineID == "" {
+		return ""
 	}
-	return o.Provider + ":o" + o.OfferID
+	return o.Provider + ":m" + o.MachineID
 }
 
 func (o *Orchestrator) hostProbeInterval() time.Duration {
@@ -518,11 +529,14 @@ func (o *Orchestrator) hostIdleLimit() time.Duration {
 func withoutMachines(offers []core.Offer, machines []string) []core.Offer {
 	skip := make(map[string]bool, len(machines))
 	for _, m := range machines {
-		skip[m] = true
+		if m != "" {
+			skip[m] = true
+		}
 	}
 	out := offers[:0:0]
 	for _, of := range offers {
-		if !skip[machineKey(of)] {
+		k := machineKey(of)
+		if k == "" || !skip[k] {
 			out = append(out, of)
 		}
 	}

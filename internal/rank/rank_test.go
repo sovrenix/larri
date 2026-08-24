@@ -268,3 +268,53 @@ func TestHardwareTooOldForTheRuntimeIsExcluded(t *testing.T) {
 		t.Errorf("the reason should name the constraint, got %q", ex.Detail)
 	}
 }
+
+// A provider that reports no reliability must not have its whole catalogue
+// rejected.
+//
+// This was a live trap for the second provider before one existed: RunPod
+// lists GPU *types* with availability rather than named machines, so it has no
+// per-host score to report. Every offer arrived at 0.00, the 0.90 floor
+// excluded all of them, and the operator would have seen "no offer satisfies
+// the criteria" — a market failure, for what was a modelling mistake.
+func TestReliabilityFloorSkipsProvidersThatReportNone(t *testing.T) {
+	offers := []core.Offer{
+		{Provider: "catalogue", OfferID: "a", GPUModel: "RTX 4090", GPUCount: 1,
+			VRAMPerGPUGB: 24, PriceHr: 0.40}, // no Reliability at all
+		{Provider: "catalogue", OfferID: "b", GPUModel: "RTX 4090", GPUCount: 1,
+			VRAMPerGPUGB: 24, PriceHr: 0.50},
+	}
+	res := Select(offers, core.Criteria{}, nil, DefaultPolicy())
+	if res.Selected == nil {
+		t.Fatal("a provider with no reliability score had every offer rejected")
+	}
+	for _, c := range res.Candidates {
+		if c.Reason == ReasonReliability {
+			t.Errorf("%s excluded on a score its provider does not publish", c.Offer.OfferID)
+		}
+	}
+}
+
+// And where a score *is* reported, the floor still bites. Relaxing it for the
+// unreported case must not relax it for everyone.
+func TestReliabilityFloorStillExcludesAReportedLowScore(t *testing.T) {
+	offers := []core.Offer{
+		{Provider: "market", OfferID: "bad", GPUModel: "RTX 4090", GPUCount: 1,
+			VRAMPerGPUGB: 24, PriceHr: 0.10, Reliability: 0.40},
+		{Provider: "market", OfferID: "good", GPUModel: "RTX 4090", GPUCount: 1,
+			VRAMPerGPUGB: 24, PriceHr: 0.40, Reliability: 0.99},
+	}
+	res := Select(offers, core.Criteria{}, nil, DefaultPolicy())
+	if res.Selected == nil || res.Selected.Offer.OfferID != "good" {
+		t.Fatalf("selected %v; the cheap unreliable host should have been excluded", res.Selected)
+	}
+	var excluded bool
+	for _, c := range res.Candidates {
+		if c.Offer.OfferID == "bad" && c.Reason == ReasonReliability {
+			excluded = true
+		}
+	}
+	if !excluded {
+		t.Error("a reported 0.40 was not excluded by the 0.90 floor")
+	}
+}

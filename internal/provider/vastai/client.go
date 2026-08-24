@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -128,7 +129,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		return errs.New(classifyTransport(method), "vastai."+method, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return httpError(method, resp.StatusCode, raw)
+		return httpError(method, resp.StatusCode, c.redactBody(raw))
 	}
 	if out == nil {
 		return nil
@@ -175,11 +176,40 @@ func classifyTransport(method string) errs.Class {
 	}
 }
 
-func httpError(method string, code int, body []byte) error {
+// secretPattern matches credential-shaped JSON fields in a provider's error
+// body.
+//
+// Vast echoes the caller's own API key back inside a 400 response — the whole
+// authenticated context, api_key included. That body went verbatim into an
+// error, and errors here are logged, journalled and returned to MCP agents, so
+// a malformed request id was enough to write the account key into places it
+// must never be (FR-SEC-02).
+//
+// Redacting by pattern as well as by exact value, because the exact value only
+// covers the key LARRI holds: a provider that echoed a *different* secret back
+// would otherwise sail through.
+var secretPattern = regexp.MustCompile(
+	`(?i)(['"]?(?:api_?key|apikey|token|password|secret|authorization)['"]?\s*[:=]\s*)` +
+		// An optional auth scheme, so "Bearer sk-…" redacts the part that
+		// matters and keeps the part that says what kind of credential it was.
+		`(['"]?(?:Bearer\s+|Basic\s+|Token\s+)?)([A-Za-z0-9._\-]{8,})(['"]?)`)
+
+// redactBody removes credentials from a provider's error body before it can
+// reach a log, a journal entry, or an agent.
+func (c *Client) redactBody(body []byte) string {
 	msg := strings.TrimSpace(string(body))
+	// The key we hold, by exact match: the surest removal there is.
+	if k := c.Key.Reveal(); len(k) >= 8 {
+		msg = strings.ReplaceAll(msg, k, "***")
+	}
+	msg = secretPattern.ReplaceAllString(msg, "${1}${2}***${4}")
 	if len(msg) > 400 {
 		msg = msg[:400]
 	}
+	return msg
+}
+
+func httpError(method string, code int, msg string) error {
 	switch {
 	case code == http.StatusTooManyRequests, code >= 500:
 		return errs.Newf(errs.ClassProviderTransient, "vastai."+method,
