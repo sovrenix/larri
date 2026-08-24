@@ -1223,6 +1223,50 @@ change the interface rather than merely add to it.* It did — `BootLogger` exis
 provider with no useful status field still has to be waited on, and that is a new thing the
 interface can be asked for rather than a new thing every adapter must supply.
 
+#### Templates were evaluated and rejected
+
+RunPod offers templates, and the obvious hope is that one could point at an official image
+with sshd already in it and spare the install. Checked against the live OpenAPI spec rather
+than the prose, and neither half holds:
+
+**A template is a saved configuration, not an image.** `TemplateCreateInput` carries
+`imageName`, `dockerEntrypoint`, `dockerStartCmd`, `env`, `ports` and the disk sizes — every
+one of which LARRI already sets directly on `POST /pods`. The only fields it has that the pod
+call does not are `category`, `isPublic`, `isServerless` and `readme`: catalogue metadata for
+the console. So a template can configure nothing LARRI cannot, and adopting one would add a
+second server-side object to create, track, reconcile and clean up — a new orphan class, for
+no capability.
+
+**The `startSsh` flag does not do what its name suggests**, and what it does do is something
+LARRI must specifically avoid. It starts no daemon: it *injects a `PUBLIC_KEY` environment
+variable*, and only images that already honour that convention start sshd from it — which is
+the same requirement on the image as before, arrived at by a longer road. Two further details
+finish the argument:
+
+- The key it injects is **the deployer's account-registered SSH keys**. LARRI authenticates
+  to every rig with an ephemeral keypair generated for that rig alone, precisely so the
+  operator's long-lived identity never reaches rented hardware and revocation is automatic
+  (FR-SEC-17). Putting an account key on a marketplace box is the thing that requirement
+  exists to prevent.
+- It is moot regardless: the flag injects `PUBLIC_KEY` *unless the environment already sets
+  one*, and LARRI sets it — with the ephemeral key — on every create. The flag would be
+  overridden by the value it was meant to supply.
+
+So `startSsh` is not a route to skipping the install. It is a convenience for operators
+deploying RunPod's own images by hand with their own keys, which is a different situation in
+every respect that matters here.
+
+**And no official image gives us both halves.** RunPod's vLLM images — `worker-vllm`,
+`worker-v1-vllm`, `vllm-worker-*` — are Serverless workers running a handler loop, not an
+OpenAI server on a pod anyone can reach. `runpod/pytorch` does carry sshd, at 13–17 GB, but
+carries no vLLM: taking it would trade a small `apt-get install openssh-server` for a large
+`pip install vllm` on every bring-up, which is the same problem bigger.
+
+**So the install-on-boot path stays**, and it is cheap. Measured on two live rigs: 1m50s and
+2m34s from create to destroy, completion included, at $0.0104 and $0.0145. The sshd install
+is a few seconds of that. Pre-baked images (FR-RT-11) would still shave it, and remain worth
+building on their own merits — but nothing about RunPod's template system is the route there.
+
 **One capability RunPod does not have.** Reconnecting to a rig after a restart needs a fresh
 key installed on a running instance, and RunPod has no call for it — its key is supplied at
 creation and cannot be added to afterwards. So `larri resume` refuses on RunPod, saying the
