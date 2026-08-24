@@ -436,3 +436,65 @@ func TestNothingRentableIsAnError(t *testing.T) {
 		t.Fatal("an empty catalogue read as a successful search")
 	}
 }
+
+// RunPod supplies no usable SSH of its own: its terminal access is a proxy
+// with no port forwarding, which is the one thing LARRI's tunnel is. So the
+// pod must run a real sshd, and upstream engine images carry none —
+// vllm/vllm-openai:latest has no sshd binary at all. The adapter installs one.
+func TestStartCommandInstallsSSHBecauseRunpodDoesNot(t *testing.T) {
+	got := strings.Join(startCommand(""), " ")
+	for _, want := range []string{"openssh-server", "authorized_keys", "$PUBLIC_KEY"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("start command missing %q:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "service ssh start") && !strings.Contains(got, "sshd") {
+		t.Errorf("nothing starts the daemon:\n%s", got)
+	}
+	// When the start command exits, the pod does.
+	if !strings.HasSuffix(strings.TrimSpace(got), "sleep infinity") {
+		t.Errorf("the pod would die as soon as ssh was ready:\n%s", got)
+	}
+}
+
+// LARRI's own key installation runs after sshd exists, and its failure must
+// not strand the pod — the key is already installed by then.
+func TestStartCommandChainsOnStartWithoutStrandingThePod(t *testing.T) {
+	got := strings.Join(startCommand("echo larri-onstart"), " ")
+	if !strings.Contains(got, "echo larri-onstart") {
+		t.Errorf("onstart was dropped:\n%s", got)
+	}
+	if !strings.Contains(got, "|| true") {
+		t.Error("a failing onstart would kill the pod after sshd was already up")
+	}
+	if strings.Index(got, "openssh-server") > strings.Index(got, "echo larri-onstart") {
+		t.Error("onstart runs before sshd is installed")
+	}
+	if !strings.HasSuffix(strings.TrimSpace(got), "sleep infinity") {
+		t.Errorf("no keepalive after onstart:\n%s", got)
+	}
+}
+
+// Without includeMachine, GET /pods/{id} omits publicIp and portMappings
+// while GET /pods returns them for the same pod. Measured live: five
+// consecutive single-pod reads showed no address, and LARRI waited for an
+// endpoint the provider was already publishing on the other route.
+func TestGetAsksForTheNetworkingFields(t *testing.T) {
+	var path string
+	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.RequestURI()
+		w.Write([]byte(`{"id":"pod1","desiredStatus":"RUNNING","publicIp":"1.2.3.4",
+			"portMappings":{"22":40068}}`))
+	})
+	inst, err := p.Get(context.Background(), "pod1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(path, "includeMachine=true") {
+		t.Errorf("Get requested %q; without includeMachine the address is omitted "+
+			"and the rig never becomes reachable", path)
+	}
+	if inst.SSHPort != 40068 {
+		t.Errorf("ssh port = %d", inst.SSHPort)
+	}
+}

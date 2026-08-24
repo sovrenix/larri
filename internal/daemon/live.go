@@ -252,12 +252,13 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 		unreachable = 3 * time.Minute
 	}
 	var (
-		lastSeen    string
-		changedAt   = time.Now()
-		deadline    = time.Now().Add(cap)
-		everSpoke   bool
-		endpointAt  time.Time
-		announcedEP bool
+		lastEndpoint core.Instance
+		lastSeen     string
+		changedAt    = time.Now()
+		deadline     = time.Now().Add(cap)
+		everSpoke    bool
+		endpointAt   time.Time
+		announcedEP  bool
 	)
 	for time.Now().Before(deadline) {
 		inst, err := o.Provider.Get(ctx, rig.Instance.InstanceID)
@@ -270,7 +271,24 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 			return nil, errs.Newf(errs.ClassProviderUnknownOutcome, "daemon.waitForSSH",
 				"instance %s vanished during boot", rig.Instance.InstanceID)
 
-		case inst.SSHHost != "" && inst.SSHPort > 0:
+		case inst.SSHHost != "" && inst.SSHPort > 0 || lastEndpoint.SSHHost != "":
+			// An address, once published, is remembered.
+			//
+			// RunPod's pod reads drop publicIp and portMappings intermittently
+			// — measured over ten minutes, the same pod alternated between
+			// reporting its address and reporting none, several times. Taking
+			// each absence at face value made LARRI forget an endpoint it had
+			// already been given and restart the wait, so the probe never got
+			// a run at the address long enough to matter.
+			//
+			// Remembering is safe because an endpoint is only ever *tested*,
+			// never trusted: if the address is stale the probe fails and the
+			// stall limit ends it exactly as before.
+			if inst.SSHHost != "" && inst.SSHPort > 0 {
+				lastEndpoint = *inst
+			} else {
+				inst.SSHHost, inst.SSHPort = lastEndpoint.SSHHost, lastEndpoint.SSHPort
+			}
 			// The endpoint is published. From here the provider's status is
 			// advisory and the connection is decisive: a live run watched a
 			// contract report "running" for ten minutes, with intended_status

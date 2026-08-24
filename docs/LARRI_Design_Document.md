@@ -1145,6 +1145,27 @@ read past, different enough that the fallback would have stayed dormant precisel
 needed — a 500 classifies as transient and would have retried the same unavailable type
 instead of moving to the next one.
 
+#### Three things measured on live pods
+
+*The single-pod read omits the address.* `GET /pods/{id}` returns neither `publicIp` nor
+`portMappings`, while `GET /pods` returns both for the same pod — five consecutive reads
+showed no address at all while the list endpoint was publishing one. `includeMachine=true`
+makes the two agree, and without it a rig is never reachable.
+
+*The address flickers even so.* Watched every twenty seconds for ten minutes, one pod
+alternated several times between reporting its address and reporting none. LARRI now
+remembers a published endpoint rather than taking each absence at face value, which had been
+restarting the wait and denying the probe any sustained run at the address. Remembering is
+safe because an endpoint is only ever *tested*: a stale one fails the probe and the stall
+limit ends it exactly as before.
+
+*`desiredStatus` is `RUNNING` from the first second and never changes.* Vast narrates its
+boot — "loading", then per-layer pull progress — and LARRI's waits are progress-driven
+because of it (§12.2.1.1). RunPod narrates nothing: the same word from creation until
+teardown, whether the image is pulling or the pod is serving. So on RunPod the progress-driven
+reset has no signal to key on, and the wait degenerates to the fixed clock it was designed to
+replace.
+
 #### The blocker: SSH is the provider's job on Vast and the image's job on RunPod
 
 `larri up --provider runpod` does not work yet, and the reason is not in the adapter.
@@ -1165,9 +1186,24 @@ carry sshd, which is **FR-RT-11**: project-maintained, digest-pinned runtime ima
 requirement has been `plan` since M1 and has now acquired a forcing reason, because
 `Runtime.Image()` chooses for the engine while the provider has requirements of the choice.
 
+RunPod documents the workaround — a container start command that installs `openssh-server`,
+appends `$PUBLIC_KEY` to `authorized_keys`, starts the daemon and holds the pod open with
+`sleep infinity` — and LARRI's adapter now emits exactly that. It is the right shape and it
+is not sufficient on a 15 GB engine image: a controlled pod ran ten minutes without sshd ever
+answering, because the start command cannot run until the pull finishes, and nothing in the
+API says whether it has. The two problems compound — a slow invisible pull and a setup step
+that only begins after it.
+
+Their own note points at the answer: *"all of this is now automated through our custom
+tensorflow, pytorch, and 'Runpod stack' images."* An image that already carries sshd needs no
+start-command install and no wait for one. That is **FR-RT-11** — project-maintained,
+digest-pinned runtime images — which has been `plan` since M1 and is now the thing standing
+between RunPod and a working `larri up`.
+
 This is §20's stated risk arriving on schedule: *whatever RunPod turns out to need will
-change the interface rather than merely add to it.* It did — the change is that image
-selection is not purely a runtime concern.
+change the interface rather than merely add to it.* It did, twice over — image selection is
+not purely a runtime concern, and a provider that narrates nothing breaks a wait built on
+narration.
 
 
 ### 11.4 Adopting a Rig After a Restart (FR-SUP-07)

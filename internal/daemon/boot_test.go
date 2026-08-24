@@ -625,3 +625,41 @@ func TestDaemonAsksTheRuntimeWhereItWrites(t *testing.T) {
 type pathlessRuntime struct{ *rfake.Runtime }
 
 func (pathlessRuntime) LogPath() {} // shadows, so the LogWriter assertion fails
+
+// A provider that intermittently forgets its own pod's address must not make
+// LARRI forget it too.
+//
+// Measured on RunPod: the same pod, read every twenty seconds for ten minutes,
+// alternated several times between reporting publicIp/portMappings and
+// reporting neither. Taking each absence at face value restarted the wait, so
+// the probe never got a sustained run at the address.
+func TestAPublishedEndpointIsRemembered(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	// Address, then no address, then address again — the observed pattern.
+	steps := []core.Instance{
+		{InstanceID: "i", Status: "running", SSHHost: "127.0.0.1", SSHPort: dead},
+		{InstanceID: "i", Status: "running"},
+		{InstanceID: "i", Status: "running"},
+		{InstanceID: "i", Status: "running", SSHHost: "127.0.0.1", SSHPort: dead},
+	}
+	p := &bootProvider{steps: steps, repeat: true}
+	o := &Orchestrator{
+		Provider: p, BootPollInterval: 10 * time.Millisecond,
+		EndpointStallLimit: 400 * time.Millisecond,
+		BootCap:            3 * time.Second, BootStallTimeout: 3 * time.Second,
+	}
+	_, err = o.waitForSSH(context.Background(), &core.Rig{Instance: &core.Instance{InstanceID: "i"}})
+	if err == nil {
+		t.Fatal("expected the dead port to end it")
+	}
+	// It must fail having *probed* the address, not having lost it.
+	if !strings.Contains(err.Error(), "unreachable") {
+		t.Errorf("gave up without settling on an endpoint: %v", err)
+	}
+}

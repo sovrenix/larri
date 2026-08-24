@@ -117,11 +117,17 @@ instead, which is why bring-up depends on discovering the launcher at runtime.
 **RunPod can search but cannot yet serve.** Its API contract is now fully verified against
 the live service — search, create, get, list and destroy all pass the conformance suite with
 a real key, and `larri offers --provider runpod` works without an account at all. What blocks
-`larri up` is not the adapter: **RunPod supplies no SSH**, so a pod is reachable only if its
-image runs `sshd`, and upstream engine images do not (`vllm/vllm-openai:latest` has no `sshd`
-binary). Vast supplies SSH itself, which is why this never came up. The fix is FR-RT-11 —
-project-maintained images carrying the engine *and* sshd — which was `plan` and is now a
-prerequisite.
+`larri up` is not the adapter. **RunPod supplies no usable SSH** — its terminal access is a
+proxy with no port forwarding, which is the one thing LARRI's tunnel is — so the pod must run
+a real `sshd`, and upstream engine images carry none (`vllm/vllm-openai:latest` has no `sshd`
+binary). The adapter now emits RunPod's documented install-and-start command, which is the
+right shape and still not enough on a 15 GB image: a controlled pod ran ten minutes without
+sshd answering, because the start command cannot begin until the pull finishes and
+`desiredStatus` says `RUNNING` throughout either way.
+
+The fix is **FR-RT-11** — project-maintained images carrying the engine *and* sshd, which is
+what RunPod's own base images do. It was `plan` and is now the single prerequisite for RunPod
+end-to-end.
 
 *(The abstraction question this entry used to raise is answered: adding RunPod changed the
 `Offer` contract — reliability became optional, host exclusion became conditional — but not

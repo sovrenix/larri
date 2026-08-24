@@ -155,13 +155,7 @@ func (p *Provider) Create(ctx context.Context, o core.Offer, spec provider.Creat
 	if spec.SSHPublicKey != "" {
 		req.Env["PUBLIC_KEY"] = spec.SSHPublicKey
 	}
-	// The start command runs *instead of* the image's entrypoint, unlike
-	// Vast's onstart which runs alongside it. So a bare onstart would replace
-	// whatever starts sshd — it is chained ahead of a wait instead, and the
-	// image's own start-up is left to the entrypoint.
-	if spec.OnStart != "" {
-		req.DockerStartCmd = []string{"bash", "-lc", spec.OnStart + "; sleep infinity"}
-	}
+	req.DockerStartCmd = startCommand(spec.OnStart)
 
 	var created pod
 	if err := p.c.rest(ctx, "POST", "/pods", req, &created); err != nil {
@@ -179,9 +173,16 @@ func (p *Provider) Create(ctx context.Context, o core.Offer, spec provider.Creat
 }
 
 // Get returns one pod, or nil when it is gone.
+//
+// The includeMachine flag is not optional detail — without it this endpoint
+// omits publicIp and portMappings entirely, while the list endpoint returns
+// them for the same pod. Measured live: five consecutive single-pod reads
+// showed no address at all, and LARRI sat waiting for an ssh endpoint that
+// the provider was already publishing elsewhere. The flag is what makes the
+// two views agree.
 func (p *Provider) Get(ctx context.Context, instanceID string) (*core.Instance, error) {
 	var got pod
-	err := p.c.rest(ctx, "GET", "/pods/"+instanceID, nil, &got)
+	err := p.c.rest(ctx, "GET", "/pods/"+instanceID+"?includeMachine=true", nil, &got)
 	if isNotFound(err) {
 		return nil, nil
 	}
@@ -350,4 +351,48 @@ func shortest(err error) string {
 		return s[i+2:]
 	}
 	return s
+}
+
+// startCommand builds the container start command.
+//
+// This is where the adapter pays for something its provider does not supply.
+//
+// Vast fronts every instance with its own SSH machinery, so any image is
+// reachable. RunPod does not: its convenient terminal access is a proxy with
+// **no port forwarding**, which is precisely the one thing LARRI's tunnel is —
+// so the pod needs a real sshd, and upstream engine images do not carry one
+// (`vllm/vllm-openai:latest` has no sshd binary at all).
+//
+// RunPod documents the remedy as a container start command, and this is that
+// command with LARRI's own key installation chained after it. Three details
+// are load-bearing:
+//
+//   - It replaces the image's entrypoint rather than running beside it, which
+//     is fine and in fact wanted: LARRI launches the engine itself over SSH,
+//     so the image's own start-up would only race it.
+//   - $PUBLIC_KEY is expanded on the host, from the env this adapter sets.
+//   - `sleep infinity` at the end, because when the start command exits the
+//     pod does — and a pod that dies the moment sshd is ready is worse than
+//     one that never started.
+func startCommand(onStart string) []string {
+	script := `set -e
+apt-get update -qq
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server
+mkdir -p /root/.ssh && chmod 700 /root/.ssh
+if [ -n "$PUBLIC_KEY" ]; then
+  echo "$PUBLIC_KEY" >> /root/.ssh/authorized_keys
+fi
+chmod 600 /root/.ssh/authorized_keys
+mkdir -p /run/sshd
+service ssh start || /usr/sbin/sshd
+`
+	if onStart != "" {
+		// LARRI's own key installation, after sshd exists so the directory it
+		// writes into is already there. Failures here must not stop the pod:
+		// the key is already installed above, and a stranded pod is worse
+		// than a redundant step that did not run.
+		script += "{ " + onStart + " ; } || true\n"
+	}
+	script += "sleep infinity\n"
+	return []string{"bash", "-c", script}
 }
