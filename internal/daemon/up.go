@@ -12,6 +12,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"go.sovrenix.com/larri/internal/core"
@@ -234,7 +236,26 @@ type Orchestrator struct {
 	// several offers per physical host: a live run fell back twice and landed
 	// on the same box each time, since only the offer ID had changed.
 	excludedMachines []string
+
+	// failedModels counts host failures per GPU model this run.
+	//
+	// Machine-level exclusion is not enough on a marketplace that lists a
+	// deep pool of identical boxes. A live run failed on three different
+	// "Tesla V100 128GB $0.109/hr" hosts in a row, each a distinct machine
+	// with good reliability, each abandoned at the same phase — and the
+	// ranking, which is dominated by price, walked straight back into the
+	// same pool every time because a fresh cheap box always outranks a
+	// dearer working one.
+	//
+	// Two independent hosts of one model failing identically is evidence
+	// about the model or the seller behind it, not about the boxes. So the
+	// second failure retires the model for the rest of the run.
+	failedModels map[string]int
 }
+
+// modelStrikes is how many host failures on one GPU model retire it for the
+// rest of the run. One is a bad box; two is a pattern worth acting on.
+const modelStrikes = 2
 
 func (o *Orchestrator) emit(phase, format string, args ...any) {
 	if o.Events == nil {
@@ -336,6 +357,20 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 		if dropped := before - len(offers); dropped > 0 {
 			o.emit("fallback", "skipping %d offers on %d host(s) already tried",
 				dropped, len(o.excludedMachines))
+		}
+	}
+	if retired := o.retiredModels(); len(retired) > 0 {
+		before := len(offers)
+		kept := withoutModels(offers, retired)
+		// Retiring a model must not empty the market. If nothing else fits,
+		// a suspect box is still better than no rig at all, and the operator
+		// has already been told what happened.
+		if len(kept) > 0 {
+			offers = kept
+			if dropped := before - len(offers); dropped > 0 {
+				o.emit("fallback", "skipping %d offers on %s — repeated failures this run",
+					dropped, strings.Join(retired, ", "))
+			}
 		}
 	}
 	sel := rank.Select(offers, req.Criteria, fits, o.Policy)
@@ -469,6 +504,16 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 			o.warn("cleanup", "tearing down rather than leaving it billing")
 			o.teardownAfterFailure(rig, core.ReasonHostFailure, err)
 			o.excludedMachines = append(o.excludedMachines, machineKey(rig.Offer))
+			if m := strings.TrimSpace(rig.Offer.GPUModel); m != "" {
+				if o.failedModels == nil {
+					o.failedModels = map[string]int{}
+				}
+				o.failedModels[m]++
+				if o.failedModels[m] == modelStrikes {
+					o.warn("fallback", "%d %s hosts failed the same way — trying different hardware",
+						modelStrikes, m)
+				}
+			}
 		}
 		// Only host-attributable failures are worth another machine.
 		if errs.ClassOf(err) != errs.ClassHostFailure {
@@ -583,6 +628,34 @@ func (o *Orchestrator) hostIdleLimit() time.Duration {
 // several offers per physical box, so an offer-keyed exclusion lets a fallback
 // land on exactly the host that just failed — which a live run did twice, on
 // the same "GTX 1660 S $0.036/hr" each time.
+// retiredModels lists the GPU models that have failed enough times this run
+// to stop being offered.
+func (o *Orchestrator) retiredModels() []string {
+	var out []string
+	for m, n := range o.failedModels {
+		if n >= modelStrikes {
+			out = append(out, m)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// withoutModels drops every offer on a GPU model that has been retired.
+func withoutModels(offers []core.Offer, models []string) []core.Offer {
+	skip := make(map[string]bool, len(models))
+	for _, m := range models {
+		skip[m] = true
+	}
+	out := offers[:0:0]
+	for _, of := range offers {
+		if !skip[strings.TrimSpace(of.GPUModel)] {
+			out = append(out, of)
+		}
+	}
+	return out
+}
+
 func withoutMachines(offers []core.Offer, machines []string) []core.Offer {
 	skip := make(map[string]bool, len(machines))
 	for _, m := range machines {

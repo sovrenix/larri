@@ -253,14 +253,15 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 		unreachable = 3 * time.Minute
 	}
 	var (
-		lastEndpoint core.Instance
-		lastLogLine  string
-		lastSeen     string
-		changedAt    = time.Now()
-		deadline     = time.Now().Add(cap)
-		everSpoke    bool
-		endpointAt   time.Time
-		announcedEP  bool
+		lastEndpoint  core.Instance
+		lastLogLine   string
+		lastSeen      string
+		changedAt     = time.Now()
+		deadline      = time.Now().Add(cap)
+		everSpoke     bool
+		endpointAt    time.Time
+		announcedEP   bool
+		announcedPull bool
 	)
 	for time.Now().Before(deadline) {
 		inst, err := o.Provider.Get(ctx, rig.Instance.InstanceID)
@@ -308,12 +309,15 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 			if perr := sshx.Probe(ctx, inst.SSHHost, inst.SSHPort, 15*time.Second); perr == nil {
 				o.emit("boot", "sshd answering at %s:%d", inst.SSHHost, inst.SSHPort)
 				return inst, nil
-			} else if waited := time.Since(endpointAt); waited > unreachable {
+			} else if waited := time.Since(endpointAt); waited > unreachable && !bootPending(inst) {
 				// Measured from the last sign of life, not from publication.
 				// See the reset below.
 				return nil, errs.Newf(errs.ClassHostFailure, "daemon.waitForSSH",
 					"endpoint %s:%d unreachable for %s while nothing changed: %v",
 					inst.SSHHost, inst.SSHPort, waited.Round(time.Second), shortErr(perr))
+			} else if bootPending(inst) && !announcedPull {
+				announcedPull = true
+				o.emit("boot", "%s — image still arriving; not counting against the reachability window", inst.Status)
 			}
 			fallthrough
 
@@ -388,6 +392,36 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 }
 
 // describeBoot renders the provider's account of what a host is doing.
+// bootPending reports whether the provider says the container has not been
+// started yet, so an address that refuses connections is expected rather than
+// suspicious.
+//
+// This is the distinction the reachability window kept getting wrong. Vast
+// publishes an SSH endpoint when the *contract* starts, which is before the
+// image has been pulled, so the window opened while sshd could not exist yet
+// and closed three minutes later on a host that was working the whole time. A
+// stock vLLM image is 10-15 GB and the cheap multi-GPU boxes that make cheap
+// inference possible are exactly the ones that pull it slowly — a live run
+// burned three rentals this way, each abandoned mid-download and restarted
+// from nothing on a fresh machine.
+//
+// Only an explicitly reported *container* phase counts. "contract running"
+// with actual_status never set is the opposite case — the contract is billing
+// and the container has not been reported at all — and a live run watched one
+// sit that way for ten minutes against an address nothing was listening on.
+// That is the failure the window exists to catch, so its clock runs normally.
+//
+// A host that sits in "loading" forever is caught too, by the stall timeout,
+// which is the honest instrument for it: no status change for eight minutes is
+// what "stopped trying" means.
+func bootPending(inst *core.Instance) bool {
+	switch strings.ToLower(strings.TrimSpace(inst.Status)) {
+	case "loading", "created", "creating", "pulling", "starting", "scheduling":
+		return true
+	}
+	return false
+}
+
 func describeBoot(inst *core.Instance) string {
 	status := inst.Status
 	if status == "" {
