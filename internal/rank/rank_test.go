@@ -395,3 +395,47 @@ func selectedID(r Result) string {
 	}
 	return r.Selected.Offer.OfferID
 }
+
+// Reliability does not discriminate. Across a 400-offer sample the three
+// verification tiers scored 0.9960, 0.9930 and 0.9929 — indistinguishable,
+// and all far above any floor worth setting — while price split cleanly at
+// $0.83, $0.67 and $0.47 median. So the cheap end that ranking naturally
+// selects is disproportionately the tier the provider has demoted, and a
+// live run failed on two such hosts in three attempts.
+func TestWithdrawnVerificationIsExcludedByDefault(t *testing.T) {
+	demoted := core.Offer{OfferID: "demoted", GPUModel: "RTX 2080 Ti", PriceHr: 0.056,
+		Reliability: 1.00, Verification: "deverified", VRAMPerGPUGB: 22, GPUCount: 1}
+	plain := core.Offer{OfferID: "plain", GPUModel: "RTX 2080 Ti", PriceHr: 0.071,
+		Reliability: 1.00, Verification: "unverified", VRAMPerGPUGB: 22, GPUCount: 1}
+	vetted := core.Offer{OfferID: "vetted", GPUModel: "RTX 2080 Ti", PriceHr: 0.078,
+		Reliability: 1.00, Verification: "verified", VRAMPerGPUGB: 22, GPUCount: 1}
+	offers := []core.Offer{demoted, plain, vetted}
+
+	p := DefaultPolicy()
+	p.OutlierFactor = 0
+
+	// Note both cheaper offers clear a 0.90 reliability floor, which is why
+	// the floor was never going to catch this.
+	got := Select(offers, core.Criteria{}, nil, p)
+	if got.Selected == nil || got.Selected.Offer.OfferID != "plain" {
+		t.Errorf("selected %v, want the unverified host over the demoted one", selectedID(got))
+	}
+	for _, c := range got.Candidates {
+		if c.Offer.OfferID == "demoted" && c.Reason != ReasonDeverified {
+			t.Errorf("demoted host excluded as %q, want %q", c.Reason, ReasonDeverified)
+		}
+	}
+
+	// Unverified is not demoted: a host the provider has not assessed is not
+	// one it has judged and rejected.
+	got = Select(offers, core.Criteria{CertifiedOnly: true}, nil, p)
+	if got.Selected == nil || got.Selected.Offer.OfferID != "vetted" {
+		t.Errorf("verified-only selected %v", selectedID(got))
+	}
+
+	// And the exclusion is an opinion the operator can overrule.
+	got = Select(offers, core.Criteria{AllowDeverified: true}, nil, p)
+	if got.Selected == nil || got.Selected.Offer.OfferID != "demoted" {
+		t.Errorf("with --allow-deverified, selected %v, want the cheapest", selectedID(got))
+	}
+}

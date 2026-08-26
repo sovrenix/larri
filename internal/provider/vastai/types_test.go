@@ -64,3 +64,36 @@ func TestIntentFallsBackToNextState(t *testing.T) {
 		t.Errorf("Intent = %q, want stopped from next_state", got.Intent)
 	}
 }
+
+// The "verified" boolean is not in the payload. Every offer in a 400-offer
+// sample had it null while "verification" carried the tier, so reading the
+// bool left Certified universally false — and CertifiedOnly, which the design
+// calls the strong control, would have excluded the entire market. A control
+// that silently rejects everything is worse than no control.
+func TestVerificationTierIsReadFromTheFieldThatExists(t *testing.T) {
+	for _, tc := range []struct {
+		body      string
+		tier      string
+		certified bool
+	}{
+		{`{"id":1,"dph_total":0.1,"gpu_ram":24576,"num_gpus":1,"gpu_name":"X","verification":"verified"}`, "verified", true},
+		{`{"id":1,"dph_total":0.1,"gpu_ram":24576,"num_gpus":1,"gpu_name":"X","verification":"deverified"}`, "deverified", false},
+		{`{"id":1,"dph_total":0.1,"gpu_ram":24576,"num_gpus":1,"gpu_name":"X","verification":"unverified"}`, "unverified", false},
+		{`{"id":1,"dph_total":0.1,"gpu_ram":24576,"num_gpus":1,"gpu_name":"X"}`, "", false},
+	} {
+		var raw wireOffer
+		if err := json.Unmarshal([]byte(tc.body), &raw); err != nil {
+			t.Fatal(err)
+		}
+		got, err := raw.normalise()
+		if err != nil {
+			t.Fatalf("%s: %v", tc.body, err)
+		}
+		if got.Verification != tc.tier {
+			t.Errorf("%s: Verification = %q, want %q", tc.body, got.Verification, tc.tier)
+		}
+		if got.Certified != tc.certified {
+			t.Errorf("%s: Certified = %v, want %v", tc.body, got.Certified, tc.certified)
+		}
+	}
+}

@@ -78,6 +78,7 @@ type wireOffer struct {
 	Geolocation   *string  `json:"geolocation"`
 	MachineID     *int64   `json:"machine_id"`
 	Verified      *bool    `json:"verified"`
+	Verification  *string  `json:"verification"`
 	Rentable      *bool    `json:"rentable"`
 	IsBid         *bool    `json:"is_bid"`
 	DriverVersion *string  `json:"driver_version"`
@@ -166,7 +167,19 @@ func (o wireOffer) normalise() (core.Offer, error) {
 	}
 	// "Verified" is Vast's datacentre-certified tier, which is the closest
 	// thing the marketplace offers to a trust signal (§15.5.1).
-	if o.Verified != nil {
+	// The bool is not in the payload — every offer in a 400-offer sample had
+	// it null while "verification" carried verified / unverified /
+	// deverified. Reading the bool made Certified universally false, so
+	// CertifiedOnly would have excluded the whole market: a control that
+	// silently rejects everything is worse than no control, because it looks
+	// like it is working.
+	if o.Verification != nil {
+		out.Verification = strings.ToLower(strings.TrimSpace(*o.Verification))
+	}
+	switch {
+	case out.Verification != "":
+		out.Certified = out.Verification == "verified"
+	case o.Verified != nil:
 		out.Certified = *o.Verified
 	}
 	return out, nil

@@ -38,6 +38,11 @@ type Criteria struct {
 	Providers      []string `json:"providers,omitempty"`
 	CertifiedOnly  bool     `json:"certified_only,omitempty"` // datacentre-certified hosts only
 
+	// AllowDeverified includes hosts whose verification the provider has
+	// withdrawn. Off by default: a demotion is the provider telling you
+	// something about a machine it once vouched for.
+	AllowDeverified bool `json:"allow_deverified,omitempty"`
+
 	// MinNetMbps floors the host's download link.
 	//
 	// Every rental pays for its own cold start: the runtime image and then
@@ -107,6 +112,20 @@ type Offer struct {
 	ComputeCapability int    `json:"compute_capability,omitempty"`
 	DriverVersion     string `json:"driver_version,omitempty"`
 	Certified         bool   `json:"certified,omitempty"`
+
+	// Verification is the provider's own tier for the host, and on Vast it
+	// has three values rather than two: verified, unverified, and
+	// deverified. The third is the useful one — it means verification was
+	// granted and then withdrawn, which is a provider's own record of a host
+	// that stopped meeting its standard.
+	//
+	// It is also the only field in the listing that discriminates. Across a
+	// 400-offer sample the reliability scores of the three tiers were 0.9960,
+	// 0.9930 and 0.9929 — indistinguishable, and all far above any floor
+	// worth setting — while the price split cleanly: $0.83, $0.67 and $0.47
+	// median. The cheap end of the market that ranking naturally selects is
+	// disproportionately the tier the provider has demoted.
+	Verification string `json:"verification,omitempty"`
 
 	// MachineID identifies the physical host. A marketplace lists several
 	// offers per machine, so falling back on offer ID alone can land on the

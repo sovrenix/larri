@@ -18,6 +18,7 @@ package rank
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"go.sovrenix.com/larri/internal/core"
 )
@@ -114,6 +115,7 @@ const (
 	ReasonVRAM          Reason = "insufficient-vram"
 	ReasonReliability   Reason = "reliability-below-floor"
 	ReasonPriceOutlier  Reason = "price-outlier"
+	ReasonDeverified    Reason = "verification-withdrawn"
 	ReasonInterruptible Reason = "interruptible-not-permitted"
 	ReasonMaxPrice      Reason = "above-max-price"
 	ReasonRegion        Reason = "region-blocked"
@@ -238,6 +240,23 @@ func classify(o core.Offer, c core.Criteria, fits FitFunc, p Policy,
 	// failed — it is one that lists GPU types rather than named machines, and
 	// filtering its whole catalogue out would present an empty market as the
 	// answer.
+	// Enforced here as well as in the provider's own query, because not
+	// every provider has such a query and a control that holds only where it
+	// happens to be implemented is not a control.
+	// Either field answers it. They are set by different code paths — one
+	// derived at the provider boundary, one carried verbatim — and a check
+	// that consults only one of them passes or fails on which path happened
+	// to run.
+	if c.CertifiedOnly && !o.Certified && !strings.EqualFold(o.Verification, "verified") {
+		return ReasonDeverified, "not a provider-verified host"
+	}
+	// A withdrawn verification is the provider's own record of a host that
+	// stopped meeting its standard, and it is the only tier signal in the
+	// listing that separates anything: the reliability scores of all three
+	// tiers are within 0.003 of each other.
+	if !c.AllowDeverified && strings.EqualFold(o.Verification, "deverified") {
+		return ReasonDeverified, "provider withdrew this host's verification"
+	}
 	if p.ReliabilityFloor > 0 && o.HasReliability() && o.Reliability < p.ReliabilityFloor {
 		return ReasonReliability, fmt.Sprintf("reliability %.2f below floor %.2f",
 			o.Reliability, p.ReliabilityFloor)

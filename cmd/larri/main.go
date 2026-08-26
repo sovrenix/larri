@@ -175,6 +175,12 @@ func cmdUp(ctx context.Context, args []string) error {
 	// or a dearer fast one is the better buy. Under a couple of hours the
 	// download dominates the bill; over a long session the hourly rate does.
 	session := fs.Float64("session", 1, "hours of use to optimise the choice for")
+	// Three tiers, not two: a demoted host is excluded by default, an
+	// unverified one is not. Verification is the only tier signal in the
+	// listing that separates anything — the reliability scores of all three
+	// are within 0.003 of each other.
+	verifiedOnly := fs.Bool("verified-only", false, "rent only hosts the provider has verified")
+	allowDeverified := fs.Bool("allow-deverified", false, "include hosts whose verification was withdrawn")
 	port := fs.Int("port", 8000, "fixed local port clients are wired against")
 	yes := fs.Bool("yes", false, "do not prompt before spending")
 	dryRun := fs.Bool("dry-run", false, "search, size and select without spending")
@@ -350,7 +356,7 @@ func cmdUp(ctx context.Context, args []string) error {
 	}
 
 	crit := core.Criteria{MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk,
-		MinNetMbps: *minNet}
+		MinNetMbps: *minNet, CertifiedOnly: *verifiedOnly, AllowDeverified: *allowDeverified}
 	if *gpu != "" {
 		crit.GPUModel = splitList(*gpu)
 	}
