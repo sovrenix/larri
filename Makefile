@@ -23,7 +23,7 @@ ifneq ($(TAG),)
 LDFLAGS += -X '$(PKG).version=$(TAG)'
 endif
 
-.PHONY: all build test race vet fmt headers check version version-check clean stale-check
+.PHONY: all build test race vet fmt headers check version version-check clean stale-check refresh-image
 
 all: check build
 
@@ -47,6 +47,15 @@ fmt:
 
 headers:
 	@./scripts/check-headers.sh
+
+# refresh-image re-reads the runtime image's digest and the hardware facts
+# derived from it. The floors are not free-standing numbers: they belong to
+# one specific build, and a moving tag invalidates them silently.
+.PHONY: refresh-image
+refresh-image:
+	@$(GO) run ./internal/devtools/refreshimage $(IMAGE)
+	@echo
+	@echo "if these differ from internal/runtime/vllm/vllm.go, update all three together"
 
 # stale-check guards the mistake that costs real money: running bin/larri
 # after changing the code that it was built from. A live verification once

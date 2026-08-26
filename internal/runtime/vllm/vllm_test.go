@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -445,4 +446,69 @@ func TestPreAmpereHardwareGetsAnExplicitFloat16(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The floors are facts about one specific image, so they are derived from the
+// recorded image facts rather than written down a second time. This is the
+// bug class that cost three V100 rentals: the floor said 7.0 from vLLM's
+// historical support matrix while the image had dropped Volta.
+func TestFloorsAreDerivedFromThePinnedImage(t *testing.T) {
+	r := New().Requires()
+	if got, want := r.MinComputeCapability, lowestArch(ImageArchList); got != want {
+		t.Errorf("MinComputeCapability = %d, want %d from %q", got, want, ImageArchList)
+	}
+	if got, want := r.MinCUDA, cudaTimesTen(ImageCUDA); got != want {
+		t.Errorf("MinCUDA = %d, want %d from %q", got, want, ImageCUDA)
+	}
+	// And the values the current pin implies.
+	if r.MinComputeCapability != 750 {
+		t.Errorf("pinned image implies capability %d; Volta must not pass", r.MinComputeCapability)
+	}
+	if r.MinCUDA != 130 {
+		t.Errorf("pinned image implies cuda %d", r.MinCUDA)
+	}
+}
+
+func TestArchListParsing(t *testing.T) {
+	cases := []struct {
+		list string
+		want int
+	}{
+		{"7.5 8.0 8.6 8.9 9.0 10.0 12.0", 750},
+		{"8.0 8.6 9.0", 800},
+		{"7.0 7.5", 700},
+		{"9.0+PTX 8.6", 860}, // suffixes are stripped, order does not matter
+		{"10.0 12.0", 1000},  // two-digit majors
+		{"", 0},              // nothing recorded means no constraint
+	}
+	for _, tc := range cases {
+		if got := lowestArch(tc.list); got != tc.want {
+			t.Errorf("lowestArch(%q) = %d, want %d", tc.list, got, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		v    string
+		want int
+	}{{"13.0.2", 130}, {"12.9", 129}, {"12.4.1", 124}, {"", 0}, {"junk", 0}} {
+		if got := cudaTimesTen(tc.v); got != tc.want {
+			t.Errorf("cudaTimesTen(%q) = %d, want %d", tc.v, got, tc.want)
+		}
+	}
+}
+
+// The pin is only as good as its agreement with the registry. Network-gated,
+// because the build must not depend on Docker Hub being up.
+//
+//	LARRI_CHECK_IMAGE=yes go test ./internal/runtime/vllm -run PinnedImage
+func TestPinnedImageMatchesFloors(t *testing.T) {
+	if os.Getenv("LARRI_CHECK_IMAGE") != "yes" {
+		t.Skip("set LARRI_CHECK_IMAGE=yes to verify the pin against the registry")
+	}
+	if !strings.Contains(DefaultImage, "@sha256:") {
+		t.Fatalf("DefaultImage %q is not pinned by digest", DefaultImage)
+	}
+	t.Logf("pinned: %s", DefaultImage)
+	t.Logf("floors: capability %d, cuda %d (from %q / %q)",
+		lowestArch(ImageArchList), cudaTimesTen(ImageCUDA), ImageArchList, ImageCUDA)
+	t.Log("run `make refresh-image` and compare if upstream has moved")
 }

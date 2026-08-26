@@ -30,7 +30,27 @@ import (
 // the stock-image fallback that §6.5 already requires — which has the useful
 // side effect that the fallback is tested by the milestone depending on it,
 // rather than rotting unused until the day it is needed.
-const DefaultImage = "vllm/vllm-openai:latest"
+// DefaultImage is pinned by digest, not by tag.
+//
+// The hardware floors below are read off this exact image — its
+// TORCH_CUDA_ARCH_LIST and CUDA_VERSION decide which GPUs can run it. A
+// moving tag silently invalidates them: `latest` dropped Volta from its arch
+// list, the floor still said 7.0, and LARRI rented three V100 boxes that
+// could never have loaded a kernel.
+//
+// Refresh deliberately with `make refresh-image`, which re-reads both values
+// from the registry and updates them together. TestPinnedImageMatchesFloors
+// checks the pair against the live registry when asked.
+//
+// linux/amd64 manifest of vllm/vllm-openai:latest as of 2026-08-26.
+const DefaultImage = "vllm/vllm-openai@sha256:2286e8533ca8b6bc777594bae30524f1426ba46ca21797524e06df6a94b06635"
+
+// ImageArchList and ImageCUDA are what the pinned image declares. They exist
+// so the floors and the check have one source rather than two.
+const (
+	ImageArchList = "7.5 8.0 8.6 8.9 9.0 10.0 12.0"
+	ImageCUDA     = "13.0.2"
+)
 
 // RemotePort is where vLLM listens on the host's loopback interface.
 const RemotePort = 8000
@@ -339,26 +359,60 @@ func shellQuote(s string) string { return runtime.ShellQuote(s) }
 // for all of it. Checking during selection turns twenty minutes and a bill
 // into a line of output.
 func (r *Runtime) Requires() runtime.Requirements {
+	// Derived from the pinned image, never written down twice. Both floors
+	// are facts about one specific build, and the way they went wrong before
+	// was drifting apart from it: the floor said 7.0 from vLLM's historical
+	// support matrix while the image had dropped Volta from its arch list,
+	// so V100 boxes — the cheapest hardware with enough VRAM for a 27B model
+	// — passed selection and could never have loaded a kernel.
 	return runtime.Requirements{
-		// 7.5, not 7.0, and read off the image rather than off vLLM's
-		// historical support matrix. vllm/vllm-openai:latest declares
-		// TORCH_CUDA_ARCH_LIST=7.5 8.0 8.6 8.9 9.0 10.0 12.0 — Volta is
-		// absent, so there are no compiled kernels for a V100 in the
-		// container LARRI actually runs.
-		//
-		// A live run proved what the stale floor costs. V100 boxes are the
-		// cheapest hardware on the market with enough total VRAM for a 27B
-		// model, so price-dominated ranking selected them again and again;
-		// each one passed the 7.0 floor, rented, and pulled a 15 GB image
-		// that could never have served on it.
-		MinComputeCapability: 750,
-
-		// CUDA_VERSION=13.0.2 in the same image, with
-		// VLLM_ENABLE_CUDA_COMPATIBILITY=0, so there is no compat layer to
-		// fall back on. 82% of the market's multi-GPU offers clear this.
-		MinCUDA: 130,
-		Why:     "vLLM",
+		MinComputeCapability: lowestArch(ImageArchList),
+		MinCUDA:              cudaTimesTen(ImageCUDA),
+		Why:                  "vLLM",
 	}
+}
+
+// lowestArch returns the least compute capability the image has kernels for,
+// times 100. That is what the hardware must clear — not what the engine
+// documents, and not what it supported in an earlier release.
+func lowestArch(archList string) int {
+	low := 0
+	for _, f := range strings.Fields(archList) {
+		f = strings.TrimSuffix(f, "+PTX")
+		maj, min, ok := strings.Cut(f, ".")
+		if !ok {
+			continue
+		}
+		m, err := strconv.Atoi(maj)
+		if err != nil {
+			continue
+		}
+		n, err := strconv.Atoi(min)
+		if err != nil {
+			continue
+		}
+		if v := m*100 + n*10; low == 0 || v < low {
+			low = v
+		}
+	}
+	return low
+}
+
+// cudaTimesTen turns "13.0.2" into 130.
+func cudaTimesTen(v string) int {
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) < 2 {
+		return 0
+	}
+	maj, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0
+	}
+	min, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0
+	}
+	return maj*10 + min
 }
 
 // adoptCmd prints the argv of a running vLLM server, one element per line.
