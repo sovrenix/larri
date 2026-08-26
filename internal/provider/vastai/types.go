@@ -221,6 +221,7 @@ type wireInstance struct {
 	StatusMsg    *string        `json:"status_msg"`
 	IntendedStat *string        `json:"intended_status"`
 	NextState    *string        `json:"next_state"`
+	DiskUsage    *float64       `json:"disk_usage"`
 	Label        *string        `json:"label"`
 	SSHHost      *string        `json:"ssh_host"`
 	SSHPort      *int           `json:"ssh_port"`
@@ -284,6 +285,10 @@ func (i wireInstance) normalise() (core.Instance, error) {
 	// "created" or "loading" — the pair is what distinguishes a slow boot
 	// from an abandoned one. next_state carries the same news when
 	// intended_status is absent.
+	// Vast reports -1 for "not measured", which is not zero bytes.
+	if i.DiskUsage != nil && *i.DiskUsage >= 0 {
+		out.DiskUsedGB = *i.DiskUsage
+	}
 	switch {
 	case i.IntendedStat != nil && *i.IntendedStat != "":
 		out.Intent = strings.TrimSpace(*i.IntendedStat)

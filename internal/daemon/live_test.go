@@ -188,3 +188,52 @@ func TestLocalPortIsCheckedBeforeSpending(t *testing.T) {
 		t.Errorf("port 0 must pass: %v", err)
 	}
 }
+
+// Three rentals died at the eight-minute stall timeout with their image pull
+// most of the way done. Vast's status_msg is a rolling buffer of docker's
+// output and new progress is appended to the END, but the stall comparison
+// used describeBoot, which truncates to the first 120 characters for display.
+// The prefix sat unchanged while gigabytes moved, and the timer read that as
+// silence.
+func TestStallDetectionReadsTheWholeMessageNotTheDisplayedPrefix(t *testing.T) {
+	// A buffer whose first 120 characters are identical and whose tail is
+	// where the pull is actually reported.
+	head := strings.Repeat("526d5438c009: Download complete\n", 6) // >120 chars
+	a := &core.Instance{Status: "loading", StatusMsg: head + "e2c6bed4fdc3: Downloading 2.1GB/12GB"}
+	b := &core.Instance{Status: "loading", StatusMsg: head + "e2c6bed4fdc3: Downloading 7.8GB/12GB"}
+
+	if describeBoot(a) == describeBoot(b) {
+		// Not a failure in itself — it is the precondition that made the bug
+		// invisible, and it is why the signature exists.
+		t.Log("display is identical for both, as it was live")
+	}
+	if bootSignature(a) == bootSignature(b) {
+		t.Fatal("a pull that moved 5.7GB must not read as no progress")
+	}
+
+	// Disk growth is progress even when the provider's text does not move.
+	c := &core.Instance{Status: "loading", StatusMsg: "same", DiskUsedGB: 3.0}
+	d := &core.Instance{Status: "loading", StatusMsg: "same", DiskUsedGB: 9.5}
+	if bootSignature(c) == bootSignature(d) {
+		t.Error("bytes landing on disk must count as progress")
+	}
+	// And a genuinely stalled host still reads as stalled.
+	if bootSignature(c) != bootSignature(&core.Instance{Status: "loading", StatusMsg: "same", DiskUsedGB: 3.0}) {
+		t.Error("an unchanged host must produce an unchanged signature")
+	}
+}
+
+// The buffer accumulates, so its first line is the oldest news in it.
+func TestBootDisplayShowsTheNewestLine(t *testing.T) {
+	inst := &core.Instance{
+		Status:    "loading",
+		StatusMsg: "cf57d2112d89: Pulling fs layer\nc567a87f21d2: Pulling fs layer\ncd634bc724c4: Download complete\n",
+	}
+	got := describeBoot(inst)
+	if !strings.Contains(got, "cd634bc724c4: Download complete") {
+		t.Errorf("should report the newest line, got %q", got)
+	}
+	if strings.Contains(got, "cf57d2112d89") {
+		t.Errorf("should not report minutes-old news as current: %q", got)
+	}
+}

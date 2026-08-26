@@ -131,7 +131,14 @@ type Instance struct {
 	// intended_status had already flipped to "stopped", because the
 	// container could not be created at all. Waiting on a host the provider
 	// has stopped trying to start is waiting forever, at cost.
-	Intent     string            `json:"intent,omitempty"`
+	Intent string `json:"intent,omitempty"`
+
+	// DiskUsedGB is how much the container has written, when the provider
+	// reports it. Bytes landing on disk is progress that owes nothing to the
+	// wording of a status message, which is what makes it worth carrying: a
+	// pull can be moving several GB while the text the provider publishes
+	// stays identical. Negative or absent means unreported.
+	DiskUsedGB float64           `json:"disk_used_gb,omitempty"`
 	SSHHost    string            `json:"ssh_host"`
 	SSHPort    int               `json:"ssh_port"`
 	SSHProxied bool              `json:"ssh_proxied,omitempty"`

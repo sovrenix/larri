@@ -256,6 +256,7 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 		lastEndpoint  core.Instance
 		lastLogLine   string
 		lastSeen      string
+		lastSig       string
 		changedAt     = time.Now()
 		deadline      = time.Now().Add(cap)
 		everSpoke     bool
@@ -348,9 +349,10 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 					}
 					o.emit("boot", "%s", line)
 				}
-				if now := describeBoot(inst); now != lastSeen {
+				if sig := bootSignature(inst); sig != lastSig {
+					now := describeBoot(inst)
 					o.emit("boot", "%s", now)
-					lastSeen, changedAt = now, time.Now()
+					lastSig, lastSeen, changedAt = sig, now, time.Now()
 					o.lastBootStatus = now
 
 					// The endpoint clock is progress-driven too, and for the
@@ -465,13 +467,27 @@ func bootFailureReason(inst *core.Instance) string {
 	return fmt.Sprintf("status %s, intent %s", orUnknown(inst.Status), orUnknown(inst.Intent))
 }
 
+// bootSignature is what the stall detector compares, and it deliberately uses
+// the *whole* status message rather than the line shown to the operator.
+//
+// A live run died on this three times. Vast's status_msg is a rolling buffer
+// of docker's pull output, and new progress is appended to the end — but the
+// comparison used describeBoot, which truncates to the first 120 characters
+// for display. So while a 15 GB image was actively downloading, the prefix sat
+// unchanged, the stall timer read it as silence, and the host was destroyed at
+// eight minutes with its pull most of the way done.
+//
+// Display truncates; progress detection must not.
+func bootSignature(inst *core.Instance) string {
+	return inst.Status + "\x00" + inst.StatusMsg + "\x00" + strconv.FormatFloat(inst.DiskUsedGB, 'f', 2, 64)
+}
+
 func describeBoot(inst *core.Instance) string {
 	status := inst.Status
 	if status == "" {
 		status = "starting"
 	}
-	if inst.StatusMsg != "" {
-		msg := inst.StatusMsg
+	if msg := lastLine(inst.StatusMsg); msg != "" {
 		if len(msg) > 120 {
 			msg = msg[:120]
 		}
@@ -481,6 +497,19 @@ func describeBoot(inst *core.Instance) string {
 		return status + " (no ssh endpoint yet)"
 	}
 	return status
+}
+
+// lastLine returns the newest line of a provider's status buffer.
+//
+// The buffer accumulates, so its first line is the oldest news in it. Showing
+// the head means reporting what the host was doing several minutes ago while
+// claiming it is current.
+func lastLine(msg string) string {
+	msg = strings.TrimRight(msg, "\n\r \t")
+	if i := strings.LastIndexAny(msg, "\n\r"); i >= 0 {
+		return strings.TrimSpace(msg[i+1:])
+	}
+	return strings.TrimSpace(msg)
 }
 
 func orUnknown(s string) string {
