@@ -98,11 +98,49 @@ func BaseName(ref string) string {
 }
 
 // looksLikeSameModel guards against a search returning a different model that
-// merely shares a prefix — a fine-tune, a distinct size, or an unrelated
-// project. The base name must appear intact.
+// merely shares a prefix — a distinct size, a different generation, or an
+// unrelated project. The base name must appear intact.
 func looksLikeSameModel(candidate, base string) bool {
 	return strings.Contains(strings.ToLower(BaseName(candidate)), strings.ToLower(base))
 }
+
+// packagingWords are the tokens a repository name may add without describing
+// a different model: the format, the precision, and the tool that produced it.
+var packagingWords = map[string]bool{
+	"gguf": true, "mlx": true, "awq": true, "gptq": true, "autoround": true,
+	"nvfp4": true, "mxfp4": true, "fp8": true, "fp16": true, "bf16": true,
+	"int4": true, "int8": true, "4bit": true, "8bit": true, "w4a16": true,
+	"quantized": true, "quantised": true, "quant": true, "imatrix": true,
+	"i1": true, "gs128": true, "hf": true, "v1": true, "v2": true,
+}
+
+// extraTokens counts the words a candidate adds beyond the model's name and
+// its packaging.
+//
+// This is what separates a conversion from a different model. A plain
+// repackaging is "Qwen3.6-27B-GGUF" — the name plus a format. A fine-tune is
+// "Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF",
+// which shares the name and is not the model the operator asked for. Offering
+// that as "the same thing, smaller" would be a worse answer than offering
+// nothing.
+func extraTokens(candidate, base string) int {
+	name := strings.ToLower(BaseName(candidate))
+	name = strings.ReplaceAll(name, strings.ToLower(base), " ")
+	n := 0
+	for _, tok := range strings.FieldsFunc(name, func(r rune) bool {
+		return r == '-' || r == '_' || r == '.' || r == ' '
+	}) {
+		if tok == "" || packagingWords[tok] {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// MaxExtraTokens is how much a candidate's name may add before it is treated
+// as a different model rather than a repackaging of this one.
+const MaxExtraTokens = 1
 
 type hfSearchResult struct {
 	ID        string   `json:"id"`
@@ -117,23 +155,26 @@ type hfBlobs struct {
 	} `json:"siblings"`
 }
 
-// weightBytes totals the weight files, and reports whether any are
-// safetensors.
+// weightBytes totals the weight files and reports whether the repository
+// offers a format that is safe to load.
 //
-// FR-SEC: pickle checkpoints execute arbitrary code on load, on the machine
-// holding the operator's Hugging Face token. A variant that ships only .bin
-// is not a saving worth having.
-func weightBytes(b hfBlobs) (total uint64, safetensors bool) {
+// The rule is about pickle, not about one blessed format. A .bin checkpoint
+// executes arbitrary code when torch loads it, on the machine holding the
+// operator's Hugging Face token, so a repository offering only .bin is not a
+// saving worth having. Both safetensors and GGUF are plain data containers —
+// which one is right depends on the engine asking, and that is the caller's
+// filter to apply, not this function's.
+func weightBytes(b hfBlobs) (total uint64, safe bool) {
 	for _, s := range b.Siblings {
 		switch {
-		case strings.HasSuffix(s.Name, ".safetensors"):
+		case strings.HasSuffix(s.Name, ".safetensors"), strings.HasSuffix(s.Name, ".gguf"):
 			total += s.Size
-			safetensors = true
-		case strings.HasSuffix(s.Name, ".gguf"), strings.HasSuffix(s.Name, ".bin"):
+			safe = true
+		case strings.HasSuffix(s.Name, ".bin"):
 			total += s.Size
 		}
 	}
-	return total, safetensors
+	return total, safe
 }
 
 // FindQuantised searches for quantised publications of ref that accept
@@ -171,6 +212,9 @@ func (h *HFResolver) FindQuantised(ctx context.Context, ref string, accept func(
 		q := DetectQuant(r.ID, r.Tags)
 		if q == "" || !accept(q) {
 			continue
+		}
+		if extraTokens(r.ID, base) > MaxExtraTokens {
+			continue // a fine-tune, not a repackaging
 		}
 		cands = append(cands, cand{r, q})
 	}

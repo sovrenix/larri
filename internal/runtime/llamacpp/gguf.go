@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go.sovrenix.com/larri/internal/sizing"
 	"io"
 	"net/http"
 	"sort"
@@ -115,6 +116,14 @@ func ResolveGGUF(ctx context.Context, ref, quant string, token secret.Secret) (s
 		}
 	}
 	if len(ggufs) == 0 {
+		// The commonest way to reach this: an operator names the original
+		// weights, which are safetensors, because that is the repository the
+		// model is known by. A GGUF conversion almost always exists under a
+		// different account, and naming it turns a dead end into one edit.
+		if alt := suggestGGUFRepo(ctx, repo, token); alt != "" {
+			return "", errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
+				"%s holds no gguf files: try %s", repo, alt)
+		}
 		return "", errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
 			"%s holds no gguf files", repo)
 	}
@@ -139,13 +148,22 @@ func pickQuant(repo string, files []string, quant string) (string, error) {
 	}
 
 	q := strings.ToLower(strings.TrimSpace(quant))
+	wanted := quantAliases(q)
 	var candidates []string
 	for _, f := range files {
 		if isLaterShard(f) {
 			continue
 		}
-		if q == "" || strings.Contains(strings.ToLower(f), q) {
+		if q == "" {
 			candidates = append(candidates, f)
+			continue
+		}
+		lf := strings.ToLower(f)
+		for _, w := range wanted {
+			if strings.Contains(lf, w) {
+				candidates = append(candidates, f)
+				break
+			}
 		}
 	}
 	if len(candidates) == 1 {
@@ -164,17 +182,67 @@ func pickQuant(repo string, files []string, quant string) (string, error) {
 		repo, quant, strings.Join(quantsIn(files), ", "))
 }
 
+// quantAliases returns the spellings a requested quantisation may appear
+// under.
+//
+// The float formats have two names each and both are in common use: a
+// repository writes "F16" where an operator, and the rest of LARRI, writes
+// "fp16". Matching only the literal string reports "no fp16 quantisation"
+// about a repository whose file listing plainly shows F16 — a refusal the
+// operator cannot act on because there is nothing wrong with what they asked.
+func quantAliases(q string) []string {
+	switch q {
+	case "fp16", "f16", "float16", "half":
+		return []string{"f16"}
+	case "fp32", "f32", "float32":
+		return []string{"f32"}
+	case "bf16", "bfloat16":
+		return []string{"bf16"}
+	}
+	return []string{q}
+}
+
+// quantTag picks the quantisation out of a GGUF filename.
+//
+// By shape, not by position. Splitting on the last dot assumes names like
+// "model.Q4_K_M.gguf", and breaks on the equally common
+// "Qwen3.6-27B-Q4_K_M.gguf" — where the dot belongs to the model's version —
+// reporting the quantisation as "6-27B-Q4_K_M". An operator reading that has
+// been handed a string they cannot pass back.
+//
+// GGUF quantisation names are a small, well-defined family: Q or IQ followed
+// by a digit, or one of the float formats.
+func quantTag(file string) string {
+	base := strings.TrimSuffix(file[strings.LastIndex(file, "/")+1:], ".gguf")
+	toks := strings.FieldsFunc(base, func(r rune) bool { return r == '-' || r == '.' })
+	for i := len(toks) - 1; i >= 0; i-- {
+		t := toks[i]
+		u := strings.ToUpper(t)
+		switch u {
+		case "F16", "F32", "BF16", "FP16", "FP32":
+			return u
+		}
+		// Q4_K_M, Q8_0, IQ4_XS … the underscore-joined remainder travels
+		// with the leading token because FieldsFunc does not split on it.
+		if len(u) >= 2 && (u[0] == 'Q' || strings.HasPrefix(u, "IQ")) {
+			d := u[1:]
+			if strings.HasPrefix(u, "IQ") {
+				d = u[2:]
+			}
+			if d != "" && d[0] >= '0' && d[0] <= '9' {
+				return u
+			}
+		}
+	}
+	return ""
+}
+
 // quantsIn summarises what a repository offers, so a miss is actionable.
 func quantsIn(files []string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, f := range files {
-		base := strings.TrimSuffix(f[strings.LastIndex(f, "/")+1:], ".gguf")
-		parts := strings.Split(base, ".")
-		tag := parts[len(parts)-1]
-		if i := strings.LastIndex(tag, "-"); i >= 0 && len(parts) == 1 {
-			tag = tag[i+1:]
-		}
+		tag := quantTag(f)
 		if tag != "" && !seen[tag] {
 			seen[tag] = true
 			out = append(out, tag)
@@ -185,4 +253,31 @@ func quantsIn(files []string) []string {
 		out = append(out[:12], fmt.Sprintf("… and %d more", len(out)-12))
 	}
 	return out
+}
+
+// suggestGGUFRepo names a GGUF conversion of the same model, or "" when there
+// is nothing worth naming.
+//
+// Advisory: it runs only on a path that has already failed, and a search that
+// errors or finds nothing leaves the original message alone. It borrows the
+// sizing package's finder so that "is this the same model", "does it ship
+// weights we will load", and "is this publication actually used" are answered
+// the same way here as they are for vLLM — the rules matter more than the
+// engine asking.
+func suggestGGUFRepo(ctx context.Context, repo string, token secret.Secret) string {
+	r := sizing.NewHFResolver(token)
+	vars, err := r.FindQuantised(ctx, repo, func(q string) bool { return q == "gguf" })
+	if err != nil || len(vars) == 0 {
+		return ""
+	}
+	// Smallest first is the finder's order, which is right when the question
+	// is what to download. Here the question is which repository to name, so
+	// prefer the one most people use.
+	best := vars[0]
+	for _, v := range vars[1:] {
+		if v.Downloads > best.Downloads {
+			best = v
+		}
+	}
+	return best.Ref
 }
