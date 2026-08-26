@@ -338,3 +338,60 @@ func TestDeadlineExpiryExplainsItself(t *testing.T) {
 		t.Error("only a deadline expiry should be rewritten")
 	}
 }
+
+// A live run reported a runtime failure as:
+//
+//	runtime log:
+//	  (APIServer pid=435)     next(self.gen)
+//	  (APIS
+//
+// — the middle of a Python traceback, cut mid-word. Two separate faults did
+// that: the summary truncator capped the whole error at 160 characters
+// including the attached evidence, and the line picker took the tail of the
+// log, which for an engine that prints a shutdown sequence after dying is the
+// tidy-up rather than the cause.
+func TestFailureDiagnosticKeepsTheCauseNotTheTailEnd(t *testing.T) {
+	log := []string{
+		"INFO Starting engine",
+		"INFO Loading safetensors checkpoint shards: 100%",
+		"ERROR Engine core initialization failed: CUDA out of memory",
+		"  File \"/usr/lib/vllm/engine.py\", line 41, in run",
+		"    next(self.gen)",
+		"INFO [shutdown] Process manager: send sigterm to process EngineCore",
+		"INFO [shutdown] complete",
+	}
+	got := diagnosticLines(log)
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "CUDA out of memory") {
+		t.Errorf("the cause must survive; got:\n%s", joined)
+	}
+	// A log with nothing error-shaped still yields its tail rather than
+	// nothing at all.
+	plain := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+	if len(diagnosticLines(plain)) == 0 {
+		t.Error("a log with no error signature should still report something")
+	}
+}
+
+// Truncate the summary, never the evidence.
+func TestShortErrKeepsAttachedEvidence(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	err := errs.Newf(errs.ClassHostFailure, "daemon.waitReady",
+		"runtime exited without serving\n      runtime log:\n        %s", long)
+
+	got := shortErr(err)
+	head, rest, ok := strings.Cut(got, "\n")
+	if !ok {
+		t.Fatalf("the attached log must survive: %q", got)
+	}
+	if len(head) > 200 {
+		t.Errorf("summary should still be capped, got %d chars", len(head))
+	}
+	if !strings.Contains(rest, strings.Repeat("x", 300)) {
+		t.Errorf("evidence was truncated to %d chars", len(rest))
+	}
+	// A single-line error is unchanged in shape.
+	if s := shortErr(errs.Newf(errs.ClassHostFailure, "x", "boom")); strings.Contains(s, "\n") {
+		t.Errorf("single-line error gained a newline: %q", s)
+	}
+}

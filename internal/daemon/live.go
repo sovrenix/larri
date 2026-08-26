@@ -792,7 +792,11 @@ func (o *Orchestrator) runtimeSaid(ctx context.Context, sess runtime.Session) st
 	defer cancel()
 	_ = ctx
 
-	rc, err := o.Runtime.Logs(rctx, sess, 25)
+	// "See root cause above" is a real vLLM message, and the cause can be
+	// dozens of lines above the failure — a traceback, then a shutdown
+	// sequence printed after it. Twenty-five lines routinely contains only
+	// the shutdown.
+	rc, err := o.Runtime.Logs(rctx, sess, 250)
 	if err != nil {
 		return ""
 	}
@@ -802,22 +806,67 @@ func (o *Orchestrator) runtimeSaid(ctx context.Context, sess runtime.Session) st
 		return ""
 	}
 	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
-	// The last few non-empty lines: a Python traceback puts the cause last,
-	// and a CUDA error puts it on the line that mentions CUDA.
-	var keep []string
-	for i := len(lines) - 1; i >= 0 && len(keep) < 6; i-- {
-		if l := strings.TrimSpace(lines[i]); l != "" {
-			keep = append([]string{l}, keep...)
-		}
-	}
+	keep := diagnosticLines(lines)
 	if len(keep) == 0 {
 		return ""
 	}
 	out := "\n      runtime log:\n        " + strings.Join(keep, "\n        ")
-	if len(out) > 1200 {
-		out = out[:1200] + " …"
+	if len(out) > 3000 {
+		out = out[:3000] + " …"
 	}
 	return out
+}
+
+// errorSignatures are what a runtime's own account of a failure looks like.
+var errorSignatures = []string{
+	"Traceback", "Error", "error:", "Exception", "CUDA", "assert",
+	"Failed", "FAILED", "No module", "not supported", "unsupported",
+	"out of memory", "Killed", "Aborted",
+}
+
+// diagnosticLines picks the part of a log that explains a failure.
+//
+// Taking the last N lines is the obvious rule and the wrong one: engines
+// print a shutdown sequence *after* the thing that killed them, so the tail
+// is the tidy-up and the cause has already scrolled past. A live run
+// surfaced "next(self.gen)" — a frame from the middle of a traceback — while
+// "Engine core initialization failed" sat above it, unread.
+//
+// So the window is anchored on the last line that looks like a cause, with
+// the lines around it for context, and falls back to the tail only when
+// nothing in the log looks like an error at all.
+func diagnosticLines(lines []string) []string {
+	anchor := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		for _, sig := range errorSignatures {
+			if strings.Contains(lines[i], sig) {
+				anchor = i
+				break
+			}
+		}
+		if anchor >= 0 {
+			break
+		}
+	}
+	const before, after = 8, 4
+	lo, hi := 0, len(lines)
+	if anchor >= 0 {
+		if anchor-before > 0 {
+			lo = anchor - before
+		}
+		if anchor+after+1 < hi {
+			hi = anchor + after + 1
+		}
+	} else if hi-6 > 0 {
+		lo = hi - 6
+	}
+	var keep []string
+	for _, l := range lines[lo:hi] {
+		if t := strings.TrimSpace(l); t != "" {
+			keep = append(keep, t)
+		}
+	}
+	return keep
 }
 
 func (o *Orchestrator) readyPoll() time.Duration {
@@ -903,10 +952,22 @@ func shortErr(err error) string {
 		return ""
 	}
 	s := err.Error()
-	if len(s) > 160 {
-		s = s[:160]
+	// Truncate the summary, never the evidence. A failing runtime's own log
+	// is attached to the error after a newline, and capping the whole string
+	// at 160 characters threw it away mid-word: a live run reported
+	// "(APIServer pid=435) next(self.gen)" and then "(APIS", which is the
+	// middle of a Python traceback and diagnoses nothing.
+	head, rest, multi := strings.Cut(s, "\n")
+	if len(head) > 160 {
+		head = head[:160]
 	}
-	return s
+	if !multi {
+		return head
+	}
+	if len(rest) > 4000 {
+		rest = rest[:4000] + " …"
+	}
+	return head + "\n" + rest
 }
 
 // pinAndDial establishes a host key and connects with it pinned.
