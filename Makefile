@@ -23,7 +23,7 @@ ifneq ($(TAG),)
 LDFLAGS += -X '$(PKG).version=$(TAG)'
 endif
 
-.PHONY: all build test race vet fmt headers check version version-check clean
+.PHONY: all build test race vet fmt headers check version version-check clean stale-check
 
 all: check build
 
@@ -48,7 +48,21 @@ fmt:
 headers:
 	@./scripts/check-headers.sh
 
-check: fmt vet headers test race version-check
+# stale-check guards the mistake that costs real money: running bin/larri
+# after changing the code that it was built from. A live verification once
+# rented two GPUs to test a fix the binary did not contain, and reported the
+# old failure as though the fix had not worked.
+.PHONY: stale-check
+stale-check:
+	@if [ -x bin/larri ]; then \
+		newer=$$(find . -name '*.go' -newer bin/larri -not -path './bin/*' -print -quit); \
+		if [ -n "$$newer" ]; then \
+			echo "bin/larri is older than $$newer — run 'make build'"; exit 1; \
+		fi; \
+		echo "bin/larri is up to date"; \
+	fi
+
+check: fmt vet headers test race version-check stale-check
 
 clean:
 	rm -rf bin
