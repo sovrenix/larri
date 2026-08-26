@@ -195,6 +195,9 @@ func cmdUp(ctx context.Context, args []string) error {
 	// belongs to the operator. LARRI names the mirrors a blocked host can
 	// actually reach; it never picks one.
 	hfEndpoint := fs.String("hf-endpoint", "", "Hugging Face-compatible mirror for hosts that cannot reach huggingface.co")
+	// Named only to override the model-derived choice, or "none" to serve
+	// without tool calling at all.
+	toolParser := fs.String("tool-parser", "", "vLLM tool-call parser, or 'none' (default: derived from the model)")
 	allowDeverified := fs.Bool("allow-deverified", false, "include hosts whose verification was withdrawn")
 	port := fs.Int("port", 8000, "fixed local port clients are wired against")
 	yes := fs.Bool("yes", false, "do not prompt before spending")
@@ -326,6 +329,19 @@ func cmdUp(ctx context.Context, args []string) error {
 	spec := core.ModelSpec{
 		Ref: *model, Source: core.SourceHuggingFace, ServedName: name,
 		Quantization: *quant, ContextLen: *ctxLen,
+
+		// Allowed by default. Forbid is the zero value because it is the
+		// conservative choice for criteria that cost money — an
+		// interruptible rig can bill twice — but tool calling costs nothing
+		// and its absence is invisible until an agent tries and gets a 400
+		// from inside a chat client, several steps from the launch flags
+		// that caused it.
+		ToolCalling: core.Allow,
+	}
+	if *toolParser == "none" {
+		spec.ToolCalling, spec.ToolParser = core.Forbid, ""
+	} else {
+		spec.ToolParser = *toolParser
 	}
 	if isOllamaRef(*model) {
 		spec.Source = core.SourceOllamaRegistry

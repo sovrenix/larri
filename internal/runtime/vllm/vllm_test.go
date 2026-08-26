@@ -529,3 +529,63 @@ func TestVLLMRejectsGGUF(t *testing.T) {
 		}
 	}
 }
+
+// vLLM serves happily without a tool parser and answers ordinary chat, then
+// refuses the first request carrying tools:
+//
+//	400 "auto" tool choice requires --enable-auto-tool-choice and
+//	--tool-call-parser to be set
+//
+// An operator meets that inside their chat client, on a rig they have already
+// paid to bring up. The condition here used to require ToolParser to be set
+// and nothing ever set it, so the flags were unreachable and every rig
+// refused tool calls.
+func TestToolCallingIsWiredWithoutBeingAskedFor(t *testing.T) {
+	r := New()
+	cmd := r.launchCommand(
+		core.ModelSpec{Ref: "Qwen/Qwen2.5-1.5B-Instruct", ServedName: "m", ToolCalling: core.Allow},
+		core.SizingPlan{}, runtime.Endpoint{Key: secret.New("k")})
+	if !strings.Contains(cmd, "--tool-call-parser 'hermes'") {
+		t.Errorf("a Qwen model should get the hermes parser:\n%s", cmd)
+	}
+	if !strings.Contains(cmd, "--enable-auto-tool-choice") {
+		t.Errorf("both flags are required together, vLLM says so:\n%s", cmd)
+	}
+
+	// An explicit choice still wins.
+	cmd = r.launchCommand(
+		core.ModelSpec{Ref: "Qwen/Qwen2.5-1.5B-Instruct", ServedName: "m",
+			ToolCalling: core.Allow, ToolParser: "qwen3_xml"},
+		core.SizingPlan{}, runtime.Endpoint{Key: secret.New("k")})
+	if !strings.Contains(cmd, "--tool-call-parser 'qwen3_xml'") {
+		t.Errorf("an explicit parser must override the derived one:\n%s", cmd)
+	}
+
+	// Forbidden means neither flag, so nothing is launched that the operator
+	// asked not to have.
+	cmd = r.launchCommand(
+		core.ModelSpec{Ref: "Qwen/Qwen2.5-1.5B-Instruct", ServedName: "m", ToolCalling: core.Forbid},
+		core.SizingPlan{}, runtime.Endpoint{Key: secret.New("k")})
+	if strings.Contains(cmd, "tool-call-parser") || strings.Contains(cmd, "enable-auto-tool-choice") {
+		t.Errorf("forbidden tool calling must launch neither flag:\n%s", cmd)
+	}
+}
+
+// A mismatched parser produces malformed tool calls, which is worse than an
+// honest refusal — so an unrecognised family gets no flag rather than a guess.
+func TestUnknownFamilyGetsNoParser(t *testing.T) {
+	cases := map[string]string{
+		"Qwen/Qwen2.5-7B-Instruct":            "hermes",
+		"Qwen/Qwen3-Coder-30B":                "qwen3_coder",
+		"meta-llama/Llama-3.3-70B-Instruct":   "llama3_json",
+		"meta-llama/Llama-4-Scout-17B":        "llama4_pythonic",
+		"mistralai/Mistral-7B-Instruct-v0.3":  "mistral",
+		"ibm-granite/granite-3.1-8b-instruct": "granite",
+		"some-lab/Entirely-Novel-Model":       "",
+	}
+	for ref, want := range cases {
+		if got := ToolParserFor(ref); got != want {
+			t.Errorf("ToolParserFor(%q) = %q, want %q", ref, got, want)
+		}
+	}
+}

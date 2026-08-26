@@ -230,9 +230,17 @@ func (r *Runtime) launchCommand(spec core.ModelSpec, plan core.SizingPlan, ep ru
 	if needsHalfOverride(plan.ComputeCapability, spec.Quantization) {
 		flags = append(flags, flag{"--dtype", "float16"})
 	}
-	toolCalling := spec.ToolCalling != core.Forbid && spec.ToolParser != ""
+	// Tool calling is on unless the operator forbids it, with the parser
+	// derived from the model when they have not named one. The old condition
+	// required ToolParser to be set and nothing ever set it, so the flags
+	// were dead code and every rig refused tool calls.
+	parser := spec.ToolParser
+	if parser == "" {
+		parser = ToolParserFor(spec.Ref)
+	}
+	toolCalling := spec.ToolCalling != core.Forbid && parser != ""
 	if toolCalling {
-		flags = append(flags, flag{"--tool-call-parser", spec.ToolParser})
+		flags = append(flags, flag{"--tool-call-parser", parser})
 	}
 
 	launcher, modelFlag := r.launcher, ""
