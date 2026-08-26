@@ -126,6 +126,11 @@ that matters is the second one.
 
 ## How to use
 
+**New here? [QUICKSTART.md](QUICKSTART.md) gets you to a working endpoint for
+about five cents.** For copy-paste commands per task — chat, coding,
+reasoning, documents, vision — with the hardware and cost each one lands on,
+see the [cookbook](https://sovrenix.github.io/larri/cookbook.html).
+
 ### Bring up a rig
 
 ```bash

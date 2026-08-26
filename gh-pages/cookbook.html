@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LARRI — Cookbook</title>
+<meta name="description" content="Copy-paste larri commands for chat, coding, reasoning, documents and vision — with the hardware and cost each one lands on.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root{
+--color-lobster:#c8371f;--color-lobster-dark:#9c2a17;--color-lobster-tint:#fdf1ef;
+--color-paper:#ffffff;--color-ink:#111111;--color-ink-dim:#808080;--color-ink-label:#585858;
+--color-hairline:#e3e3e3;--color-good:#008700;--color-warn:#af5f00;--color-bad:#af0000;--color-info:#005faf;
+--term-bg:#141414;--term-fg:#d7d7d7;--term-dim:#8a8a8a;--term-good:#5fd787;--term-warn:#ffaf00;
+--font-mono:'Courier Prime','Courier New',Courier,monospace;
+--text-xs:12px;--text-sm:13px;--text-md:15px;--text-lg:18px;--text-xl:24px;
+--measure:72ch;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--color-paper);color:var(--color-ink);
+     font-family:var(--font-mono);font-size:var(--text-md);line-height:1.65;
+     padding:56px 24px 64px}
+.wrap{max-width:var(--measure);margin:0 auto}
+a{color:var(--color-ink)}a:hover{color:var(--color-lobster)}
+h1{font-size:var(--text-xl);margin:20px 0 4px;font-weight:700}
+h2{font-size:var(--text-lg);font-weight:700;margin:0 0 6px}
+h3{font-size:var(--text-md);font-weight:700;margin:28px 0 4px}
+header{text-align:center}
+nav{display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin-top:14px}
+nav a{text-decoration:underline}
+.dim{color:var(--color-ink-dim)}
+.rule{border:0;border-top:1px solid var(--color-hairline);margin:40px 0}
+.note{border-left:2px solid var(--color-lobster);background:var(--color-lobster-tint);
+      padding:10px 14px;font-size:var(--text-sm);margin:16px 0}
+.cmd{position:relative;background:var(--term-bg);color:var(--term-fg);
+     padding:12px 14px;margin:10px 0 4px;overflow-x:auto;font-size:var(--text-sm)}
+.cmd code{white-space:pre;display:block}
+.cmd .flag{color:var(--term-warn)}
+.copy{position:absolute;top:6px;right:6px;background:transparent;color:var(--term-dim);
+      border:1px solid var(--term-dim);font-family:inherit;font-size:var(--text-xs);
+      padding:2px 7px;cursor:pointer;border-radius:0}
+.copy:hover{color:var(--term-good);border-color:var(--term-good)}
+.copy[data-done="1"]{color:var(--term-good);border-color:var(--term-good)}
+.lands{font-size:var(--text-sm);color:var(--color-ink-label);margin:0 0 22px}
+.lands b{color:var(--color-ink)}
+table{border-collapse:collapse;width:100%;font-size:var(--text-sm);margin:12px 0}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--color-hairline);vertical-align:top}
+th{color:var(--color-ink-label);font-weight:700}
+footer{margin-top:48px;text-align:center;font-size:var(--text-sm);color:var(--color-ink-dim)}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --color-paper:#0e0e0e;--color-ink:#e6e6e6;--color-hairline:#2a2a2a;
+    --color-ink-dim:#8a8a8a;--color-ink-label:#a0a0a0;--color-lobster-tint:#25120e;
+  }
+}
+</style>
+</head><body>
+<div class="wrap">
+
+<header>
+  <h1>L.A.R.R.I. 🦞 Cookbook</h1>
+  <div style="font-weight:700">Commands that work, and what they land on.</div>
+  <div class="dim" style="font-style:italic;margin:8px 0 0">
+    Every command below was run before it was written down.
+  </div>
+  <nav>
+    <a href="./index.html">home</a><span class="dim">·</span>
+    <a href="#start">start here</a><span class="dim">·</span>
+    <a href="#chat">chat</a><span class="dim">·</span>
+    <a href="#coding">coding</a><span class="dim">·</span>
+    <a href="#reasoning">reasoning</a><span class="dim">·</span>
+    <a href="#docs">documents</a><span class="dim">·</span>
+    <a href="#vision">vision</a><span class="dim">·</span>
+    <a href="#cheap">cheapest</a><span class="dim">·</span>
+    <a href="#cannot">what it cannot do</a>
+  </nav>
+</header>
+
+<hr class="rule">
+
+<section>
+  <p style="margin:0 0 12px">Prices and hardware below are what LARRI actually
+  selected on a real market, and they will not be what you see: the market
+  moves hourly. They are here to set expectations, not promises.</p>
+  <p style="margin:0 0 12px">Add <b>--dry-run</b> to any command to see the
+  sizing, the hardware, the wait and the bill <em>without renting anything</em>.
+  Do that first, every time.</p>
+  <div class="note">
+    ⚠ These commands spend money. A rig bills from the moment it is created —
+    including while it downloads. <b>Ctrl-C</b> tears it down;
+    <b>larri orphans</b> catches anything a crash left behind.
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="start">
+  <h2>Start here</h2>
+  <p class="dim" style="margin:0 0 16px">The cheapest thing that proves the whole path works.</p>
+
+  <h3>Smoke test — five cents</h3>
+  <div class="cmd"><button class="copy">copy</button><code>larri up --model Qwen/Qwen2.5-1.5B-Instruct</code></div>
+  <p class="lands">Lands on <b>RTX 3060 12GB · ~$0.05/hr</b> · needs 4.6 GB ·
+  ready in ~4 min. This is the model LARRI's own end-to-end tests use, so a
+  failure here is the host or LARRI, never the model.</p>
+</section>
+
+<hr class="rule">
+
+<section id="chat">
+  <h2>General chat &amp; knowledge</h2>
+  <p class="dim" style="margin:0 0 16px">Everyday assistant work: questions, drafting, summarising.</p>
+
+  <h3>Qwen3 8B — the default recommendation</h3>
+  <div class="cmd"><button class="copy">copy</button><code>larri up --model Qwen/Qwen3-8B</code></div>
+  <p class="lands">Lands on <b>RTX 2080 Ti 22GB · ~$0.07/hr</b> · needs 19.6 GB.
+  Text-only, tool-calling works out of the box.</p>
+
+  <h3>Qwen3 14B — noticeably better, roughly double</h3>
+  <div class="cmd"><button class="copy">copy</button><code>larri up --model Qwen/Qwen3-14B</code></div>
+  <p class="lands">Needs ~35 GB, so it lands on <b>RTX 3090 48GB · ~$0.17/hr</b>.</p>
+
+  <div class="note">
+    Llama models on Hugging Face are <b>gated</b> — you must accept the licence
+    on the model page and use an <b>HF_TOKEN</b> that has been granted access,
+    or the download 403s after you have already paid for the rig.
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="coding">
+  <h2>Coding</h2>
+  <p class="dim" style="margin:0 0 16px">Autocomplete, refactoring, and agent loops in your editor.</p>
+
+  <h3>Qwen2.5-Coder 7B — fits a cheap card</h3>
+  <div class="cmd"><button class="copy">copy</button><code>larri up --model Qwen/Qwen2.5-Coder-7B-Instruct</code></div>
+  <p class="lands">Lands on <b>RTX 2080 Ti 22GB · ~$0.07/hr</b> · needs 17.5 GB.</p>
+
+  <h3>Qwen2.5-Coder 32B — the one worth renting a real GPU for</h3>
+  <div class="cmd"><button class="copy">copy</button><code>larri up --model Qwen/Qwen2.5-Coder-32B-Instruct --context 32768</code></div>
+  <p class="lands">65 GB of weights, so expect an A100/3090-class multi-GPU box.
+  Try <b>--dry-run</b> first — this is where the download dominates the bill.</p>
+
+  <div class="note">
+    For agent modes (Continue.dev, AnythingLLM agents, Cline) the model must
+    emit tool calls and vLLM must be told how to parse them. LARRI derives the
+    parser from the model family automatically; override with
+    <b>--tool-parser</b> if a client reports malformed tool calls.
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="reasoning">
+  <h2>Reasoning</h2>
+  <p class="dim" style="margin:0 0 16px">Maths, multi-step logic, anything where the model should think before answering.</p>
+
+  <h3>DeepSeek-R1 distilled into Qwen 14B</h3>
+  <div class="cmd"><button class="copy">copy</button><code>larri up --model deepseek-ai/DeepSeek-R1-Distill-Qwen-14B</code></div>
+  <p class="lands">Lands on <b>RTX 3090 48GB · ~$0.17/hr</b> · needs 34.6 GB.
+  Reasoning models emit long chains of thought, so raise your client's
+  max-tokens or answers will be cut off mid-thought.</p>
+</section>
+
+<hr class="rule">
+
+<section id="docs">
+  <h2>Documents &amp; long context</h2>
+  <p class="dim" style="margin:0 0 16px">Summarising, extraction, and question-answering over long inputs.</p>
+
+  <h3>A large context window, costed honestly</h3>
+  <div class="cmd"><button class="copy">copy</button><code>larri up --model Qwen/Qwen3-8B --context 65536</code></div>
+  <p class="lands">Context is not free: the KV cache grows linearly with it, and
+  LARRI sizes for it before renting. Compare <b>--context 8192</b> against
+  <b>--context 65536</b> with <b>--dry-run</b> and watch the required VRAM —
+  and the GPU it forces you onto — move.</p>
+
+  <div class="note">
+    LARRI sizes for <b>one</b> concurrent sequence. Several clients hitting the
+    same rig at once multiply the KV cache and can exhaust VRAM. It warns about
+    this at every bring-up.
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="vision">
+  <h2>Images as input</h2>
+  <p class="dim" style="margin:0 0 16px">Reading screenshots, diagrams, scanned documents.</p>
+
+  <h3>Qwen2.5-VL 7B</h3>
+  <div class="cmd"><button class="copy">copy</button><code>larri up --model Qwen/Qwen2.5-VL-7B-Instruct</code></div>
+  <p class="lands">Lands on <b>RTX 2080 Ti 22GB · ~$0.07/hr</b> · needs 19.0 GB.
+  Send images as ordinary OpenAI <b>image_url</b> content parts.</p>
+
+  <div class="note">
+    Vision models need memory for an image encoder that LARRI's sizing does not
+    yet count. Give them headroom — prefer a card comfortably above the figure
+    LARRI reports rather than one that only just clears it.
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="cheap">
+  <h2>The cheapest possible rig</h2>
+  <p class="dim" style="margin:0 0 16px">When you want a working endpoint for pennies and do not need speed.</p>
+
+  <h3>Quantised weights, llama.cpp, old hardware</h3>
+  <div class="cmd"><button class="copy">copy</button><code>larri up --model unsloth/Qwen3-8B-GGUF --runtime llamacpp</code></div>
+  <p class="lands">llama.cpp runs on cards vLLM refuses, and its image is a
+  fraction of vLLM's 8.6 GB. LARRI defaults GGUF engines to <b>Q4_K_M</b> —
+  roughly a quarter the size of full precision — and names smaller
+  quantisations in the repo if you want to go further.</p>
+
+  <h3>Let LARRI find a smaller version of what you asked for</h3>
+  <div class="cmd"><button class="copy">copy</button><code>larri up --model Qwen/Qwen3-14B --dry-run</code></div>
+  <p class="lands">Every bring-up looks for a quantised publication of the same
+  model and reports what it would save — usually 3× less to download and a
+  much cheaper GPU. It suggests; it never substitutes, because a quantised
+  model is not the same model.</p>
+</section>
+
+<hr class="rule">
+
+<section id="cannot">
+  <h2>What LARRI cannot do</h2>
+  <p style="margin:0 0 12px">Worth stating plainly, so you do not spend money
+  finding out.</p>
+
+  <table>
+    <tr><th>Task</th><th>Status</th></tr>
+    <tr><td><b>Image generation</b><br><span class="dim">Stable Diffusion, FLUX, ComfyUI</span></td>
+        <td><b>Not supported.</b> All three runtimes — vLLM, llama.cpp, Ollama —
+        are LLM servers speaking OpenAI <b>/v1/chat/completions</b>. A diffusion
+        pipeline needs a different runtime and a different API surface. Nothing
+        in the cookbook will generate an image.</td></tr>
+    <tr><td><b>Audio / speech</b><br><span class="dim">Whisper, TTS</span></td>
+        <td><b>Not supported</b>, for the same reason.</td></tr>
+    <tr><td><b>Embeddings</b></td>
+        <td><b>Untested.</b> vLLM can serve embedding models, but LARRI's
+        readiness check demands a chat completion, so an embedding-only model
+        will never be declared ready.</td></tr>
+    <tr><td><b>Fine-tuning / training</b></td>
+        <td><b>Out of scope.</b> LARRI rents a GPU to <em>serve</em> a model.</td></tr>
+  </table>
+
+  <p class="dim" style="margin:12px 0 0">If image generation is what you want,
+  rent through the provider's own console and use their ComfyUI template —
+  LARRI would only be in the way.</p>
+</section>
+
+<hr class="rule">
+
+<section>
+  <h2>Flags worth knowing</h2>
+  <table>
+    <tr><th>Flag</th><th>Why</th></tr>
+    <tr><td><b>--dry-run</b></td><td>Sizing, hardware, wait and bill — without renting. Use it first.</td></tr>
+    <tr><td><b>--session 8</b></td><td>Optimise the choice for a long session: the download amortises and the hourly rate starts to dominate.</td></tr>
+    <tr><td><b>--max-price 0.50</b></td><td>Hard ceiling per hour.</td></tr>
+    <tr><td><b>--gpu "RTX 3090"</b></td><td>Restrict to hardware you trust.</td></tr>
+    <tr><td><b>--verified-only</b></td><td>Only hosts the provider has verified. Costs more, fails less.</td></tr>
+    <tr><td><b>--idle-timeout 15m</b></td><td>Destroy sooner when nobody is using it.</td></tr>
+    <tr><td><b>--port 8080</b></td><td>When something else already holds 8000.</td></tr>
+    <tr><td><b>--context 32768</b></td><td>Bigger window, bigger KV cache, bigger GPU.</td></tr>
+  </table>
+</section>
+
+<footer>
+  <div>🦞 <b>Larri the Lobster</b> — same lobster, new shell.</div>
+  <div style="margin-top:8px">Sovrenix Inc. · licence GPL-3.0 ·
+    <a href="https://github.com/sovrenix/larri">source</a></div>
+</footer>
+
+</div>
+<script>
+document.querySelectorAll('.copy').forEach(function (b) {
+  b.addEventListener('click', function () {
+    var code = b.parentElement.querySelector('code').textContent;
+    var done = function () {
+      b.textContent = 'copied'; b.dataset.done = '1';
+      setTimeout(function () { b.textContent = 'copy'; delete b.dataset.done; }, 1400);
+    };
+    // Clipboard API needs a secure context; the textarea path works anywhere.
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(code).then(done, function () { b.textContent = 'select it'; });
+      return;
+    }
+    var t = document.createElement('textarea');
+    t.value = code; t.style.position = 'fixed'; t.style.opacity = '0';
+    document.body.appendChild(t); t.select();
+    try { document.execCommand('copy'); done(); } catch (e) { b.textContent = 'select it'; }
+    document.body.removeChild(t);
+  });
+});
+</script>
+</body></html>
