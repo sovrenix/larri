@@ -597,47 +597,153 @@ func (o *Orchestrator) readComputeCapability(ctx context.Context, sess runtime.S
 	return int(f*100 + 0.5)
 }
 
+// KnownHFMirrors are Hugging Face-compatible hosts to offer when the real one
+// cannot be reached.
+//
+// Named, not used. A mirror serves the weights that end up in the model's
+// memory, so choosing one is a supply-chain decision and belongs to the
+// operator; LARRI's part is to say which ones this host can actually reach,
+// because a suggestion that also fails to resolve wastes another rental.
+var KnownHFMirrors = []string{"https://hf-mirror.com"}
+
+// egressControl is the host used to tell "this machine has no internet" from
+// "this machine cannot reach Hugging Face".
+//
+// Docker Hub, because the machine has demonstrably just used it: the runtime
+// image arrived over it minutes earlier, so a failure here means the network
+// broke rather than that the host was never able to route anywhere.
+const egressControl = "https://registry-1.docker.io/v2/"
+
 // verifyEgress confirms the host can reach where the weights live.
 //
-// One request, before anything is downloaded. A host that cannot resolve or
-// reach the weight source will fail after the image, the launch and several
+// One round of requests, before anything is downloaded. A host that cannot
+// reach the weight source fails after the image, the launch and several
 // minutes of retries, and every second of that is billed — so the question is
-// asked while the answer is still cheap.
+// asked while the answer is still cheap. A live run proved the case twice
+// over: the same GTX 1660 S that had burned four minutes reaching for
+// huggingface.co was rejected here in twenty seconds.
 //
-// Advisory in one direction only: an unreachable source is a hard failure,
-// but a probe that cannot run at all (no curl, no python) is not evidence of
-// anything and lets the launch proceed.
+// The control request is what makes the verdict useful rather than merely
+// correct. A machine with no route anywhere is a bad rental and should be
+// abandoned; a machine that simply cannot reach Hugging Face is a good rental
+// in a region that cannot route to it, and the remedy is a mirror rather than
+// a different host.
+//
+// Advisory in one direction only: an unreachable source with a working
+// control is a hard failure, but a probe that cannot run at all (no curl, no
+// python) is not evidence of anything and lets the launch proceed.
 func (o *Orchestrator) verifyEgress(ctx context.Context, sess runtime.Session, rig *core.Rig) error {
 	host := weightsHost(rig.Model)
 	if host == "" {
 		return nil
 	}
-	ectx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	targets := []string{"https://" + host, egressControl}
+	mirrors := []string{}
+	if rig.Model.Source == core.SourceHuggingFace {
+		mirrors = KnownHFMirrors
+		targets = append(targets, mirrors...)
+	}
+
+	ectx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-
-	// curl where it exists, python otherwise: the runtime images carry one
-	// or the other, and this must not depend on which.
-	probe := fmt.Sprintf(
-		`if command -v curl >/dev/null 2>&1; then `+
-			`curl -sS -o /dev/null -m 20 -w 'HTTP %%{http_code}' https://%s/ 2>&1; `+
-			`elif command -v python3 >/dev/null 2>&1; then `+
-			`python3 -c "import urllib.request;urllib.request.urlopen('https://%s/',timeout=20);print('HTTP 200')" 2>&1; `+
-			`else echo SKIP; fi`, host, host)
-
-	out, err := sess.Run(ectx, probe)
-	got := strings.TrimSpace(string(out))
-	if err != nil && got == "" {
+	reach := o.probeReach(ectx, sess, targets)
+	if reach == nil {
 		return nil // the probe itself could not run; not evidence
 	}
-	if strings.Contains(got, "SKIP") {
-		return nil
-	}
-	if strings.Contains(got, "HTTP") && !strings.Contains(got, "HTTP 000") {
+	if reach["https://"+host] {
 		o.emit("boot", "host reaches %s", host)
 		return nil
 	}
+	if reach[egressControl] {
+		o.warn("egress", "this host cannot reach %s but is otherwise online — common where the region cannot route to it", host)
+		if usable := reachableAmong(mirrors, reach); len(usable) > 0 {
+			o.warn("egress", "reachable mirror(s): %s — weights would come from a third party, so it is opt-in",
+				strings.Join(usable, ", "))
+		}
+	}
+	return egressVerdict(host, mirrors, reach)
+}
+
+// reachableAmong filters candidates to the ones this host answered for.
+func reachableAmong(candidates []string, reach map[string]bool) []string {
+	var out []string
+	for _, c := range candidates {
+		if reach[c] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// egressVerdict turns a set of probe results into a decision.
+//
+// Separated from the probing so the judgement can be tested without a host,
+// which is the half that has to be right: the difference between "abandon
+// this rental" and "this rental is fine, point it at a mirror".
+func egressVerdict(host string, mirrors []string, reach map[string]bool) error {
+	if reach["https://"+host] {
+		return nil
+	}
+	if !reach[egressControl] {
+		return errs.Newf(errs.ClassHostFailure, "daemon.verifyEgress",
+			"host has no working internet: neither %s nor docker.io responded", host)
+	}
+	usable := reachableAmong(mirrors, reach)
+	if len(usable) == 0 {
+		return errs.Newf(errs.ClassHostFailure, "daemon.verifyEgress",
+			"host cannot reach %s, and no known mirror either", host)
+	}
 	return errs.Newf(errs.ClassHostFailure, "daemon.verifyEgress",
-		"host cannot reach %s: %s", host, firstLine(got))
+		"host cannot reach %s: retry with --hf-endpoint %s", host, usable[0])
+}
+
+// probeReach asks the host which of these URLs answer, in one command.
+//
+// Returns nil when the probe could not run, which is different from a map of
+// failures: the first means LARRI learned nothing, the second means the host
+// answered and the answer was no.
+func (o *Orchestrator) probeReach(ctx context.Context, sess runtime.Session, urls []string) map[string]bool {
+	var b strings.Builder
+	b.WriteString("if command -v curl >/dev/null 2>&1; then P=curl; " +
+		"elif command -v python3 >/dev/null 2>&1; then P=py; else echo LARRI_SKIP; exit 0; fi\n")
+	for _, u := range urls {
+		fmt.Fprintf(&b, "if [ \"$P\" = curl ]; then "+
+			"curl -sS -o /dev/null -m 15 %s >/dev/null 2>&1 && echo 'OK %s' || echo 'NO %s'; "+
+			"else python3 -c \"import urllib.request as r;r.urlopen('%s',timeout=15)\" >/dev/null 2>&1 "+
+			"&& echo 'OK %s' || echo 'NO %s'; fi\n",
+			shellQuoteURL(u), u, u, u, u, u)
+	}
+	out, err := sess.Run(ctx, b.String())
+	text := string(out)
+	if strings.Contains(text, "LARRI_SKIP") {
+		return nil
+	}
+	if err != nil && strings.TrimSpace(text) == "" {
+		return nil
+	}
+	reach := map[string]bool{}
+	seen := false
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if u, ok := strings.CutPrefix(line, "OK "); ok {
+			reach[u], seen = true, true
+		} else if u, ok := strings.CutPrefix(line, "NO "); ok {
+			if _, exists := reach[u]; !exists {
+				reach[u] = false
+			}
+			seen = true
+		}
+	}
+	if !seen {
+		return nil
+	}
+	return reach
+}
+
+// shellQuoteURL wraps a URL for the shell. URLs LARRI builds are not operator
+// input, but they are interpolated into a script and quoting costs nothing.
+func shellQuoteURL(u string) string {
+	return "'" + strings.ReplaceAll(u, "'", `'\''`) + "'"
 }
 
 // weightsHost is where this model's weights are fetched from.
@@ -648,19 +754,6 @@ func weightsHost(spec core.ModelSpec) string {
 	default:
 		return "huggingface.co"
 	}
-}
-
-func firstLine(s string) string {
-	if i := strings.IndexAny(s, "\n\r"); i >= 0 {
-		s = s[:i]
-	}
-	if len(s) > 120 {
-		s = s[:120]
-	}
-	if s == "" {
-		return "no response"
-	}
-	return s
 }
 
 // verifyPlacedHardware re-runs the fit check against the machine that was

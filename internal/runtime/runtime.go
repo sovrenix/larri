@@ -291,3 +291,16 @@ type ModelAdvisor interface {
 type DefaultQuant interface {
 	DefaultQuantization() string
 }
+
+// HFEndpointSetter is implemented by runtimes that fetch weights from a
+// Hugging Face-compatible host and can be pointed at a different one.
+//
+// It exists because a host that cannot reach huggingface.co is not
+// necessarily a bad host: some regions cannot route to it at all, and the
+// convention there is a mirror, which huggingface_hub honours through
+// HF_ENDPOINT. Pointing at one is the operator's decision, not LARRI's —
+// weights would then arrive from a third party — so nothing sets it by
+// default.
+type HFEndpointSetter interface {
+	SetHuggingFaceEndpoint(endpoint string)
+}

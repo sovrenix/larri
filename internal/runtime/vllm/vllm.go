@@ -68,7 +68,8 @@ type Runtime struct {
 	// hfToken authenticates weight downloads for gated repositories. Held
 	// here rather than on ModelSpec because the spec is persisted and this
 	// must not be (FR-STATE-05).
-	hfToken secret.Secret
+	hfToken    secret.Secret
+	hfEndpoint string // a mirror, when the host cannot reach huggingface.co
 
 	// Progress reporting granularity for weight download.
 	PollInterval time.Duration
@@ -252,6 +253,12 @@ func (r *Runtime) launchCommand(spec core.ModelSpec, plan core.SizingPlan, ep ru
 	// there. The host has root and can read /proc/<pid>/environ regardless
 	// (§15.7) — this keeps it out of casual view, not out of the operator's
 	// threat model.
+	// A mirror, when the operator has named one. huggingface_hub honours
+	// HF_ENDPOINT for every download it makes, so this covers the weights
+	// without the launch flags having to know anything about it.
+	if r.hfEndpoint != "" {
+		b.WriteString("export HF_ENDPOINT=" + shellQuote(r.hfEndpoint) + "; ")
+	}
 	if !r.hfToken.Empty() {
 		b.WriteString("export HF_TOKEN=" + shellQuote(r.hfToken.Reveal()) + "; ")
 		b.WriteString("export HUGGING_FACE_HUB_TOKEN=\"$HF_TOKEN\"; ")
@@ -514,3 +521,6 @@ func (r *Runtime) AcceptsQuant(quant string) bool {
 	}
 	return false
 }
+
+// SetHuggingFaceEndpoint points weight downloads at a mirror.
+func (r *Runtime) SetHuggingFaceEndpoint(endpoint string) { r.hfEndpoint = endpoint }

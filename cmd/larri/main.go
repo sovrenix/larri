@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go.sovrenix.com/larri/internal/runtime"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -186,6 +187,11 @@ func cmdUp(ctx context.Context, args []string) error {
 	// weight download the host was managing at a third of its advertised
 	// link speed, which is ordinary rather than broken.
 	bringupCap := fs.Duration("deadline", 75*time.Minute, "ceiling on one bring-up attempt")
+	// Off unless asked for. A mirror serves the weights that end up in the
+	// model's memory, so pointing at one is a supply-chain decision and
+	// belongs to the operator. LARRI names the mirrors a blocked host can
+	// actually reach; it never picks one.
+	hfEndpoint := fs.String("hf-endpoint", "", "Hugging Face-compatible mirror for hosts that cannot reach huggingface.co")
 	allowDeverified := fs.Bool("allow-deverified", false, "include hosts whose verification was withdrawn")
 	port := fs.Int("port", 8000, "fixed local port clients are wired against")
 	yes := fs.Bool("yes", false, "do not prompt before spending")
@@ -329,6 +335,14 @@ func cmdUp(ctx context.Context, args []string) error {
 	eng, err := pickRuntime(*engine, spec)
 	if err != nil {
 		return err
+	}
+	if *hfEndpoint != "" {
+		if s, ok := eng.(runtime.HFEndpointSetter); ok {
+			s.SetHuggingFaceEndpoint(*hfEndpoint)
+			fmt.Printf("  weights     fetched from %s, not huggingface.co\n", *hfEndpoint)
+		} else {
+			fmt.Printf("  ! weights   %s ignores --hf-endpoint\n", eng.Kind())
+		}
 	}
 	spec.Quantization = quantFor(eng, *quant)
 	resolver, err := prepareSpec(ctx, &spec)

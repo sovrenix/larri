@@ -425,3 +425,68 @@ func TestEgressTargetFollowsTheModelSource(t *testing.T) {
 		t.Errorf("Ollama models should probe its registry, got %q", got)
 	}
 }
+
+// A host that cannot reach Hugging Face is not necessarily a bad host. Some
+// regions cannot route to it at all, and the remedy there is a mirror rather
+// than a different rental — so the verdict needs a control request to tell
+// "no internet" from "no Hugging Face".
+func TestEgressVerdictDistinguishesBlockedFromDead(t *testing.T) {
+	const hf = "https://huggingface.co"
+	mirror := KnownHFMirrors[0]
+
+	cases := []struct {
+		name   string
+		reach  map[string]bool
+		expect string // substring the operator must see
+	}{
+		{"working host", map[string]bool{hf: true, egressControl: true}, ""},
+		{"no internet at all",
+			map[string]bool{hf: false, egressControl: false},
+			"no working internet"},
+		{"blocked but online, mirror reachable",
+			map[string]bool{hf: false, egressControl: true, mirror: true},
+			"--hf-endpoint"},
+		{"blocked, and no mirror reachable either",
+			map[string]bool{hf: false, egressControl: true, mirror: false},
+			"no known mirror"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := egressVerdict("huggingface.co", KnownHFMirrors, tc.reach)
+			if tc.expect == "" {
+				if got != nil {
+					t.Fatalf("a reachable source must pass: %v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected a failure")
+			}
+			if !strings.Contains(got.Error(), tc.expect) {
+				t.Errorf("message %q should carry %q", got, tc.expect)
+			}
+			if !errs.Is(got, errs.ClassHostFailure) {
+				t.Errorf("class = %s, want host-failure so it earns a fallback", errs.ClassOf(got))
+			}
+		})
+	}
+}
+
+// A mirror is named only when this host can actually reach it: suggesting one
+// that also fails to resolve costs another rental to find out.
+func TestOnlyReachableMirrorsAreNamed(t *testing.T) {
+	reach := map[string]bool{
+		"https://huggingface.co": false, egressControl: true,
+		"https://a.example": false, "https://b.example": true,
+	}
+	err := egressVerdict("huggingface.co", []string{"https://a.example", "https://b.example"}, reach)
+	if err == nil {
+		t.Fatal("expected a failure")
+	}
+	if strings.Contains(err.Error(), "a.example") {
+		t.Errorf("named an unreachable mirror: %v", err)
+	}
+	if !strings.Contains(err.Error(), "b.example") {
+		t.Errorf("should name the reachable mirror: %v", err)
+	}
+}

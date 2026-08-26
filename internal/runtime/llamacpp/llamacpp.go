@@ -38,9 +38,10 @@ const (
 
 // Runtime is the llama.cpp engine.
 type Runtime struct {
-	launcher string        // discovered server command
-	gguf     string        // resolved weight file, from ResolveGGUF
-	hfToken  secret.Secret // weight-download credential, never persisted
+	launcher   string        // discovered server command
+	gguf       string        // resolved weight file, from ResolveGGUF
+	hfToken    secret.Secret // weight-download credential, never persisted
+	hfEndpoint string        // a mirror, when the host cannot reach huggingface.co
 }
 
 // SetGGUF records the file ResolveGGUF chose.
@@ -133,6 +134,9 @@ func (r *Runtime) downloadCmd(spec core.ModelSpec, file string) string {
 	auth := ""
 	if !r.hfToken.Empty() {
 		auth = fmt.Sprintf("export HF_TOKEN=%s; ", shellQuote(r.hfToken.Reveal()))
+	}
+	if r.hfEndpoint != "" {
+		auth += fmt.Sprintf("export HF_ENDPOINT=%s; ", shellQuote(r.hfEndpoint))
 	}
 	dest := ModelDir + "/" + file
 	return auth +
@@ -347,3 +351,6 @@ func (r *Runtime) AcceptsQuant(quant string) bool {
 // widely: a quarter the size of full precision, with quality loss that is
 // measurable but not usually visible.
 func (r *Runtime) DefaultQuantization() string { return "Q4_K_M" }
+
+// SetHuggingFaceEndpoint points weight downloads at a mirror.
+func (r *Runtime) SetHuggingFaceEndpoint(endpoint string) { r.hfEndpoint = endpoint }
