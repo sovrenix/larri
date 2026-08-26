@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -344,6 +345,9 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 		if ok, why := reqs.Satisfies(of.ComputeCapability); !ok {
 			return false, why
 		}
+		if ok, why := reqs.SatisfiesCUDA(parseCUDA(of.CUDAVersion)); !ok {
+			return false, why
+		}
 		avail := uint64(of.VRAMTotalGB()) * sizing.GiB
 		if avail >= plan.RequiredVRAMBytes {
 			return true, ""
@@ -586,6 +590,17 @@ func (o *Orchestrator) teardownAfterFailure(rig *core.Rig, code core.ReasonCode,
 	if err := o.Down(ctx, rig, term); err != nil {
 		o.warn("cleanup", "TEARDOWN UNCONFIRMED: %v — check the provider dashboard", err)
 	}
+}
+
+// parseCUDA reads a provider's CUDA version string. Unparseable means
+// unreported, which Requirements treats as no evidence rather than as a
+// failure.
+func parseCUDA(s string) float64 {
+	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return 0
+	}
+	return f
 }
 
 // machineKey identifies the physical host behind an offer, or "" when the

@@ -97,9 +97,32 @@ type Requirements struct {
 	// Volta, 750 Turing, 800 Ampere, 890 Ada. Zero means no constraint.
 	MinComputeCapability int
 
+	// MinCUDA is the CUDA runtime the image is built against, times 10: 130
+	// for 13.0. Vast reports the highest CUDA a host's driver supports as
+	// cuda_max_good, and a host below the image's requirement cannot run it.
+	// Zero means no constraint.
+	MinCUDA int
+
 	// Why explains the constraint in the exclusion message, so an operator
 	// seeing a cheap card rejected knows it was not arbitrary.
 	Why string
+}
+
+// SatisfiesCUDA reports whether a host's maximum usable CUDA version can run
+// the image.
+//
+// Same failure as the capability floor and the same remedy: check before
+// renting. Absence of data is again allowed through, because providers
+// populate this field unevenly and failing closed would empty the market.
+func (r Requirements) SatisfiesCUDA(hostCUDA float64) (bool, string) {
+	if r.MinCUDA == 0 || hostCUDA <= 0 {
+		return true, ""
+	}
+	if int(hostCUDA*10+0.5) >= r.MinCUDA {
+		return true, ""
+	}
+	return false, fmt.Sprintf("cuda %.1f below the %.1f %s requires",
+		hostCUDA, float64(r.MinCUDA)/10, r.Why)
 }
 
 // Satisfies reports whether hardware meets the requirement.

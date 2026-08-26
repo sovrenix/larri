@@ -340,8 +340,24 @@ func shellQuote(s string) string { return runtime.ShellQuote(s) }
 // into a line of output.
 func (r *Runtime) Requires() runtime.Requirements {
 	return runtime.Requirements{
-		MinComputeCapability: 700,
-		Why:                  "vLLM",
+		// 7.5, not 7.0, and read off the image rather than off vLLM's
+		// historical support matrix. vllm/vllm-openai:latest declares
+		// TORCH_CUDA_ARCH_LIST=7.5 8.0 8.6 8.9 9.0 10.0 12.0 — Volta is
+		// absent, so there are no compiled kernels for a V100 in the
+		// container LARRI actually runs.
+		//
+		// A live run proved what the stale floor costs. V100 boxes are the
+		// cheapest hardware on the market with enough total VRAM for a 27B
+		// model, so price-dominated ranking selected them again and again;
+		// each one passed the 7.0 floor, rented, and pulled a 15 GB image
+		// that could never have served on it.
+		MinComputeCapability: 750,
+
+		// CUDA_VERSION=13.0.2 in the same image, with
+		// VLLM_ENABLE_CUDA_COMPATIBILITY=0, so there is no compat layer to
+		// fall back on. 82% of the market's multi-GPU offers clear this.
+		MinCUDA: 130,
+		Why:     "vLLM",
 	}
 }
 
