@@ -145,6 +145,17 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 		return live, err
 	}
 
+	// The weights come from the internet, so the host has to be able to
+	// reach it. Asked here because the alternative is discovering it the
+	// expensive way: a live run rented a host whose egress was broken,
+	// launched vLLM, and watched it retry Hugging Face five times before
+	// dying with "We couldn't connect to https://huggingface.co". The
+	// evidence was on screen throughout as "net 0.0 MB/s" and nobody was
+	// reading it.
+	if err := o.verifyEgress(ctx, sess, rig); err != nil {
+		return live, err
+	}
+
 	// ---- bootstrap and launch -------------------------------------------
 	if err := o.Store.Transition(rig, core.StateBootstrapping, "image and weights"); err != nil {
 		return live, err
@@ -586,6 +597,72 @@ func (o *Orchestrator) readComputeCapability(ctx context.Context, sess runtime.S
 	return int(f*100 + 0.5)
 }
 
+// verifyEgress confirms the host can reach where the weights live.
+//
+// One request, before anything is downloaded. A host that cannot resolve or
+// reach the weight source will fail after the image, the launch and several
+// minutes of retries, and every second of that is billed — so the question is
+// asked while the answer is still cheap.
+//
+// Advisory in one direction only: an unreachable source is a hard failure,
+// but a probe that cannot run at all (no curl, no python) is not evidence of
+// anything and lets the launch proceed.
+func (o *Orchestrator) verifyEgress(ctx context.Context, sess runtime.Session, rig *core.Rig) error {
+	host := weightsHost(rig.Model)
+	if host == "" {
+		return nil
+	}
+	ectx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+
+	// curl where it exists, python otherwise: the runtime images carry one
+	// or the other, and this must not depend on which.
+	probe := fmt.Sprintf(
+		`if command -v curl >/dev/null 2>&1; then `+
+			`curl -sS -o /dev/null -m 20 -w 'HTTP %%{http_code}' https://%s/ 2>&1; `+
+			`elif command -v python3 >/dev/null 2>&1; then `+
+			`python3 -c "import urllib.request;urllib.request.urlopen('https://%s/',timeout=20);print('HTTP 200')" 2>&1; `+
+			`else echo SKIP; fi`, host, host)
+
+	out, err := sess.Run(ectx, probe)
+	got := strings.TrimSpace(string(out))
+	if err != nil && got == "" {
+		return nil // the probe itself could not run; not evidence
+	}
+	if strings.Contains(got, "SKIP") {
+		return nil
+	}
+	if strings.Contains(got, "HTTP") && !strings.Contains(got, "HTTP 000") {
+		o.emit("boot", "host reaches %s", host)
+		return nil
+	}
+	return errs.Newf(errs.ClassHostFailure, "daemon.verifyEgress",
+		"host cannot reach %s: %s", host, firstLine(got))
+}
+
+// weightsHost is where this model's weights are fetched from.
+func weightsHost(spec core.ModelSpec) string {
+	switch spec.Source {
+	case core.SourceOllamaRegistry:
+		return "registry.ollama.ai"
+	default:
+		return "huggingface.co"
+	}
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexAny(s, "\n\r"); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 120 {
+		s = s[:120]
+	}
+	if s == "" {
+		return "no response"
+	}
+	return s
+}
+
 // verifyPlacedHardware re-runs the fit check against the machine that was
 // actually provisioned.
 func (o *Orchestrator) verifyPlacedHardware(ctx context.Context, sess runtime.Session, rig *core.Rig) error {
@@ -746,9 +823,10 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 					// how long the runtime ran. An operator reading
 					// "exited after 12s" would hunt for a crash on
 					// startup that never happened.
+					said := o.runtimeSaid(ctx, sess)
 					return errs.Newf(errs.ClassHostFailure, "daemon.waitReady",
-						"runtime exited without serving; log quiet for %s%s",
-						idleSince(lastGrowth), o.runtimeSaid(ctx, sess))
+						"runtime exited without serving%s; log quiet for %s%s",
+						because(said), idleSince(lastGrowth), said)
 				}
 			}
 		}
@@ -815,6 +893,32 @@ func (o *Orchestrator) runtimeSaid(ctx context.Context, sess runtime.Session) st
 		out = out[:3000] + " …"
 	}
 	return out
+}
+
+// because lifts the one line most likely to be the cause into the summary.
+//
+// The full log is attached below the error and an operator will read it, but
+// the summary is what appears in a fallback's one-line report, in a journal
+// entry, and in whatever an agent driving MCP decides to surface. A run that
+// said only "runtime exited without serving" three times over hid that all
+// three were the same cause.
+func because(said string) string {
+	best := ""
+	for _, l := range strings.Split(said, "\n") {
+		l = strings.TrimSpace(l)
+		// Python names the exception on a line of the form "OSError: …";
+		// CUDA and the loaders announce themselves the same way.
+		if i := strings.Index(l, "Error: "); i >= 0 && len(l) > i+7 {
+			best = strings.TrimSpace(l[strings.LastIndex(l[:i+1], " ")+1:])
+		}
+	}
+	if best == "" {
+		return ""
+	}
+	if len(best) > 140 {
+		best = best[:140] + "…"
+	}
+	return ": " + best
 }
 
 // errorSignatures are what a runtime's own account of a failure looks like.

@@ -395,3 +395,33 @@ func TestShortErrKeepsAttachedEvidence(t *testing.T) {
 		t.Errorf("single-line error gained a newline: %q", s)
 	}
 }
+
+// A run reported "runtime exited without serving" three times over, hiding
+// that all three were the same cause. The full log is attached below the
+// error, but the summary is what a fallback reports in one line, what the
+// journal records, and what an agent driving MCP surfaces.
+func TestSummaryNamesTheCause(t *testing.T) {
+	said := "\n      runtime log:\n" +
+		"        (APIServer pid=434)     raise OSError(\n" +
+		"        (APIServer pid=434) OSError: We couldn't connect to 'https://huggingface.co' to load the files.\n" +
+		"        (APIServer pid=434) Check your internet connection.\n"
+	got := because(said)
+	if !strings.Contains(got, "OSError") || !strings.Contains(got, "huggingface.co") {
+		t.Errorf("summary should name the exception: %q", got)
+	}
+	// Nothing error-shaped adds nothing, rather than guessing.
+	if got := because("\n  runtime log:\n    INFO starting\n    INFO ready\n"); got != "" {
+		t.Errorf("no cause should mean no clause, got %q", got)
+	}
+}
+
+// The weights come from the internet, so the host has to be able to reach it,
+// and asking costs one request against a whole billed download.
+func TestEgressTargetFollowsTheModelSource(t *testing.T) {
+	if got := weightsHost(core.ModelSpec{Source: core.SourceHuggingFace}); got != "huggingface.co" {
+		t.Errorf("HF models should probe huggingface.co, got %q", got)
+	}
+	if got := weightsHost(core.ModelSpec{Source: core.SourceOllamaRegistry}); got != "registry.ollama.ai" {
+		t.Errorf("Ollama models should probe its registry, got %q", got)
+	}
+}
