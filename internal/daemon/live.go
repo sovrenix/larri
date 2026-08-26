@@ -850,6 +850,7 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 	var (
 		logBytes   int64
 		lastGrowth = time.Now()
+		fetch      fetchProgress
 		everLogged bool
 		prevCount  = readCounters(ctx, sess)
 		attempts   int
@@ -887,7 +888,11 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 			lastGrowth = time.Now()
 		}
 		if attempts%4 == 0 {
-			o.emit("ready", "log %s · %s", humanSize(logBytes), act)
+			if p := fetch.sample(ctx, o, sess, rig.Plan.WeightsBytes); p != "" {
+				o.emit("ready", "%s", p)
+			} else {
+				o.emit("ready", "log %s · %s", humanSize(logBytes), act)
+			}
 		}
 
 		// A runtime that has exited is not a runtime that is being slow. The
@@ -1012,6 +1017,75 @@ func because(said string) string {
 		best = best[:140] + "…"
 	}
 	return ": " + best
+}
+
+// fetchProgress turns successive measurements of the weights cache into the
+// answer an operator actually wants.
+//
+// The throughput figure alone does not give it. "net 14 MB/s" says something
+// is moving; it does not say whether that is two minutes from done or forty,
+// and that difference is what decides between waiting and destroying. Bytes
+// against expected bytes, with a rate measured over the gap, does.
+type fetchProgress struct {
+	last     uint64
+	lastAt   time.Time
+	rate     float64 // bytes/sec, smoothed
+	finished bool
+}
+
+// sample measures once and renders a line, or returns "" when there is
+// nothing worth saying.
+//
+// Silent unless it can be useful: a runtime that cannot measure, a plan with
+// no expected size, and a download that has already finished all produce
+// nothing, and the caller falls back to its ordinary reporting.
+func (f *fetchProgress) sample(ctx context.Context, o *Orchestrator,
+	sess runtime.Session, want uint64) string {
+
+	if f.finished || want == 0 {
+		return ""
+	}
+	wp, ok := o.Runtime.(runtime.WeightsProgressor)
+	if !ok {
+		return ""
+	}
+	sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	got, err := wp.WeightsOnDisk(sctx, sess)
+	if err != nil || got == 0 {
+		return ""
+	}
+	now := time.Now()
+	if !f.lastAt.IsZero() && got > f.last {
+		if dt := now.Sub(f.lastAt).Seconds(); dt > 0 {
+			r := float64(got-f.last) / dt
+			// Smoothed, because a du that lands mid-write reads low and a
+			// burst reads high, and an estimate that swings between four
+			// minutes and forty is worse than none.
+			if f.rate == 0 {
+				f.rate = r
+			} else {
+				f.rate = 0.6*f.rate + 0.4*r
+			}
+		}
+	}
+	f.last, f.lastAt = got, now
+
+	// Past the expected size means the estimate was low, not that something
+	// is wrong — the cache holds tokeniser and config files too. Report it
+	// as done rather than as 103%.
+	if got >= want {
+		f.finished = true
+		return fmt.Sprintf("weights %s fetched — loading into VRAM", sizing.HumanBytes(got))
+	}
+	pct := 100 * float64(got) / float64(want)
+	line := fmt.Sprintf("weights %s of %s (%.0f%%)",
+		sizing.HumanBytes(got), sizing.HumanBytes(want), pct)
+	if f.rate > 0 {
+		remain := time.Duration(float64(want-got)/f.rate) * time.Second
+		line += fmt.Sprintf(" · %.0f MB/s · ~%s left", f.rate/1e6, remain.Round(time.Second))
+	}
+	return line
 }
 
 // errorSignatures are what a runtime's own account of a failure looks like.

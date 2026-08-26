@@ -304,3 +304,16 @@ type DefaultQuant interface {
 type HFEndpointSetter interface {
 	SetHuggingFaceEndpoint(endpoint string)
 }
+
+// WeightsProgressor is implemented by runtimes that can report how much of
+// the model has landed on the host's disk.
+//
+// The rate alone does not answer the question an operator is actually asking.
+// "net 14 MB/s" says something is moving; it does not say whether that is two
+// minutes from finishing or forty, and the difference decides whether to wait
+// or to destroy. Bytes on disk against bytes expected does answer it.
+type WeightsProgressor interface {
+	// WeightsOnDisk returns bytes fetched so far, or an error if it cannot
+	// be measured. It is sampled during readiness and must be cheap.
+	WeightsOnDisk(ctx context.Context, sess Session) (uint64, error)
+}

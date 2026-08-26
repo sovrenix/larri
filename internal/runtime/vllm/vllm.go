@@ -524,3 +524,29 @@ func (r *Runtime) AcceptsQuant(quant string) bool {
 
 // SetHuggingFaceEndpoint points weight downloads at a mirror.
 func (r *Runtime) SetHuggingFaceEndpoint(endpoint string) { r.hfEndpoint = endpoint }
+
+// weightsCacheDir is where huggingface_hub puts what it downloads. HF_HOME
+// wins when set, which is what a mirror or a mounted volume would change.
+const weightsCacheDir = `"${HF_HOME:-$HOME/.cache/huggingface}"`
+
+// WeightsOnDisk reports how many bytes of the model have arrived.
+//
+// du over the hub cache: a handful of large files, so it costs a stat each
+// and finishes in milliseconds. Errors are the caller's to ignore — a missing
+// directory simply means nothing has been fetched yet, which is a legitimate
+// answer of zero rather than a failure.
+func (r *Runtime) WeightsOnDisk(ctx context.Context, sess runtime.Session) (uint64, error) {
+	out, err := sess.Run(ctx, "du -sb "+weightsCacheDir+" 2>/dev/null | cut -f1 || echo 0")
+	if err != nil {
+		return 0, err
+	}
+	f := strings.Fields(strings.TrimSpace(string(out)))
+	if len(f) == 0 {
+		return 0, nil
+	}
+	n, err := strconv.ParseUint(f[0], 10, 64)
+	if err != nil {
+		return 0, nil
+	}
+	return n, nil
+}

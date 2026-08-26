@@ -6,6 +6,7 @@ package daemon
 import (
 	"context"
 	"go.sovrenix.com/larri/internal/errs"
+	"go.sovrenix.com/larri/internal/runtime"
 	"net"
 	"strings"
 	"testing"
@@ -489,4 +490,69 @@ func TestOnlyReachableMirrorsAreNamed(t *testing.T) {
 	if !strings.Contains(err.Error(), "b.example") {
 		t.Errorf("should name the reachable mirror: %v", err)
 	}
+}
+
+// "net 14 MB/s" says something is moving; it does not say whether that is two
+// minutes from done or forty, and that difference is what decides between
+// waiting and destroying.
+func TestFetchProgressReportsPositionAndETA(t *testing.T) {
+	const want = 20 << 30 // 20 GB expected
+
+	o := &Orchestrator{Runtime: &fakeProgressor{}}
+	f := &fetchProgress{}
+	sess := runtime.Session(nil)
+
+	// First sample establishes a position but has no rate to report yet.
+	o.Runtime.(*fakeProgressor).bytes = 4 << 30
+	first := f.sample(context.Background(), o, sess, want)
+	if !strings.Contains(first, "20%") {
+		t.Errorf("first sample should place the download: %q", first)
+	}
+
+	// A later sample has a gap to measure a rate over.
+	f.lastAt = time.Now().Add(-100 * time.Second)
+	f.last = 4 << 30
+	o.Runtime.(*fakeProgressor).bytes = 10 << 30
+	second := f.sample(context.Background(), o, sess, want)
+	for _, need := range []string{"50%", "MB/s", "left"} {
+		if !strings.Contains(second, need) {
+			t.Errorf("second sample should carry %q: %q", need, second)
+		}
+	}
+
+	// Past the expected size is a low estimate, not a fault: the cache holds
+	// tokeniser and config files too. It must not report 103%.
+	o.Runtime.(*fakeProgressor).bytes = want + (1 << 30)
+	done := f.sample(context.Background(), o, sess, want)
+	if strings.Contains(done, "%") {
+		t.Errorf("overshoot should read as finished, not a percentage: %q", done)
+	}
+	// And once finished it stays quiet rather than repeating itself.
+	if again := f.sample(context.Background(), o, sess, want); again != "" {
+		t.Errorf("should fall silent after completion, got %q", again)
+	}
+}
+
+// Silent unless it can be useful: a runtime that cannot measure and a plan
+// with no expected size both fall back to ordinary reporting.
+func TestFetchProgressStaysQuietWhenItCannotHelp(t *testing.T) {
+	f := &fetchProgress{}
+	if got := f.sample(context.Background(), &Orchestrator{Runtime: &fakeProgressor{}},
+		runtime.Session(nil), 0); got != "" {
+		t.Errorf("no expected size should mean no line, got %q", got)
+	}
+	// A runtime that does not implement the capability.
+	if got := (&fetchProgress{}).sample(context.Background(),
+		&Orchestrator{Runtime: nil}, runtime.Session(nil), 1<<30); got != "" {
+		t.Errorf("an unmeasurable runtime should mean no line, got %q", got)
+	}
+}
+
+type fakeProgressor struct {
+	runtime.Runtime
+	bytes uint64
+}
+
+func (f *fakeProgressor) WeightsOnDisk(context.Context, runtime.Session) (uint64, error) {
+	return f.bytes, nil
 }
