@@ -4,6 +4,8 @@
 package daemon
 
 import (
+	"go.sovrenix.com/larri/internal/errs"
+	"net"
 	"strings"
 	"testing"
 
@@ -146,5 +148,43 @@ func TestProviderGivingUpIsRecognisedImmediately(t *testing.T) {
 	// And with no message, it still says something usable.
 	if r := bootFailureReason(&core.Instance{Status: "created", Intent: "stopped"}); !strings.Contains(r, "created") {
 		t.Errorf("reason without a message = %q", r)
+	}
+}
+
+// A live run rented a GPU, booted it, launched vLLM and began pulling weights
+// before discovering that something on the operator's own machine already held
+// port 8000 — knowable before the first API call, and not fixable by any other
+// host. Preconditions belong before the money.
+func TestLocalPortIsCheckedBeforeSpending(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	taken := ln.Addr().(*net.TCPAddr).Port
+
+	if err := checkLocalPort(taken); err == nil {
+		t.Fatal("an occupied port must be refused")
+	} else {
+		if !errs.Is(err, errs.ClassWiring) {
+			t.Errorf("class = %s, want wiring so it is not retried on another host", errs.ClassOf(err))
+		}
+		// The convention: append a remedy where one exists.
+		if !strings.Contains(err.Error(), "--port") {
+			t.Errorf("the error should name the way out: %v", err)
+		}
+	}
+
+	// A free port passes, and the check must not leave the port held.
+	ln.Close()
+	if err := checkLocalPort(taken); err != nil {
+		t.Errorf("a free port must pass: %v", err)
+	}
+	if err := checkLocalPort(taken); err != nil {
+		t.Errorf("the check must release the port it tested: %v", err)
+	}
+	// Port 0 means "anything free", which cannot collide.
+	if err := checkLocalPort(0); err != nil {
+		t.Errorf("port 0 must pass: %v", err)
 	}
 }

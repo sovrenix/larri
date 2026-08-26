@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -478,6 +479,16 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 // class: a host failure means try elsewhere, while a model or config failure
 // means the next host fails identically and retrying only spends more.
 func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, error) {
+	// The local port is a precondition, so it is checked before the money.
+	//
+	// A live run rented a GPU, booted it, launched vLLM and began pulling
+	// weights, and only then discovered that something else on the operator's
+	// own machine already held port 8000 — a fact knowable before the first
+	// API call, and one no other host would have fixed. Checking costs a
+	// bind and a close.
+	if err := checkLocalPort(req.LocalPort); err != nil {
+		return nil, err
+	}
 	attempts := o.MaxHostAttempts
 	if attempts <= 0 {
 		attempts = 3
@@ -599,6 +610,22 @@ func (o *Orchestrator) teardownAfterFailure(rig *core.Rig, code core.ReasonCode,
 	if err := o.Down(ctx, rig, term); err != nil {
 		o.warn("cleanup", "TEARDOWN UNCONFIRMED: %v — check the provider dashboard", err)
 	}
+}
+
+// checkLocalPort confirms nothing already holds the port the rig will be
+// published on.
+//
+// Port 0 means the caller wants whatever is free, which cannot collide.
+func checkLocalPort(port int) error {
+	if port == 0 {
+		return nil
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		return errs.Newf(errs.ClassWiring, "daemon.UpAndServe",
+			"local port %d is already in use: choose another with --port", port)
+	}
+	return ln.Close()
 }
 
 // parseCUDA reads a provider's CUDA version string. Unparseable means
