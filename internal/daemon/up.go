@@ -654,10 +654,14 @@ func checkLocalPort(port int) error {
 	return ln.Close()
 }
 
-// runtimeImageBytes is what a stock runtime image costs to fetch. The vLLM
-// image is the large one at roughly 15 GB; it is an estimate, used only to
-// tell an operator how long a cold start will take.
-const runtimeImageBytes = 15 << 30
+// runtimeImageBytes is what a stock runtime image costs to fetch, measured
+// from the registry rather than guessed: vllm/vllm-openai:latest is 8.6 GB
+// compressed across 32 layers, one of which is 4.6 GB on its own.
+//
+// That single large layer is worth knowing about — docker reports little
+// while it downloads, so it is the stretch of a cold start that looks most
+// like a hang and is not one.
+const runtimeImageBytes = 8_600_000_000
 
 // coldStartBytes is everything a fresh rental downloads before it can serve:
 // the runtime image, then the weights.
