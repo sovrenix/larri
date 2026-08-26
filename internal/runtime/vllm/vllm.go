@@ -501,3 +501,16 @@ var _ runtime.LivenessChecker = (*Runtime)(nil)
 func (r *Runtime) LogPath() string { return LogPath }
 
 var _ runtime.LogWriter = (*Runtime)(nil)
+
+// AcceptsQuant reports the schemes vLLM can load.
+//
+// GGUF is excluded deliberately: vLLM's support for it is partial and slow,
+// and the engine exists here for the cases llama.cpp cannot serve. MLX is
+// Apple-only.
+func (r *Runtime) AcceptsQuant(quant string) bool {
+	switch quant {
+	case "awq", "gptq", "int4", "int8", "fp8", "nvfp4", "mxfp4":
+		return true
+	}
+	return false
+}

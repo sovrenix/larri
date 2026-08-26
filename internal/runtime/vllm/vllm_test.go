@@ -512,3 +512,20 @@ func TestPinnedImageMatchesFloors(t *testing.T) {
 		lowestArch(ImageArchList), cudaTimesTen(ImageCUDA), ImageArchList, ImageCUDA)
 	t.Log("run `make refresh-image` and compare if upstream has moved")
 }
+
+// The formats are not interchangeable, so suggesting one the engine cannot
+// load wastes the operator's time the way a stale capability floor wasted
+// their money.
+func TestVLLMRejectsGGUF(t *testing.T) {
+	r := New()
+	for _, q := range []string{"awq", "gptq", "int4", "fp8"} {
+		if !r.AcceptsQuant(q) {
+			t.Errorf("vLLM should accept %s", q)
+		}
+	}
+	for _, q := range []string{"gguf", "mlx", ""} {
+		if r.AcceptsQuant(q) {
+			t.Errorf("vLLM should not accept %q", q)
+		}
+	}
+}

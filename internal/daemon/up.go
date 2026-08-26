@@ -448,6 +448,7 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 		if download > 30*time.Minute {
 			o.warn("plan", "most of that is downloading, not serving — a faster link would cost less overall")
 		}
+		o.suggestQuantised(ctx, req, plan, chosen, hours)
 	}
 
 	// The report above is queued, not printed. Let it land before asking.
@@ -666,6 +667,60 @@ func checkLocalPort(port int) error {
 			"local port %d is already in use: choose another with --port", port)
 	}
 	return ln.Close()
+}
+
+// suggestQuantised looks for a smaller publication of the same model and says
+// what it would save.
+//
+// Quantisation is the only lever that changes the *number* of bytes rather
+// than the speed they arrive at, and the download is most of what a cold
+// start costs. It is a suggestion and never a substitution: an int4 build is
+// not the same model, it trades output quality for size, and that is the
+// operator's call rather than LARRI's.
+//
+// Advisory throughout — a search that fails, times out, or finds nothing must
+// leave the bring-up exactly as it was.
+func (o *Orchestrator) suggestQuantised(ctx context.Context, req UpRequest,
+	plan core.SizingPlan, chosen core.Offer, hours float64) {
+
+	finder, ok := o.Resolver.(sizing.VariantFinder)
+	if !ok || plan.WeightsBytes == 0 {
+		return
+	}
+	accept := func(string) bool { return false }
+	if a, ok := o.Runtime.(runtime.QuantAccepter); ok {
+		accept = a.AcceptsQuant
+	}
+	vars, err := finder.FindQuantised(ctx, req.Model.Ref, accept)
+	if err != nil || len(vars) == 0 {
+		return
+	}
+	best := vars[0]
+	saving := best.SavingOver(plan.WeightsBytes)
+	if saving < 0.25 {
+		return // not worth an operator's attention
+	}
+	// The variant's own cold start, on this same host.
+	altBytes := runtimeImageBytes + best.WeightBytes
+	altReady := provisionEstimate + fetchETA(altBytes, chosen.NetDownMbps)
+	nowReady := provisionEstimate + fetchETA(coldStartBytes(plan), chosen.NetDownMbps)
+
+	o.emit("alternative", "%s (%s): %s of weights against %s — ready in ~%s instead of ~%s",
+		best.Ref, best.Quant,
+		sizing.HumanBytes(best.WeightBytes), sizing.HumanBytes(plan.WeightsBytes),
+		roundETA(altReady), roundETA(nowReady))
+	// Fits smaller hardware too, which is usually the larger saving.
+	o.emit("alternative", "needs about %s of VRAM against %s, so cheaper hardware serves it",
+		sizing.HumanBytes(best.WeightBytes+plan.KVCacheBytes),
+		sizing.HumanBytes(plan.RequiredVRAMBytes))
+	if !best.SameOwner {
+		// Who published it is a supply-chain fact, not a footnote: a
+		// quantisation is someone else's re-upload of these weights.
+		o.warn("alternative", "published by a third party, not by the owner of %s — --model %s to use it",
+			req.Model.Ref, best.Ref)
+	} else {
+		o.emit("alternative", "--model %s to use it", best.Ref)
+	}
 }
 
 // provisionEstimate is how long a host takes to go from rented to reachable,

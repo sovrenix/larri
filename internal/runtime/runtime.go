@@ -254,3 +254,14 @@ type SecurityNoter interface {
 type LogWriter interface {
 	LogPath() string
 }
+
+// QuantAccepter is implemented by runtimes that can say which quantisation
+// formats they serve.
+//
+// The formats are not interchangeable: vLLM reads safetensors-based schemes
+// and cannot load a GGUF usefully, while llama.cpp and Ollama read GGUF and
+// nothing else. Suggesting the wrong one wastes the operator's time in the
+// same way the stale capability floor wasted their money.
+type QuantAccepter interface {
+	AcceptsQuant(quant string) bool
+}

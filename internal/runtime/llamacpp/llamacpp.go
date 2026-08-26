@@ -337,3 +337,8 @@ func shellQuote(s string) string { return runtime.ShellQuote(s) }
 func (r *Runtime) LogPath() string { return LogPath }
 
 var _ runtime.LogWriter = (*Runtime)(nil)
+
+// AcceptsQuant reports the schemes llama.cpp can load: GGUF, and nothing else.
+func (r *Runtime) AcceptsQuant(quant string) bool {
+	return quant == "gguf"
+}

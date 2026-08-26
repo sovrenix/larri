@@ -127,3 +127,13 @@ func CheckWeightFormat(ref string, w WeightFormat) error {
 	}
 	return nil
 }
+
+// VariantFinder is implemented by resolvers that can look for quantised
+// publications of a model.
+//
+// Optional, like the other capabilities: a resolver that cannot search simply
+// does not implement it, and the suggestion is skipped rather than branched
+// on.
+type VariantFinder interface {
+	FindQuantised(ctx context.Context, ref string, accept func(quant string) bool) ([]Variant, error)
+}
