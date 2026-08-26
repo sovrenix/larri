@@ -49,6 +49,27 @@ func (s LifecycleState) Billable() bool {
 	}
 }
 
+// ExpectsInstance reports whether a live resource at the provider is the
+// normal situation for this state, rather than a contradiction of it.
+//
+// Distinct from Billable, which answers a different question and was once
+// mistaken for this one. Billable is a cost rule — "assume it costs money
+// until proven otherwise" — so CREATING and FAILED are both billable. But a
+// rig that FAILED and still has an instance running is precisely the leak the
+// orphan sweep exists to catch, while a rig that is BOOTSTRAPPING and has one
+// is simply working.
+//
+// Getting that backwards listed a live bring-up as an orphan and offered to
+// destroy it.
+func (s LifecycleState) ExpectsInstance() bool {
+	switch s {
+	case StateCreating, StateProvisioned, StateBootstrapping,
+		StateReady, StateDegraded, StateDraining, StateStopped:
+		return true
+	}
+	return false
+}
+
 // Terminal reports whether no further transition is expected.
 //
 // STOPPED is not terminal: it requires a destroy decision. FAILED is not

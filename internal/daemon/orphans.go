@@ -82,10 +82,26 @@ func (o *Orchestrator) Orphans(ctx context.Context) ([]Orphan, error) {
 			orph.Reason = "local state has no record of this rig"
 		case rig.State == core.StateDestroyed:
 			orph.Reason = "local state says DESTROYED, but the resource is still here"
-		case !rig.State.Billable():
-			orph.Reason = "local state says " + string(rig.State) + ", which should not be billing"
+		case !rig.State.ExpectsInstance():
+			orph.Reason = "local state says " + string(rig.State) +
+				", which should have no resource behind it"
 		default:
-			orph.Reason = "tracked as " + string(rig.State)
+			// Tracked, and in a state where billing is exactly what should be
+			// happening. That is the current rig, not an orphan.
+			//
+			// It was listed as one, with the reason "tracked as
+			// BOOTSTRAPPING" printed directly beneath the heading "local
+			// state does not account for" — a contradiction the output stated
+			// on consecutive lines. The consequence was not cosmetic:
+			// `larri orphans --destroy` offered to destroy a live bring-up
+			// that had been running for half an hour, and answering yes would
+			// have killed it.
+			//
+			// A tracked rig whose process has since died is a real situation
+			// and a different one: `larri status` shows it, `larri resume`
+			// reattaches to it, and `larri down` ends it. None of those need
+			// it miscalled an orphan.
+			continue
 		}
 		out = append(out, orph)
 	}
