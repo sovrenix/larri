@@ -23,7 +23,7 @@ ifneq ($(TAG),)
 LDFLAGS += -X '$(PKG).version=$(TAG)'
 endif
 
-.PHONY: all build test race vet fmt headers check version version-check clean stale-check refresh-image
+.PHONY: all build test race vet fmt headers check version version-check clean stale-check refresh-image site-extract site-embed
 
 all: check build
 
@@ -56,6 +56,17 @@ refresh-image:
 	@$(GO) run ./internal/devtools/refreshimage $(IMAGE)
 	@echo
 	@echo "if these differ from internal/runtime/vllm/vllm.go, update all three together"
+
+# The site's index.html is a generated bundle: 200 KB of base64 assets and a
+# loader, with the actual page held as a JSON string in one <script> block.
+# These two targets take that string out as real HTML and put it back, which
+# is the only sane way to change a word on the page.
+.PHONY: site-extract site-embed
+site-extract:
+	@$(GO) run ./internal/devtools/sitecontent extract
+
+site-embed:
+	@$(GO) run ./internal/devtools/sitecontent embed
 
 # stale-check guards the mistake that costs real money: running bin/larri
 # after changing the code that it was built from. A live verification once

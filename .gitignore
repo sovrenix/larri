@@ -5,3 +5,8 @@
 *.out
 *.test
 *.prof
+
+# Working copy of the site's editable content — extracted from the bundle by
+# `make site-extract` and written back by `make site-embed`. The bundle is the
+# artefact that ships; keeping both would invite them to disagree.
+gh-pages/content.html
