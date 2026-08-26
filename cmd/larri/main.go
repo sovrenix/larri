@@ -159,7 +159,10 @@ func cmdUp(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
 	model := fs.String("model", "", "model reference, e.g. Qwen/Qwen3-Coder-30B")
 	served := fs.String("served-name", "", "stable name clients use (default: derived)")
-	quant := fs.String("quantization", "fp16", "fp16, q4_K_M, awq, ...")
+	// Empty means "whatever this runtime is for". vLLM wants fp16; the GGUF
+	// engines want a Q4, and defaulting them to fp16 downloads four times
+	// what the operator needed.
+	quant := fs.String("quantization", "", "fp16, Q4_K_M, awq, … (default: the runtime's)")
 	ctxLen := fs.Int("context", 8192, "context length")
 	gpu := fs.String("gpu", "", "GPU model filter, e.g. 'RTX 4090'")
 	maxPrice := fs.Float64("max-price", 0, "ceiling in $/hr")
@@ -306,11 +309,17 @@ func cmdUp(ctx context.Context, args []string) error {
 	if isOllamaRef(*model) {
 		spec.Source = core.SourceOllamaRegistry
 	}
-	resolver, err := prepareSpec(ctx, &spec)
+	// The engine is chosen before the spec is resolved, because which weight
+	// format is wanted is a property of the engine and resolution reads it:
+	// a GGUF lookup for "fp16" finds full precision, which is the one format
+	// the GGUF engines exist to avoid. pickRuntime reads only the reference
+	// and its source, both already set.
+	eng, err := pickRuntime(*engine, spec)
 	if err != nil {
 		return err
 	}
-	eng, err := pickRuntime(*engine, spec)
+	spec.Quantization = quantFor(eng, *quant)
+	resolver, err := prepareSpec(ctx, &spec)
 	if err != nil {
 		return err
 	}

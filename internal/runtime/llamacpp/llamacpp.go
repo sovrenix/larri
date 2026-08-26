@@ -342,3 +342,8 @@ var _ runtime.LogWriter = (*Runtime)(nil)
 func (r *Runtime) AcceptsQuant(quant string) bool {
 	return quant == "gguf"
 }
+
+// DefaultQuantization is the balance point the GGUF ecosystem publishes most
+// widely: a quarter the size of full precision, with quality loss that is
+// measurable but not usually visible.
+func (r *Runtime) DefaultQuantization() string { return "Q4_K_M" }

@@ -167,3 +167,20 @@ func openProvider(name string) (provider.Provider, error) {
 	}
 	return nil, last
 }
+
+// quantFor resolves the weight format to ask for.
+//
+// An explicit flag always wins. Otherwise the engine decides, because which
+// format is sensible is a property of the engine rather than of LARRI: vLLM
+// serves full precision, while llama.cpp and Ollama exist to run weights that
+// have been made smaller, and asking them for fp16 requests the one format
+// that defeats the point.
+func quantFor(rt runtime.Runtime, flag string) string {
+	if flag != "" {
+		return flag
+	}
+	if d, ok := rt.(runtime.DefaultQuant); ok {
+		return d.DefaultQuantization()
+	}
+	return "fp16"
+}

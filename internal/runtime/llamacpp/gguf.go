@@ -66,6 +66,7 @@ func RepoOf(ref string) string {
 type hfModelInfo struct {
 	Siblings []struct {
 		RFilename string `json:"rfilename"`
+		Size      uint64 `json:"size"`
 	} `json:"siblings"`
 }
 
@@ -80,33 +81,9 @@ func ResolveGGUF(ctx context.Context, ref, quant string, token secret.Secret) (s
 		return f, nil
 	}
 	repo := RepoOf(ref)
-	url := "https://huggingface.co/api/models/" + repo
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	info, err := fetchGGUFListing(ctx, repo, token)
 	if err != nil {
 		return "", err
-	}
-	if !token.Empty() {
-		req.Header.Set("Authorization", "Bearer "+token.Reveal())
-	}
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
-	if err != nil {
-		return "", errs.Newf(errs.ClassProviderTransient, "llamacpp.ResolveGGUF",
-			"list %s: %v", repo, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return "", errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
-			"no repository %s", repo)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", errs.Newf(errs.ClassProviderTransient, "llamacpp.ResolveGGUF",
-			"list %s: http %d", repo, resp.StatusCode)
-	}
-	var info hfModelInfo
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&info); err != nil {
-		return "", errs.Newf(errs.ClassProviderTransient, "llamacpp.ResolveGGUF",
-			"decode %s: %v", repo, err)
 	}
 
 	var ggufs []string
@@ -130,6 +107,26 @@ func ResolveGGUF(ctx context.Context, ref, quant string, token secret.Secret) (s
 	return pickQuant(repo, ggufs, quant)
 }
 
+// auxiliaryGGUF reports whether a .gguf file is something other than the
+// model's own weights.
+//
+// A repository ships more than the model. "mmproj-F16.gguf" is the
+// multimodal projector — under a gigabyte beside a fifty-gigabyte model — and
+// llama.cpp loads it alongside the weights, never instead of them. Because
+// selection prefers the shortest matching name, the projector beat the model
+// outright: a live probe resolved --quantization fp16 to mmproj-F16.gguf, which
+// would have rented a 128 GB box and handed the engine a file that is not a
+// model. Adapters and vocabulary-only files are the same class of mistake.
+func auxiliaryGGUF(file string) bool {
+	l := strings.ToLower(file[strings.LastIndex(file, "/")+1:])
+	for _, marker := range []string{"mmproj", "lora", "adapter", "vocab", "projector"} {
+		if strings.Contains(l, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // pickQuant chooses among a repository's GGUF files.
 func pickQuant(repo string, files []string, quant string) (string, error) {
 	sort.Strings(files)
@@ -151,11 +148,24 @@ func pickQuant(repo string, files []string, quant string) (string, error) {
 	wanted := quantAliases(q)
 	var candidates []string
 	for _, f := range files {
-		if isLaterShard(f) {
+		if isLaterShard(f) || auxiliaryGGUF(f) {
 			continue
 		}
 		if q == "" {
 			candidates = append(candidates, f)
+			continue
+		}
+		// Compare the file's own quantisation tag first. Substring matching
+		// alone conflates neighbours — "f16" is inside "bf16", so a request
+		// for fp16 would take a BF16 file from a repository carrying both,
+		// and which one it got would depend on filename length.
+		if tag := strings.ToLower(quantTag(f)); tag != "" {
+			for _, w := range wanted {
+				if tag == w {
+					candidates = append(candidates, f)
+					break
+				}
+			}
 			continue
 		}
 		lf := strings.ToLower(f)
@@ -242,6 +252,9 @@ func quantsIn(files []string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, f := range files {
+		if auxiliaryGGUF(f) {
+			continue
+		}
 		tag := quantTag(f)
 		if tag != "" && !seen[tag] {
 			seen[tag] = true
@@ -280,4 +293,128 @@ func suggestGGUFRepo(ctx context.Context, repo string, token secret.Secret) stri
 		}
 	}
 	return best.Ref
+}
+
+// ggufSizes lists the quantisations a repository carries with their sizes,
+// first shard only.
+func ggufSizes(info hfModelInfo) map[string]uint64 {
+	out := map[string]uint64{}
+	for _, s := range info.Siblings {
+		f := s.RFilename
+		if !strings.HasSuffix(strings.ToLower(f), ".gguf") || auxiliaryGGUF(f) {
+			continue
+		}
+		tag := quantTag(f)
+		if tag == "" {
+			continue
+		}
+		// Shards belong to one quantisation, so they add up rather than
+		// compete: a BF16 split across two files is the size of both.
+		out[tag] += s.Size
+	}
+	return out
+}
+
+// adviseSmallerQuant reports the quantisations worth having instead of the
+// chosen one.
+//
+// Only meaningfully smaller ones, and only the two nearest, because a list of
+// twenty is a list nobody reads. The chosen size is the comparison, so the
+// saving is stated rather than implied.
+func adviseSmallerQuant(repo, chosen string, sizes map[string]uint64) []string {
+	chosenSize, ok := sizes[chosen]
+	if !ok || chosenSize == 0 {
+		return nil
+	}
+	type opt struct {
+		tag  string
+		size uint64
+	}
+	var smaller []opt
+	for tag, sz := range sizes {
+		if sz == 0 || tag == chosen {
+			continue
+		}
+		// A quarter off is the point at which the download time changes
+		// enough to be worth an operator's attention.
+		if float64(sz) <= 0.75*float64(chosenSize) {
+			smaller = append(smaller, opt{tag, sz})
+		}
+	}
+	if len(smaller) == 0 {
+		return nil
+	}
+	// Largest of the small ones first: the nearest alternative is the one
+	// that gives up least quality for the saving.
+	sort.Slice(smaller, func(i, j int) bool { return smaller[i].size > smaller[j].size })
+	if len(smaller) > 2 {
+		smaller = smaller[:2]
+	}
+	var out []string
+	for _, o := range smaller {
+		out = append(out, fmt.Sprintf("%s carries %s at %.1f GB against %s at %.1f GB (%.0f%% less to fetch) — --quantization %s",
+			repo, o.tag, float64(o.size)/1e9, chosen, float64(chosenSize)/1e9,
+			100*(1-float64(o.size)/float64(chosenSize)), o.tag))
+	}
+	return out
+}
+
+// fetchGGUFListing reads a repository's file listing, with sizes.
+func fetchGGUFListing(ctx context.Context, repo string, token secret.Secret) (hfModelInfo, error) {
+	var info hfModelInfo
+	// blobs=true so file sizes come back with the listing. They cost nothing
+	// extra here and are what lets a smaller quantisation be offered with a
+	// number attached rather than as a vague suggestion.
+	url := "https://huggingface.co/api/models/" + repo + "?blobs=true"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return info, err
+	}
+	if !token.Empty() {
+		req.Header.Set("Authorization", "Bearer "+token.Reveal())
+	}
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return info, errs.Newf(errs.ClassProviderTransient, "llamacpp.ResolveGGUF",
+			"list %s: %v", repo, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return info, errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
+			"no repository %s", repo)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return info, errs.Newf(errs.ClassProviderTransient, "llamacpp.ResolveGGUF",
+			"list %s: http %d", repo, resp.StatusCode)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&info); err != nil {
+		return info, errs.Newf(errs.ClassProviderTransient, "llamacpp.ResolveGGUF",
+			"decode %s: %v", repo, err)
+	}
+	return info, nil
+}
+
+// AdviseModel reports a cheaper way to fetch the same model.
+//
+// The chosen quantisation works; it is simply often four times larger than
+// one sitting in the same repository, and that difference is paid in billed
+// download time on every rental. Advisory only, and silent on any error —
+// nothing here may interfere with a bring-up.
+func (r *Runtime) AdviseModel(ctx context.Context, spec core.ModelSpec) []string {
+	repo := RepoOf(spec.Ref)
+	info, err := fetchGGUFListing(ctx, repo, r.hfToken)
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, sib := range info.Siblings {
+		if strings.HasSuffix(strings.ToLower(sib.RFilename), ".gguf") {
+			files = append(files, sib.RFilename)
+		}
+	}
+	chosen, err := pickQuant(repo, files, spec.Quantization)
+	if err != nil {
+		return nil
+	}
+	return adviseSmallerQuant(repo, quantTag(chosen), ggufSizes(info))
 }

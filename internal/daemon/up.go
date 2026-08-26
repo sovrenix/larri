@@ -449,6 +449,15 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 			o.warn("plan", "most of that is downloading, not serving — a faster link would cost less overall")
 		}
 		o.suggestQuantised(ctx, req, plan, chosen, hours)
+
+		// A runtime may see a cheaper packaging of the same model inside the
+		// repository already chosen — a smaller quantisation of the same
+		// weights, which the operator can take now or next time.
+		if adv, ok := o.Runtime.(runtime.ModelAdvisor); ok {
+			for _, line := range adv.AdviseModel(ctx, req.Model) {
+				o.emit("alternative", "%s", line)
+			}
+		}
 	}
 
 	// The report above is queued, not printed. Let it land before asking.

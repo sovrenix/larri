@@ -265,3 +265,29 @@ type LogWriter interface {
 type QuantAccepter interface {
 	AcceptsQuant(quant string) bool
 }
+
+// ModelAdvisor is implemented by runtimes that can see a cheaper way to fetch
+// the model the operator asked for.
+//
+// Distinct from refusing: the request is valid and will work. It is that the
+// same repository often carries the same model at a quarter of the size, and
+// the difference is paid in billed download time on every single rental. An
+// operator who is told once can decide once; one who is never told pays it
+// every run without knowing there was a choice.
+//
+// Advisory by construction — the notes are printed and nothing acts on them.
+type ModelAdvisor interface {
+	AdviseModel(ctx context.Context, spec core.ModelSpec) []string
+}
+
+// DefaultQuant is implemented by runtimes whose sensible default weight
+// format differs from the generic one.
+//
+// llama.cpp and Ollama exist to run quantised weights on hardware that could
+// not hold the full-precision model, so defaulting them to fp16 asks for the
+// one format that defeats the point: on one repository it is 53.8 GB against
+// 16.8 GB for Q4_K_M, a 22 GB card against a 128 GB box, and thirty-seven
+// minutes of billed downloading against five.
+type DefaultQuant interface {
+	DefaultQuantization() string
+}
