@@ -54,6 +54,9 @@ func cmdMCP(ctx context.Context, args []string) error {
 	events := make(chan daemon.Event, 64)
 	go func() {
 		for e := range events {
+			if !e.Show() {
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "  %-10s %s\n", e.Phase, e.Message)
 		}
 	}()

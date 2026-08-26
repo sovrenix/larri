@@ -202,6 +202,13 @@ func (r *Runtime) launchCommand(spec core.ModelSpec, plan core.SizingPlan, ep ru
 	if spec.Quantization != "" && !isUnquantised(spec.Quantization) {
 		flags = append(flags, flag{"--quantization", spec.Quantization})
 	}
+	// Volta and Turing have no bfloat16, and vLLM takes its dtype from the
+	// model config, where almost every current release says bfloat16. Left
+	// alone it loads 50-odd GB of weights and only then refuses, so the
+	// override is written at launch on any pre-Ampere card.
+	if needsHalfOverride(plan.ComputeCapability, spec.Quantization) {
+		flags = append(flags, flag{"--dtype", "float16"})
+	}
 	toolCalling := spec.ToolCalling != core.Forbid && spec.ToolParser != ""
 	if toolCalling {
 		flags = append(flags, flag{"--tool-call-parser", spec.ToolParser})
@@ -241,6 +248,17 @@ func (r *Runtime) launchCommand(spec core.ModelSpec, plan core.SizingPlan, ep ru
 	}
 	fmt.Fprintf(&b, " >%s 2>&1 & echo started", LogPath)
 	return b.String()
+}
+
+// needsHalfOverride reports whether the launch has to name float16 itself.
+//
+// Only 16-bit weights are affected: a quantised checkpoint carries its own
+// storage type and vLLM computes in whatever the kernel supports. Capability
+// 0 means the hardware never answered, and the flag is left off rather than
+// forced onto a card that may well be an Ampere.
+func needsHalfOverride(computeCapability int, quant string) bool {
+	const ampere = 800
+	return computeCapability > 0 && computeCapability < ampere && isUnquantised(quant)
 }
 
 func isUnquantised(q string) bool {

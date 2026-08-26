@@ -32,6 +32,61 @@ type Event struct {
 	Phase   string
 	Message string
 	Warning bool
+
+	// Ack, when non-nil, marks a synchronisation point rather than a message
+	// to show. A surface closes it once everything queued ahead of it has
+	// been rendered. Call Show rather than reading this directly.
+	Ack chan struct{}
+}
+
+// Show reports whether e carries something to render, and releases e if it
+// does not. Every surface draining an event channel must call it for each
+// event and skip the ones it rejects — that call is what unblocks a sync.
+func (e Event) Show() bool {
+	if e.Ack != nil {
+		close(e.Ack)
+		return false
+	}
+	return true
+}
+
+// syncGrace bounds how long the lifecycle will wait for a surface to catch
+// up. A renderer that has stopped draining must not be able to stall a run
+// that is holding a rented GPU.
+const syncGrace = 2 * time.Second
+
+// Sync blocks until every event emitted so far has been rendered.
+//
+// Progress is delivered through a channel that surfaces drain on their own
+// goroutine, so an emit is queued rather than shown. That is the right trade
+// for progress — a lifecycle billing by the second must never block on a slow
+// terminal — but it is wrong immediately before a prompt. The question
+// reaches the terminal ahead of the report it refers to, and the operator is
+// asked to approve a purchase underneath output that is still arriving; worse,
+// a prompt left without its newline gets overwritten by the next line and the
+// run looks hung when it is waiting to be answered.
+//
+// The channel is FIFO, so an acknowledged marker proves everything queued
+// ahead of it has been written.
+func (o *Orchestrator) Sync(ctx context.Context) {
+	if o.Events == nil {
+		return
+	}
+	ack := make(chan struct{})
+	timer := time.NewTimer(syncGrace)
+	defer timer.Stop()
+	select {
+	case o.Events <- Event{Ack: ack}:
+	case <-ctx.Done():
+		return
+	case <-timer.C:
+		return
+	}
+	select {
+	case <-ack:
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }
 
 // Orchestrator runs rig lifecycles.
@@ -307,6 +362,8 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 	o.emit("select", "%s %s %dGB $%.3f/hr (reliability %.2f)",
 		chosen.Provider, chosen.GPUModel, chosen.VRAMTotalGB(), chosen.PriceHr, chosen.Reliability)
 
+	// The report above is queued, not printed. Let it land before asking.
+	o.Sync(ctx)
 	if req.Confirm != nil && !req.Confirm(chosen, plan) {
 		return nil, errs.Newf(errs.ClassModelFailure, "daemon.Up", "cancelled before spending")
 	}

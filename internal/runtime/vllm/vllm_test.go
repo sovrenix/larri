@@ -411,3 +411,38 @@ func TestLaunchDoesNotKillAnything(t *testing.T) {
 		t.Errorf("the launch must not also kill; that is a separate command:\n%s", cmd)
 	}
 }
+
+// The floor that let a V100 through is vLLM's minimum to run at all (7.0);
+// bfloat16 needs 8.0. vLLM takes its dtype from the model config, and current
+// releases overwhelmingly say bfloat16 — so a Volta rig passes selection,
+// pulls tens of gigabytes of weights, and only then refuses to load them. A
+// real `larri up` selected an 8x V100 box for a bf16 Qwen and would have paid
+// for exactly that.
+func TestPreAmpereHardwareGetsAnExplicitFloat16(t *testing.T) {
+	cases := []struct {
+		name  string
+		cap   int
+		quant string
+		want  bool
+	}{
+		{"volta bf16 weights", 700, "bf16", true},
+		{"turing unquantised", 750, "", true},
+		{"ampere needs nothing", 800, "bf16", false},
+		{"ada needs nothing", 890, "", false},
+		{"quantised carries its own type", 700, "awq", false},
+		{"unknown hardware is left alone", 0, "bf16", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New()
+			cmd := r.launchCommand(
+				core.ModelSpec{Ref: "Qwen/Qwen3-27B", ServedName: "m", Quantization: tc.quant},
+				core.SizingPlan{ComputeCapability: tc.cap},
+				runtime.Endpoint{Key: secret.New("k")},
+			)
+			if got := strings.Contains(cmd, "--dtype 'float16'"); got != tc.want {
+				t.Errorf("--dtype float16 present = %v, want %v\ncommand: %s", got, tc.want, cmd)
+			}
+		})
+	}
+}

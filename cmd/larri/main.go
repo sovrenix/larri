@@ -248,6 +248,9 @@ func cmdUp(ctx context.Context, args []string) error {
 	events := make(chan daemon.Event, 64)
 	go func() {
 		for e := range events {
+			if !e.Show() {
+				continue
+			}
 			mark := " "
 			if e.Warning {
 				mark = "!"
@@ -422,6 +425,9 @@ func cmdDown(ctx context.Context, args []string) error {
 	events := make(chan daemon.Event, 32)
 	go func() {
 		for e := range events {
+			if !e.Show() {
+				continue
+			}
 			mark := " "
 			if e.Warning {
 				mark = "!"
@@ -537,6 +543,9 @@ func cmdResume(ctx context.Context, args []string) error {
 	events := make(chan daemon.Event, 32)
 	go func() {
 		for e := range events {
+			if !e.Show() {
+				continue
+			}
 			mark := " "
 			if e.Warning {
 				mark = "!"

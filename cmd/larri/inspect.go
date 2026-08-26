@@ -70,6 +70,9 @@ func cmdOffers(ctx context.Context, args []string) error {
 	events := make(chan daemon.Event, 64)
 	go func() {
 		for e := range events {
+			if !e.Show() {
+				continue
+			}
 			mark := " "
 			if e.Warning {
 				mark = "!"
@@ -154,6 +157,9 @@ func cmdOrphans(ctx context.Context, args []string) error {
 	events := make(chan daemon.Event, 32)
 	go func() {
 		for e := range events {
+			if !e.Show() {
+				continue
+			}
 			mark := " "
 			if e.Warning {
 				mark = "!"
@@ -186,6 +192,8 @@ func cmdOrphans(ctx context.Context, args []string) error {
 	}
 
 	var hourly float64
+	// The scan's progress is queued; let it land before the findings.
+	o.Sync(ctx)
 	fmt.Printf("\n  %d resource(s) local state does not account for:\n\n", len(orphans))
 	for _, orph := range orphans {
 		fmt.Printf("    %s\n", orph.Describe())

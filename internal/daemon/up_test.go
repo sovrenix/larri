@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -500,4 +501,72 @@ func TestNamedMachinesAreStillExcluded(t *testing.T) {
 		t.Fatalf("got %d offers (%v); both listings on the failed machine should be gone",
 			len(got), got)
 	}
+}
+
+// A live run made every `larri up` look hung. Progress is queued to a channel
+// a surface drains on its own goroutine, so the confirmation prompt — written
+// straight to the terminal — overtook the exclusion report it refers to. The
+// prompt ends without a newline so the next queued line overwrote it, leaving
+// an operator staring at output with no visible question, at the one moment
+// LARRI is about to spend money.
+func TestConfirmPromptIsNotOvertakenByQueuedProgress(t *testing.T) {
+	events := make(chan Event, 64)
+	var mu sync.Mutex
+	var order []string
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for e := range events {
+			if !e.Show() {
+				continue
+			}
+			mu.Lock()
+			order = append(order, e.Phase)
+			mu.Unlock()
+		}
+	}()
+
+	o := &Orchestrator{Events: events}
+	for i := 0; i < 20; i++ {
+		o.emit("excluded", "offer %d", i)
+	}
+	o.emit("select", "a gpu")
+
+	// What the confirm callback does: the barrier, then the prompt.
+	o.Sync(context.Background())
+	mu.Lock()
+	seen := len(order)
+	last := ""
+	if seen > 0 {
+		last = order[seen-1]
+	}
+	mu.Unlock()
+
+	if seen != 21 {
+		t.Errorf("Sync returned with %d of 21 events rendered; the prompt would print into a still-scrolling report", seen)
+	}
+	if last != "select" {
+		t.Errorf("last rendered phase = %q, want the selection immediately above the prompt", last)
+	}
+	close(events)
+	<-done
+}
+
+// A surface that stops draining must not be able to stall a run holding a
+// rented GPU: the barrier is a courtesy to the terminal, not a dependency.
+func TestSyncGivesUpOnASurfaceThatStoppedDraining(t *testing.T) {
+	o := &Orchestrator{Events: make(chan Event)} // nobody draining
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	o.Sync(ctx)
+	if time.Since(start) > syncGrace {
+		t.Errorf("Sync held the lifecycle for %s", time.Since(start))
+	}
+}
+
+// A nil channel is the non-interactive case, and must not deadlock.
+func TestSyncWithoutASurfaceIsANoOp(t *testing.T) {
+	(&Orchestrator{}).Sync(context.Background())
 }

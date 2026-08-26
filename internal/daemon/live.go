@@ -413,9 +413,32 @@ func orUnknown(s string) string {
 	return s
 }
 
+// readComputeCapability asks the placed GPU what architecture it is.
+//
+// nvidia-smi reports it as "7.0"; it is scaled by 100 to match the integer
+// the rest of LARRI compares against. Zero means the question went
+// unanswered, and the caller falls back to the listing.
+func (o *Orchestrator) readComputeCapability(ctx context.Context, sess runtime.Session) int {
+	out, err := sess.Run(ctx,
+		"nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true")
+	if err != nil {
+		return 0
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0]), 64)
+	if err != nil || f <= 0 {
+		return 0
+	}
+	return int(f*100 + 0.5)
+}
+
 // verifyPlacedHardware re-runs the fit check against the machine that was
 // actually provisioned.
 func (o *Orchestrator) verifyPlacedHardware(ctx context.Context, sess runtime.Session, rig *core.Rig) error {
+	if cap := o.readComputeCapability(ctx, sess); cap > 0 {
+		rig.Plan.ComputeCapability = cap
+	} else if c := rig.Offer.ComputeCapability; c > 0 {
+		rig.Plan.ComputeCapability = c // the listing, when the host will not say
+	}
 	out, err := sess.Run(ctx,
 		"nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null || true")
 	if err != nil || len(out) == 0 {

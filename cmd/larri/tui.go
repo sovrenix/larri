@@ -108,6 +108,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// owns for the duration.
 	go func() {
 		for e := range events {
+			if !e.Show() {
+				continue
+			}
 			prog.Send(tuiEvent(e))
 		}
 	}()

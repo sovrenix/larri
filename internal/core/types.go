@@ -164,15 +164,22 @@ func (i Instance) Label() (Label, bool) {
 
 // SizingPlan is the output of the sizing engine (§7.3).
 type SizingPlan struct {
-	RequiredVRAMBytes  uint64   `json:"required_vram_bytes"`
-	WeightsBytes       uint64   `json:"weights_bytes"`
-	KVCacheBytes       uint64   `json:"kv_cache_bytes"`
-	FitsInVRAM         bool     `json:"fits_in_vram"`
-	TensorParallelSize int      `json:"tensor_parallel_size"`
-	GPUMemUtilization  float64  `json:"gpu_mem_utilization"`
-	OffloadLayers      int      `json:"offload_layers"`
-	ContextLen         int      `json:"context_len"` // possibly reduced from requested
-	Warnings           []string `json:"warnings,omitempty"`
+	RequiredVRAMBytes  uint64 `json:"required_vram_bytes"`
+	WeightsBytes       uint64 `json:"weights_bytes"`
+	KVCacheBytes       uint64 `json:"kv_cache_bytes"`
+	FitsInVRAM         bool   `json:"fits_in_vram"`
+	TensorParallelSize int    `json:"tensor_parallel_size"`
+
+	// ComputeCapability is the architecture level of the hardware actually
+	// placed, times 100. It is read from the GPU rather than taken from the
+	// listing, because the engine's minimum and the weights' minimum are
+	// different numbers: vLLM runs on 7.0, but bfloat16 needs 8.0, and a
+	// marketplace will happily rent you a Volta box for bf16 weights.
+	ComputeCapability int      `json:"compute_capability,omitempty"`
+	GPUMemUtilization float64  `json:"gpu_mem_utilization"`
+	OffloadLayers     int      `json:"offload_layers"`
+	ContextLen        int      `json:"context_len"` // possibly reduced from requested
+	Warnings          []string `json:"warnings,omitempty"`
 }
 
 // RuntimeKind identifies an inference engine.
