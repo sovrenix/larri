@@ -556,3 +556,39 @@ type fakeProgressor struct {
 func (f *fakeProgressor) WeightsOnDisk(context.Context, runtime.Session) (uint64, error) {
 	return f.bytes, nil
 }
+
+// A live run reported an ETA that climbed from three hours to fourteen across
+// four samples while the host was pulling at 60 MB/s. The measured size never
+// moved — the probe was watching the wrong directory — and the smoothed rate
+// decayed toward zero, so the remaining time grew without bound. That is a
+// confident wrong answer about the one number an operator is using to decide
+// whether to wait or destroy.
+func TestProgressGoesQuietRatherThanExtrapolating(t *testing.T) {
+	o := &Orchestrator{Runtime: &fakeProgressor{}}
+	f := &fetchProgress{}
+	const want = 3 << 30
+
+	// Real progress first, which establishes a rate.
+	o.Runtime.(*fakeProgressor).bytes = 12 << 20
+	f.sample(context.Background(), o, runtime.Session(nil), want)
+	f.lastAt = time.Now().Add(-30 * time.Second)
+	f.last = 6 << 20
+	o.Runtime.(*fakeProgressor).bytes = 12 << 20
+	withRate := f.sample(context.Background(), o, runtime.Session(nil), want)
+	if !strings.Contains(withRate, "left") {
+		t.Fatalf("a growing download should carry an ETA: %q", withRate)
+	}
+	firstETA := withRate
+
+	// Now the measurement stops moving. The first stall may be a slow poll;
+	// after that it must stop claiming to know.
+	o.Runtime.(*fakeProgressor).bytes = 12 << 20
+	_ = f.sample(context.Background(), o, runtime.Session(nil), want)
+	third := f.sample(context.Background(), o, runtime.Session(nil), want)
+	if third != "" {
+		t.Errorf("a measurement that stopped moving should fall silent, got %q", third)
+	}
+	if strings.Contains(third, "left") && third != firstETA {
+		t.Error("an ETA must never grow while nothing is happening")
+	}
+}

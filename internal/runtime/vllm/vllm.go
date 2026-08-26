@@ -533,9 +533,21 @@ func (r *Runtime) AcceptsQuant(quant string) bool {
 // SetHuggingFaceEndpoint points weight downloads at a mirror.
 func (r *Runtime) SetHuggingFaceEndpoint(endpoint string) { r.hfEndpoint = endpoint }
 
-// weightsCacheDir is where huggingface_hub puts what it downloads. HF_HOME
-// wins when set, which is what a mirror or a mounted volume would change.
-const weightsCacheDir = `"${HF_HOME:-$HOME/.cache/huggingface}"`
+// weightsCacheRoots are the places huggingface_hub may put what it downloads.
+//
+// One path is a guess, and a wrong guess is worse than none: a live run
+// measured 12 MB that never changed while the host was plainly pulling at 60
+// MB/s, and reported an ETA that grew from three hours to fourteen as the
+// smoothed rate decayed toward zero. The image declares neither HF_HOME nor
+// HOME, so the effective cache depends on how the process was started, and
+// hf-xet adds a chunk store beside the hub directory.
+//
+// So every plausible root is measured and the largest wins. They nest, so
+// summing would double-count.
+var weightsCacheRoots = []string{
+	"$HF_HOME", "$HF_HUB_CACHE", "$HOME/.cache/huggingface",
+	"/root/.cache/huggingface", "/vllm-workspace",
+}
 
 // WeightsOnDisk reports how many bytes of the model have arrived.
 //
@@ -544,17 +556,22 @@ const weightsCacheDir = `"${HF_HOME:-$HOME/.cache/huggingface}"`
 // directory simply means nothing has been fetched yet, which is a legitimate
 // answer of zero rather than a failure.
 func (r *Runtime) WeightsOnDisk(ctx context.Context, sess runtime.Session) (uint64, error) {
-	out, err := sess.Run(ctx, "du -sb "+weightsCacheDir+" 2>/dev/null | cut -f1 || echo 0")
+	var b strings.Builder
+	for _, root := range weightsCacheRoots {
+		// Unset variables expand to nothing, and du of nothing is an error
+		// the guard swallows, so an absent root simply contributes no line.
+		fmt.Fprintf(&b, `[ -n "%s" ] && [ -d "%s" ] && du -sb "%s" 2>/dev/null | cut -f1; `,
+			root, root, root)
+	}
+	out, err := sess.Run(ctx, b.String()+"true")
 	if err != nil {
 		return 0, err
 	}
-	f := strings.Fields(strings.TrimSpace(string(out)))
-	if len(f) == 0 {
-		return 0, nil
+	var largest uint64
+	for _, line := range strings.Fields(string(out)) {
+		if n, perr := strconv.ParseUint(line, 10, 64); perr == nil && n > largest {
+			largest = n
+		}
 	}
-	n, err := strconv.ParseUint(f[0], 10, 64)
-	if err != nil {
-		return 0, nil
-	}
-	return n, nil
+	return largest, nil
 }

@@ -1030,6 +1030,7 @@ type fetchProgress struct {
 	last     uint64
 	lastAt   time.Time
 	rate     float64 // bytes/sec, smoothed
+	stalls   int     // consecutive samples with no growth
 	finished bool
 }
 
@@ -1056,7 +1057,8 @@ func (f *fetchProgress) sample(ctx context.Context, o *Orchestrator,
 		return ""
 	}
 	now := time.Now()
-	if !f.lastAt.IsZero() && got > f.last {
+	switch {
+	case !f.lastAt.IsZero() && got > f.last:
 		if dt := now.Sub(f.lastAt).Seconds(); dt > 0 {
 			r := float64(got-f.last) / dt
 			// Smoothed, because a du that lands mid-write reads low and a
@@ -1068,8 +1070,23 @@ func (f *fetchProgress) sample(ctx context.Context, o *Orchestrator,
 				f.rate = 0.6*f.rate + 0.4*r
 			}
 		}
+		f.stalls = 0
+	case !f.lastAt.IsZero():
+		// No growth. The rate is deliberately left alone rather than decayed
+		// toward zero: decaying it produced an ETA that climbed from three
+		// hours to fourteen across four samples while the host was pulling
+		// at 60 MB/s, which is a confident wrong answer about the one number
+		// an operator is using to decide whether to wait.
+		f.stalls++
 	}
 	f.last, f.lastAt = got, now
+
+	// Measured nothing twice running while the run continues means this is
+	// watching the wrong directory, not watching a stalled download. Say
+	// nothing and let the ordinary reporting stand.
+	if f.stalls >= 2 {
+		return ""
+	}
 
 	// Past the expected size means the estimate was low, not that something
 	// is wrong — the cache holds tokeniser and config files too. Report it
