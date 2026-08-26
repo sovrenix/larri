@@ -1,375 +1,428 @@
 <!DOCTYPE html>
 <html>
+
 <head>
   <link rel="icon" type="image/png" href="gh-pages/larri.png">
   <meta charset="utf-8">
   <title>Bundled Page</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #ffffff; display: flex; align-items: center; justify-content: center; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
-    #__bundler_loading { position: fixed; bottom: 20px; right: 20px; font: 13px/1.4 -apple-system, BlinkMacSystemFont, sans-serif; color: #666; background: #fff; padding: 8px 14px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.12); z-index: 10000; }
-    #__bundler_thumbnail { position: fixed; inset: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: #ffffff; z-index: 9999; }
-    #__bundler_thumbnail svg { width: 100%; height: 100%; object-fit: contain; }
-    #__bundler_placeholder { color: #999; font-size: 14px; }
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: #ffffff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    #__bundler_loading {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      font: 13px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+      color: #666;
+      background: #fff;
+      padding: 8px 14px;
+      border-radius: 8px;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+      z-index: 10000;
+    }
+
+    #__bundler_thumbnail {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #ffffff;
+      z-index: 9999;
+    }
+
+    #__bundler_thumbnail svg {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    #__bundler_placeholder {
+      color: #999;
+      font-size: 14px;
+    }
   </style>
   <noscript>
-    <style>#__bundler_loading { display: none; }</style>
-    <div style="position:fixed;bottom:12px;left:12px;font:13px/1.4 -apple-system,BlinkMacSystemFont,sans-serif;color:#999;background:rgba(255,255,255,0.9);padding:6px 12px;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,0.08);z-index:10000;">
+    <style>
+      #__bundler_loading {
+        display: none;
+      }
+    </style>
+    <div
+      style="position:fixed;bottom:12px;left:12px;font:13px/1.4 -apple-system,BlinkMacSystemFont,sans-serif;color:#999;background:rgba(255,255,255,0.9);padding:6px 12px;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,0.08);z-index:10000;">
       This page requires JavaScript to display.
     </div>
   </noscript>
 </head>
+
 <body>
   <div id="__bundler_thumbnail">
-  <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
-    <rect width="1200" height="800" fill="#ffffff"></rect>
-    <text x="600" y="380" text-anchor="middle" font-family="Courier, monospace" font-size="120" font-weight="bold" fill="#111111">LARRI</text>
-    <text x="600" y="480" text-anchor="middle" font-family="Courier, monospace" font-size="72" fill="#c8371f">🦞</text>
-  </svg>
-</div>
+    <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+      <rect width="1200" height="800" fill="#ffffff"></rect>
+      <text x="600" y="380" text-anchor="middle" font-family="Courier, monospace" font-size="120" font-weight="bold"
+        fill="#111111">LARRI</text>
+      <text x="600" y="480" text-anchor="middle" font-family="Courier, monospace" font-size="72"
+        fill="#c8371f">🦞</text>
+    </svg>
+  </div>
   <div id="__bundler_loading">Unpacking...</div>
 
   <script>
-    
-document.addEventListener('DOMContentLoaded', async function() {
-  const loading = document.getElementById('__bundler_loading');
-  function setStatus(msg) { if (loading) loading.textContent = msg; }
 
-  const FONT_MIME = /^(font[/]|application[/](x-)?font-|application[/]vnd\.ms-fontobject)/i;
-  const MIME_TOKEN = /^[\w.+-]+[/][\w.+-]+$/;
-  function toBase64(bytes) {
-    let bin = '';
-    for (let i = 0; i < bytes.length; i += 0x8000) {
-      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-    }
-    return btoa(bin);
-  }
+    document.addEventListener('DOMContentLoaded', async function () {
+      const loading = document.getElementById('__bundler_loading');
+      function setStatus(msg) { if (loading) loading.textContent = msg; }
 
-  // Error sink persists across replaceWith since it's on window, not the DOM.
-  window.addEventListener('error', function(e) {
-    // Failed resource loads (CSP-blocked links, scripts, images) fire plain
-    // events at the element — warn only; real JS errors carry message/error.
-    if (!e.message && !e.error && e.target && e.target !== window) {
-      console.warn('[bundle] resource failed to load:',
-        e.target.tagName, String(e.target.src || e.target.href || ''));
-      return;
-    }
-    var p = document.body || document.documentElement;
-    var d = document.getElementById('__bundler_err') || p.appendChild(document.createElement('div'));
-    d.id = '__bundler_err';
-    d.style.cssText = 'position:fixed;bottom:12px;left:12px;right:12px;font:12px/1.4 ui-monospace,monospace;background:#2a1215;color:#ff8a80;padding:10px 14px;border-radius:8px;border:1px solid #5c2b2e;z-index:99999;white-space:pre-wrap;max-height:40vh;overflow:auto';
-    d.textContent = (d.textContent ? d.textContent + String.fromCharCode(10) : '') +
-      '[bundle] ' + (e.message || e.type) +
-      (e.filename ? ' (' + e.filename.slice(0, 60) + ':' + e.lineno + ')' : '');
-  }, true);
-
-  try {
-    const manifestEl = document.querySelector('script[type="__bundler/manifest"]');
-    const templateEl = document.querySelector('script[type="__bundler/template"]');
-    if (!manifestEl || !templateEl) {
-      setStatus('Error: missing bundle data');
-      console.error('[bundler] Missing script tags — manifestEl:', !!manifestEl, 'templateEl:', !!templateEl);
-      return;
-    }
-
-    const manifest = JSON.parse(manifestEl.textContent);
-    let template = JSON.parse(templateEl.textContent);
-
-    // Nested page bundles (iframe targets). Each ships ONCE, in the ROOT
-    // document's manifest; frame srcs carry an about:blank#<uuid> marker
-    // instead of a substitutable uuid. Every document mints the blobs for
-    // its OWN frames — from local text at the root, or text obtained from
-    // its DIRECT parent over the relay protocol below — so each frame
-    // navigation stays same-origin with its initiator and a deduped page
-    // loads at any depth on any host, including a file:// download's
-    // opaque origins (where a blob minted by one document cannot be
-    // navigated to by another).
-    const pageOrderEl = document.querySelector('script[type="__bundler/page_order"]');
-    const pageOrder = pageOrderEl ? JSON.parse(pageOrderEl.textContent) : [];
-    const pageSet = new Set(pageOrder);
-    const pageTexts = {};
-
-    // ── Nested-page text protocol (parent-chain relay) ──
-    // Page bundles ship once, in the ROOT document's manifest. Every
-    // document mints the blobs for its OWN frames, obtaining page text
-    // through a strict parent-chain relay: a document only ever SENDS to
-    // its direct parent (which, for every document the publisher's own
-    // runtime minted, is another publisher document) and only ACCEPTS
-    // text from that direct parent; requests from below are honored only
-    // for the document's own child frames, and the ROOT never sends
-    // upward at all. That last rule is load-bearing: the artifact host's
-    // frame-ancestors allows claude.ai (and friends) to frame an
-    // artifact, so window.top can be a FOREIGN document — a top-addressed
-    // protocol would hand page uuids to that ancestor and accept forged
-    // "page text" from it, minting attacker HTML as an artifact-origin
-    // blob document. The chain never touches the ancestor: requests stop
-    // at the root, replies are origin-addressed per hop (never '*' when
-    // an origin exists), and both directions are origin-gated (on https
-    // a foreign sender's origin can never equal this document's; in
-    // opaque contexts — file:// — everything serializes as 'null', where
-    // an embedded EXTERNAL frame still fails the gate by carrying its
-    // own real origin, and a sandboxed child of such a frame is excluded
-    // by the own-child-frames check plus uuid unguessability). Shape is
-    // deny-by-default: one request form, one reply form, no error
-    // replies.
-    // window.origin is the SERIALIZED SECURITY origin ('null' in opaque
-    // contexts such as a sandboxed preview iframe) — location.origin is
-    // computed from the URL and stays 'https://…' even when the document
-    // is sandboxed, which would misgate every opaque chain.
-    const OWN_TARGET = /^https?:[/][/]/.test(window.origin || '')
-      ? window.origin
-      : '*';
-    function trustedOrigin(e) {
-      if (e.origin === window.origin) return true; // https chains; opaque==opaque
-      // file:// trees: Chrome serializes the file document's origin as
-      // 'file://' while the blob: documents it mints serialize as 'null',
-      // so the two legitimate shapes can never string-match — accept the
-      // pair in both directions. https origins never serialize as either,
-      // and sender identity (own child frame / direct parent) is checked
-      // separately.
-      return (
-        (e.origin === 'null' &&
-          (window.origin === 'file://' ||
-            window.location.protocol === 'file:')) ||
-        (/^file:/.test(e.origin) && window.origin === 'null')
-      );
-    }
-    // Non-empty only in the root document (nested bundles ship an empty
-    // island), so it doubles as the root marker: the root answers from
-    // local text and treats a miss as authoritative — never relaying to
-    // its (possibly foreign) parent.
-    const isPageRoot = pageOrder.length > 0;
-    const blobUrls = {};
-    const resourceBlobs = {};
-    const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-    const pendingFrames = {}; // uuid -> [{el, frag}] awaiting text for own frames
-    const pendingRelays = {}; // uuid -> [childWindow] awaiting text to pass down
-    function mountPage(el, frag, text) {
-      const pageBlob = new Blob([text], { type: 'text/html' });
-      const u = URL.createObjectURL(pageBlob);
-      resourceBlobs[u] = pageBlob;
-      el.src = u + frag;
-    }
-    function deliverPage(uuid, text) {
-      const frames = pendingFrames[uuid];
-      delete pendingFrames[uuid];
-      if (frames) for (const f of frames) mountPage(f.el, f.frag, text);
-      const relays = pendingRelays[uuid];
-      delete pendingRelays[uuid];
-      if (relays) {
-        for (const cw of relays) {
-          try { cw.postMessage({ __bundler_page: uuid, __bundler_text: text }, OWN_TARGET); } catch (err) { /* gone */ }
+      const FONT_MIME = /^(font[/]|application[/](x-)?font-|application[/]vnd\.ms-fontobject)/i;
+      const MIME_TOKEN = /^[\w.+-]+[/][\w.+-]+$/;
+      function toBase64(bytes) {
+        let bin = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
         }
+        return btoa(bin);
       }
-    }
-    function ownFrameWindows() {
-      const out = [];
-      for (const f of Array.from(document.querySelectorAll('iframe'))) {
-        try { if (f.contentWindow) out.push(f.contentWindow); } catch (err) { /* detached */ }
-      }
-      return out;
-    }
-    window.addEventListener('message', function (e) {
-      const d = e.data;
-      if (!d || typeof d !== 'object' || !e.source) return;
-      // Origin gate first; the structural checks below (own-child-frames
-      // for requests, direct-parent + solicited-uuid for replies, the
-      // root's never-relay rule) are what hold in fully opaque chains
-      // where origin strings can't discriminate — a sandboxed root's
-      // FOREIGN wrapper still fails all three even though both serialize
-      // as real-vs-'null' rather than matching.
-      if (!trustedOrigin(e)) return;
-      if (typeof d.__bundler_need === 'string' && UUID_SHAPE.test(d.__bundler_need)) {
-        // Requests are honored only for this document's own child frames.
-        if (ownFrameWindows().indexOf(e.source) < 0) return;
-        const uuid = d.__bundler_need;
-        const text = pageTexts[uuid];
-        if (typeof text === 'string') {
-          try { e.source.postMessage({ __bundler_page: uuid, __bundler_text: text }, OWN_TARGET); } catch (err) { /* gone */ }
+
+      // Error sink persists across replaceWith since it's on window, not the DOM.
+      window.addEventListener('error', function (e) {
+        // Failed resource loads (CSP-blocked links, scripts, images) fire plain
+        // events at the element — warn only; real JS errors carry message/error.
+        if (!e.message && !e.error && e.target && e.target !== window) {
+          console.warn('[bundle] resource failed to load:',
+            e.target.tagName, String(e.target.src || e.target.href || ''));
           return;
         }
-        if (isPageRoot || window.parent === window) return; // authoritative miss
-        const waiting = pendingRelays[uuid];
-        if (waiting) {
-          if (waiting.indexOf(e.source) < 0) waiting.push(e.source);
-          return;
-        }
-        // Never-answered uuids would otherwise accumulate forever under a
-        // request spray; past the cap (far above any real page count) new
-        // relays are dropped rather than remembered.
-        if (Object.keys(pendingRelays).length >= 128) return;
-        pendingRelays[uuid] = [e.source];
-        window.parent.postMessage({ __bundler_need: uuid }, OWN_TARGET);
-      } else if (
-        typeof d.__bundler_page === 'string' &&
-        UUID_SHAPE.test(d.__bundler_page) &&
-        typeof d.__bundler_text === 'string'
-      ) {
-        // The shape test is load-bearing beyond tidiness: the solicited
-        // check below uses the in operator, which matches prototype keys
-        // ('__proto__', 'constructor') — an unshaped key would reach
-        // deliverPage and throw, painting the error banner.
-        // Text is accepted only from the direct parent — the document
-        // that minted this one.
-        if (e.source !== window.parent || window.parent === window) return;
-        if (!(d.__bundler_page in pendingFrames) && !(d.__bundler_page in pendingRelays)) return;
-        deliverPage(d.__bundler_page, d.__bundler_text);
-      }
-    });
+        var p = document.body || document.documentElement;
+        var d = document.getElementById('__bundler_err') || p.appendChild(document.createElement('div'));
+        d.id = '__bundler_err';
+        d.style.cssText = 'position:fixed;bottom:12px;left:12px;right:12px;font:12px/1.4 ui-monospace,monospace;background:#2a1215;color:#ff8a80;padding:10px 14px;border-radius:8px;border:1px solid #5c2b2e;z-index:99999;white-space:pre-wrap;max-height:40vh;overflow:auto';
+        d.textContent = (d.textContent ? d.textContent + String.fromCharCode(10) : '') +
+          '[bundle] ' + (e.message || e.type) +
+          (e.filename ? ' (' + e.filename.slice(0, 60) + ':' + e.lineno + ')' : '');
+      }, true);
 
-    const uuids = Object.keys(manifest);
-    setStatus('Unpacking ' + uuids.length + ' assets...');
-
-    await Promise.all(uuids.map(async (uuid) => {
-      const entry = manifest[uuid];
       try {
-        const binaryStr = atob(entry.data);
-        const bytes = new Uint8Array(binaryStr.length);
-        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+        const manifestEl = document.querySelector('script[type="__bundler/manifest"]');
+        const templateEl = document.querySelector('script[type="__bundler/template"]');
+        if (!manifestEl || !templateEl) {
+          setStatus('Error: missing bundle data');
+          console.error('[bundler] Missing script tags — manifestEl:', !!manifestEl, 'templateEl:', !!templateEl);
+          return;
+        }
 
-        let finalBytes = bytes;
-        if (entry.compressed) {
-          if (typeof DecompressionStream !== 'undefined') {
-            const ds = new DecompressionStream('gzip');
-            const writer = ds.writable.getWriter();
-            const reader = ds.readable.getReader();
-            writer.write(bytes);
-            writer.close();
-            const chunks = [];
-            let totalLen = 0;
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              chunks.push(value);
-              totalLen += value.length;
+        const manifest = JSON.parse(manifestEl.textContent);
+        let template = JSON.parse(templateEl.textContent);
+
+        // Nested page bundles (iframe targets). Each ships ONCE, in the ROOT
+        // document's manifest; frame srcs carry an about:blank#<uuid> marker
+        // instead of a substitutable uuid. Every document mints the blobs for
+        // its OWN frames — from local text at the root, or text obtained from
+        // its DIRECT parent over the relay protocol below — so each frame
+        // navigation stays same-origin with its initiator and a deduped page
+        // loads at any depth on any host, including a file:// download's
+        // opaque origins (where a blob minted by one document cannot be
+        // navigated to by another).
+        const pageOrderEl = document.querySelector('script[type="__bundler/page_order"]');
+        const pageOrder = pageOrderEl ? JSON.parse(pageOrderEl.textContent) : [];
+        const pageSet = new Set(pageOrder);
+        const pageTexts = {};
+
+        // ── Nested-page text protocol (parent-chain relay) ──
+        // Page bundles ship once, in the ROOT document's manifest. Every
+        // document mints the blobs for its OWN frames, obtaining page text
+        // through a strict parent-chain relay: a document only ever SENDS to
+        // its direct parent (which, for every document the publisher's own
+        // runtime minted, is another publisher document) and only ACCEPTS
+        // text from that direct parent; requests from below are honored only
+        // for the document's own child frames, and the ROOT never sends
+        // upward at all. That last rule is load-bearing: the artifact host's
+        // frame-ancestors allows claude.ai (and friends) to frame an
+        // artifact, so window.top can be a FOREIGN document — a top-addressed
+        // protocol would hand page uuids to that ancestor and accept forged
+        // "page text" from it, minting attacker HTML as an artifact-origin
+        // blob document. The chain never touches the ancestor: requests stop
+        // at the root, replies are origin-addressed per hop (never '*' when
+        // an origin exists), and both directions are origin-gated (on https
+        // a foreign sender's origin can never equal this document's; in
+        // opaque contexts — file:// — everything serializes as 'null', where
+        // an embedded EXTERNAL frame still fails the gate by carrying its
+        // own real origin, and a sandboxed child of such a frame is excluded
+        // by the own-child-frames check plus uuid unguessability). Shape is
+        // deny-by-default: one request form, one reply form, no error
+        // replies.
+        // window.origin is the SERIALIZED SECURITY origin ('null' in opaque
+        // contexts such as a sandboxed preview iframe) — location.origin is
+        // computed from the URL and stays 'https://…' even when the document
+        // is sandboxed, which would misgate every opaque chain.
+        const OWN_TARGET = /^https?:[/][/]/.test(window.origin || '')
+          ? window.origin
+          : '*';
+        function trustedOrigin(e) {
+          if (e.origin === window.origin) return true; // https chains; opaque==opaque
+          // file:// trees: Chrome serializes the file document's origin as
+          // 'file://' while the blob: documents it mints serialize as 'null',
+          // so the two legitimate shapes can never string-match — accept the
+          // pair in both directions. https origins never serialize as either,
+          // and sender identity (own child frame / direct parent) is checked
+          // separately.
+          return (
+            (e.origin === 'null' &&
+              (window.origin === 'file://' ||
+                window.location.protocol === 'file:')) ||
+            (/^file:/.test(e.origin) && window.origin === 'null')
+          );
+        }
+        // Non-empty only in the root document (nested bundles ship an empty
+        // island), so it doubles as the root marker: the root answers from
+        // local text and treats a miss as authoritative — never relaying to
+        // its (possibly foreign) parent.
+        const isPageRoot = pageOrder.length > 0;
+        const blobUrls = {};
+        const resourceBlobs = {};
+        const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+        const pendingFrames = {}; // uuid -> [{el, frag}] awaiting text for own frames
+        const pendingRelays = {}; // uuid -> [childWindow] awaiting text to pass down
+        function mountPage(el, frag, text) {
+          const pageBlob = new Blob([text], { type: 'text/html' });
+          const u = URL.createObjectURL(pageBlob);
+          resourceBlobs[u] = pageBlob;
+          el.src = u + frag;
+        }
+        function deliverPage(uuid, text) {
+          const frames = pendingFrames[uuid];
+          delete pendingFrames[uuid];
+          if (frames) for (const f of frames) mountPage(f.el, f.frag, text);
+          const relays = pendingRelays[uuid];
+          delete pendingRelays[uuid];
+          if (relays) {
+            for (const cw of relays) {
+              try { cw.postMessage({ __bundler_page: uuid, __bundler_text: text }, OWN_TARGET); } catch (err) { /* gone */ }
             }
-            finalBytes = new Uint8Array(totalLen);
-            let offset = 0;
-            for (const chunk of chunks) { finalBytes.set(chunk, offset); offset += chunk.length; }
-          } else {
-            console.warn('DecompressionStream not available, asset ' + uuid + ' may not render');
+          }
+        }
+        function ownFrameWindows() {
+          const out = [];
+          for (const f of Array.from(document.querySelectorAll('iframe'))) {
+            try { if (f.contentWindow) out.push(f.contentWindow); } catch (err) { /* detached */ }
+          }
+          return out;
+        }
+        window.addEventListener('message', function (e) {
+          const d = e.data;
+          if (!d || typeof d !== 'object' || !e.source) return;
+          // Origin gate first; the structural checks below (own-child-frames
+          // for requests, direct-parent + solicited-uuid for replies, the
+          // root's never-relay rule) are what hold in fully opaque chains
+          // where origin strings can't discriminate — a sandboxed root's
+          // FOREIGN wrapper still fails all three even though both serialize
+          // as real-vs-'null' rather than matching.
+          if (!trustedOrigin(e)) return;
+          if (typeof d.__bundler_need === 'string' && UUID_SHAPE.test(d.__bundler_need)) {
+            // Requests are honored only for this document's own child frames.
+            if (ownFrameWindows().indexOf(e.source) < 0) return;
+            const uuid = d.__bundler_need;
+            const text = pageTexts[uuid];
+            if (typeof text === 'string') {
+              try { e.source.postMessage({ __bundler_page: uuid, __bundler_text: text }, OWN_TARGET); } catch (err) { /* gone */ }
+              return;
+            }
+            if (isPageRoot || window.parent === window) return; // authoritative miss
+            const waiting = pendingRelays[uuid];
+            if (waiting) {
+              if (waiting.indexOf(e.source) < 0) waiting.push(e.source);
+              return;
+            }
+            // Never-answered uuids would otherwise accumulate forever under a
+            // request spray; past the cap (far above any real page count) new
+            // relays are dropped rather than remembered.
+            if (Object.keys(pendingRelays).length >= 128) return;
+            pendingRelays[uuid] = [e.source];
+            window.parent.postMessage({ __bundler_need: uuid }, OWN_TARGET);
+          } else if (
+            typeof d.__bundler_page === 'string' &&
+            UUID_SHAPE.test(d.__bundler_page) &&
+            typeof d.__bundler_text === 'string'
+          ) {
+            // The shape test is load-bearing beyond tidiness: the solicited
+            // check below uses the in operator, which matches prototype keys
+            // ('__proto__', 'constructor') — an unshaped key would reach
+            // deliverPage and throw, painting the error banner.
+            // Text is accepted only from the direct parent — the document
+            // that minted this one.
+            if (e.source !== window.parent || window.parent === window) return;
+            if (!(d.__bundler_page in pendingFrames) && !(d.__bundler_page in pendingRelays)) return;
+            deliverPage(d.__bundler_page, d.__bundler_text);
+          }
+        });
+
+        const uuids = Object.keys(manifest);
+        setStatus('Unpacking ' + uuids.length + ' assets...');
+
+        await Promise.all(uuids.map(async (uuid) => {
+          const entry = manifest[uuid];
+          try {
+            const binaryStr = atob(entry.data);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+
+            let finalBytes = bytes;
+            if (entry.compressed) {
+              if (typeof DecompressionStream !== 'undefined') {
+                const ds = new DecompressionStream('gzip');
+                const writer = ds.writable.getWriter();
+                const reader = ds.readable.getReader();
+                writer.write(bytes);
+                writer.close();
+                const chunks = [];
+                let totalLen = 0;
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  chunks.push(value);
+                  totalLen += value.length;
+                }
+                finalBytes = new Uint8Array(totalLen);
+                let offset = 0;
+                for (const chunk of chunks) { finalBytes.set(chunk, offset); offset += chunk.length; }
+              } else {
+                console.warn('DecompressionStream not available, asset ' + uuid + ' may not render');
+              }
+            }
+
+            if (pageSet.has(uuid)) {
+              pageTexts[uuid] = new TextDecoder().decode(finalBytes);
+              return;
+            }
+            if (FONT_MIME.test(entry.mime) && MIME_TOKEN.test(entry.mime)) {
+              // Strict artifact hosts allow font-src data: but not blob:.
+              blobUrls[uuid] = 'data:' + entry.mime + ';base64,' +
+                (entry.compressed ? toBase64(finalBytes) : entry.data);
+            } else {
+              const blob = new Blob([finalBytes], { type: entry.mime });
+              blobUrls[uuid] = URL.createObjectURL(blob);
+              resourceBlobs[blobUrls[uuid]] = blob;
+            }
+          } catch (err) {
+            console.error('Failed to decode asset ' + uuid + ':', err);
+            const blob = new Blob([], { type: entry.mime });
+            blobUrls[uuid] = URL.createObjectURL(blob);
+            resourceBlobs[blobUrls[uuid]] = blob;
+          }
+        }));
+
+        const extResEl = document.querySelector('script[type="__bundler/ext_resources"]');
+        const extResources = extResEl ? JSON.parse(extResEl.textContent) : [];
+        const resourceMap = {};
+        for (const entry of extResources) {
+          if (blobUrls[entry.uuid]) resourceMap[entry.id] = blobUrls[entry.uuid];
+        }
+
+        // Artifact-host CSP (connect-src 'self') refuses fetch() of blob: URLs —
+        // consumers read these Blobs directly. Survives the swap like the error sink.
+        window.__resourceBlobs = resourceBlobs;
+
+        setStatus('Rendering...');
+        // Page uuids have no blob here — they ride inside about:blank#<uuid>
+        // frame markers the pass below resolves after the swap.
+        for (const uuid of uuids) {
+          if (pageSet.has(uuid)) continue;
+          template = template.split(uuid).join(blobUrls[uuid]);
+        }
+
+        // Strip integrity + crossorigin — blob URLs from a file:// document inherit
+        // a null origin, so crossorigin forces a CORS fetch that SRI then rejects.
+        // The manifest bytes are ours; SRI protects against CDN compromise, not this.
+        template = template.replace(/\s+integrity="[^"]*"/gi, '').replace(/\s+crossorigin="[^"]*"/gi, '');
+
+        const resourceScript = '<script>window.__resources = ' +
+          JSON.stringify(resourceMap).replace(/<\//g, '<\\/') +
+          ';</' + 'script>';
+        // Inject after <head> so the DOCTYPE stays first; prepending the script
+        // would push the parser into quirks mode. DOMParser always emits a <head>
+        // (synthesizing one if the source HTML omitted it) but may carry
+        // attributes through, so match the full opening tag. slice() rather than
+        // replace() keeps us clear of $-pattern substitution in resourceScript.
+        const headOpen = template.match(/<head[^>]*>/i);
+        if (headOpen) {
+          const i = headOpen.index + headOpen[0].length;
+          template = template.slice(0, i) + resourceScript + template.slice(i);
+        }
+
+        // Parse the template and swap the root element. Scripts inserted via
+        // DOMParser/replaceWith are inert per spec — re-create each with
+        // createElement so they execute, awaiting onload for src scripts to
+        // preserve ordering (React before ReactDOM before Babel before text/babel).
+        const doc = new DOMParser().parseFromString(template, 'text/html');
+        document.documentElement.replaceWith(doc.documentElement);
+
+        // Resolve page-frame markers: mint this document's own blob for each
+        // framed page — from local text when this is the root, otherwise by
+        // asking the direct parent over the relay protocol above. An
+        // unanswered request leaves the frame on about:blank, the same
+        // degraded state as a refused embed.
+        {
+          const MARKER = /^about:blank#([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(#.*)?$/;
+          const needed = [];
+          for (const el of Array.from(document.querySelectorAll('iframe'))) {
+            const m = MARKER.exec(el.getAttribute('src') || '');
+            if (!m) continue;
+            const text = pageTexts[m[1]];
+            if (typeof text === 'string') {
+              mountPage(el, m[2] || '', text);
+            } else if (window.parent !== window && !isPageRoot) {
+              const had = pendingFrames[m[1]];
+              (pendingFrames[m[1]] = had || []).push({ el: el, frag: m[2] || '' });
+              if (!had) needed.push(m[1]);
+            }
+          }
+          for (const uuid of needed) {
+            window.parent.postMessage({ __bundler_need: uuid }, OWN_TARGET);
           }
         }
 
-        if (pageSet.has(uuid)) {
-          pageTexts[uuid] = new TextDecoder().decode(finalBytes);
-          return;
+        const dead = Array.from(document.scripts);
+        for (const old of dead) {
+          const s = document.createElement('script');
+          for (const a of old.attributes) s.setAttribute(a.name, a.value);
+          s.textContent = old.textContent;
+          // text/babel scripts with a src: read and inline. transformScriptTags
+          // does XHR against the src, but blob:null/ from a file:// origin is
+          // silently dropped. Inlining makes it a plain inline babel script,
+          // which transformScriptTags handles unconditionally.
+          if ((s.type === 'text/babel' || s.type === 'text/jsx') && s.src) {
+            const pre = resourceBlobs[s.src.split('#')[0]];
+            s.textContent = pre ? await pre.text() : await (await fetch(s.src)).text();
+            s.removeAttribute('src');
+          }
+          const p = s.src ? new Promise(function (r) { s.onload = s.onerror = r; }) : null;
+          old.replaceWith(s);
+          if (p) await p;
         }
-        if (FONT_MIME.test(entry.mime) && MIME_TOKEN.test(entry.mime)) {
-          // Strict artifact hosts allow font-src data: but not blob:.
-          blobUrls[uuid] = 'data:' + entry.mime + ';base64,' +
-            (entry.compressed ? toBase64(finalBytes) : entry.data);
-        } else {
-          const blob = new Blob([finalBytes], { type: entry.mime });
-          blobUrls[uuid] = URL.createObjectURL(blob);
-          resourceBlobs[blobUrls[uuid]] = blob;
+        // Babel standalone auto-transforms type=text/babel on DOMContentLoaded,
+        // which fired before we swapped the document. Trigger manually if present.
+        if (window.Babel && typeof window.Babel.transformScriptTags === 'function') {
+          window.Babel.transformScriptTags();
         }
       } catch (err) {
-        console.error('Failed to decode asset ' + uuid + ':', err);
-        const blob = new Blob([], { type: entry.mime });
-        blobUrls[uuid] = URL.createObjectURL(blob);
-        resourceBlobs[blobUrls[uuid]] = blob;
+        setStatus('Error unpacking: ' + err.message);
+        console.error('Bundle unpack error:', err);
       }
-    }));
-
-    const extResEl = document.querySelector('script[type="__bundler/ext_resources"]');
-    const extResources = extResEl ? JSON.parse(extResEl.textContent) : [];
-    const resourceMap = {};
-    for (const entry of extResources) {
-      if (blobUrls[entry.uuid]) resourceMap[entry.id] = blobUrls[entry.uuid];
-    }
-
-    // Artifact-host CSP (connect-src 'self') refuses fetch() of blob: URLs —
-    // consumers read these Blobs directly. Survives the swap like the error sink.
-    window.__resourceBlobs = resourceBlobs;
-
-    setStatus('Rendering...');
-    // Page uuids have no blob here — they ride inside about:blank#<uuid>
-    // frame markers the pass below resolves after the swap.
-    for (const uuid of uuids) {
-      if (pageSet.has(uuid)) continue;
-      template = template.split(uuid).join(blobUrls[uuid]);
-    }
-
-    // Strip integrity + crossorigin — blob URLs from a file:// document inherit
-    // a null origin, so crossorigin forces a CORS fetch that SRI then rejects.
-    // The manifest bytes are ours; SRI protects against CDN compromise, not this.
-    template = template.replace(/\s+integrity="[^"]*"/gi, '').replace(/\s+crossorigin="[^"]*"/gi, '');
-
-    const resourceScript = '<script>window.__resources = ' +
-      JSON.stringify(resourceMap).replace(/<\//g, '<\\/') +
-      ';</' + 'script>';
-    // Inject after <head> so the DOCTYPE stays first; prepending the script
-    // would push the parser into quirks mode. DOMParser always emits a <head>
-    // (synthesizing one if the source HTML omitted it) but may carry
-    // attributes through, so match the full opening tag. slice() rather than
-    // replace() keeps us clear of $-pattern substitution in resourceScript.
-    const headOpen = template.match(/<head[^>]*>/i);
-    if (headOpen) {
-      const i = headOpen.index + headOpen[0].length;
-      template = template.slice(0, i) + resourceScript + template.slice(i);
-    }
-
-    // Parse the template and swap the root element. Scripts inserted via
-    // DOMParser/replaceWith are inert per spec — re-create each with
-    // createElement so they execute, awaiting onload for src scripts to
-    // preserve ordering (React before ReactDOM before Babel before text/babel).
-    const doc = new DOMParser().parseFromString(template, 'text/html');
-    document.documentElement.replaceWith(doc.documentElement);
-
-    // Resolve page-frame markers: mint this document's own blob for each
-    // framed page — from local text when this is the root, otherwise by
-    // asking the direct parent over the relay protocol above. An
-    // unanswered request leaves the frame on about:blank, the same
-    // degraded state as a refused embed.
-    {
-      const MARKER = /^about:blank#([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(#.*)?$/;
-      const needed = [];
-      for (const el of Array.from(document.querySelectorAll('iframe'))) {
-        const m = MARKER.exec(el.getAttribute('src') || '');
-        if (!m) continue;
-        const text = pageTexts[m[1]];
-        if (typeof text === 'string') {
-          mountPage(el, m[2] || '', text);
-        } else if (window.parent !== window && !isPageRoot) {
-          const had = pendingFrames[m[1]];
-          (pendingFrames[m[1]] = had || []).push({ el: el, frag: m[2] || '' });
-          if (!had) needed.push(m[1]);
-        }
-      }
-      for (const uuid of needed) {
-        window.parent.postMessage({ __bundler_need: uuid }, OWN_TARGET);
-      }
-    }
-
-    const dead = Array.from(document.scripts);
-    for (const old of dead) {
-      const s = document.createElement('script');
-      for (const a of old.attributes) s.setAttribute(a.name, a.value);
-      s.textContent = old.textContent;
-      // text/babel scripts with a src: read and inline. transformScriptTags
-      // does XHR against the src, but blob:null/ from a file:// origin is
-      // silently dropped. Inlining makes it a plain inline babel script,
-      // which transformScriptTags handles unconditionally.
-      if ((s.type === 'text/babel' || s.type === 'text/jsx') && s.src) {
-        const pre = resourceBlobs[s.src.split('#')[0]];
-        s.textContent = pre ? await pre.text() : await (await fetch(s.src)).text();
-        s.removeAttribute('src');
-      }
-      const p = s.src ? new Promise(function(r) { s.onload = s.onerror = r; }) : null;
-      old.replaceWith(s);
-      if (p) await p;
-    }
-    // Babel standalone auto-transforms type=text/babel on DOMContentLoaded,
-    // which fired before we swapped the document. Trigger manually if present.
-    if (window.Babel && typeof window.Babel.transformScriptTags === 'function') {
-      window.Babel.transformScriptTags();
-    }
-  } catch (err) {
-    setStatus('Error unpacking: ' + err.message);
-    console.error('Bundle unpack error:', err);
-  }
-});
+    });
 
   </script>
 
@@ -389,4 +442,5 @@ document.addEventListener('DOMContentLoaded', async function() {
 "<!DOCTYPE html>\n<html><head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<script src=\"f3195b33-a45d-47f0-be50-a654c74c781e\"><\u002Fscript>\n\n<\u002Fhead>\n<body>\n<x-dc>\n<helmet>\n  <style>:root{\n/* Brand */\n--color-lobster:#c8371f; /* the red lobster — primary brand accent */\n--color-lobster-dark:#9c2a17; /* hover/press */\n--color-lobster-tint:#fdf1ef; /* faint wash for callouts */\n/* Page (light, vulfpeck-style: white paper, black ink) */\n--color-paper:#ffffff;\n--color-ink:#111111;\n--color-ink-dim:#808080;   /* term 244 — secondary text */\n--color-ink-label:#585858; /* term 240 — labels */\n--color-hairline:#e3e3e3;\n/* Semantic — light-background variants from internal/tui/view.go */\n--color-good:#008700; /* term 28 */\n--color-warn:#af5f00; /* term 130 — also \"money\" */\n--color-bad:#af0000;  /* term 124 */\n--color-info:#005faf; /* term 25 — TUI title */\n/* Terminal-dark variants (for dark code blocks) */\n--term-bg:#141414;\n--term-fg:#d7d7d7;\n--term-dim:#8a8a8a;   /* term 245 */\n--term-good:#5fd787;  /* term 78 */\n--term-warn:#ffaf00;  /* term 214 */\n--term-bad:#ff5f5f;   /* term 203 */\n--term-info:#00afff;  /* term 39 */\n/* Semantic aliases */\n--surface-page:var(--color-paper);\n--surface-card:var(--color-paper);\n--surface-terminal:var(--term-bg);\n--text-body:var(--color-ink);\n--text-muted:var(--color-ink-dim);\n--text-label:var(--color-ink-label);\n--text-brand:var(--color-lobster);\n--border-default:var(--color-hairline);\n--border-strong:var(--color-ink);\n--link-ink:var(--color-ink);\n--link-hover:var(--color-lobster);\n}<\u002Fstyle>\n  <style>/* latin-ext */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: italic;\n  font-weight: 400;\n  font-display: swap;\n  src: url(\"872c9efa-acc7-4069-90c4-e6daec98aa02\") format('woff2');\n  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;\n}\n/* latin */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: italic;\n  font-weight: 400;\n  font-display: swap;\n  src: url(\"351124c0-510a-4477-a631-54e834c93c64\") format('woff2');\n  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;\n}\n/* latin-ext */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: italic;\n  font-weight: 700;\n  font-display: swap;\n  src: url(\"508a1a53-2236-4a82-b514-a38b01e036da\") format('woff2');\n  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;\n}\n/* latin */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: italic;\n  font-weight: 700;\n  font-display: swap;\n  src: url(\"22b3a4ce-64ba-48d9-ac1c-152c77e42940\") format('woff2');\n  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;\n}\n/* latin-ext */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: normal;\n  font-weight: 400;\n  font-display: swap;\n  src: url(\"87aa2dd1-7b24-427d-9c4e-99bc585e6039\") format('woff2');\n  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;\n}\n/* latin */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: normal;\n  font-weight: 400;\n  font-display: swap;\n  src: url(\"ea384ddc-5ef3-4673-bbd1-92fa296beada\") format('woff2');\n  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;\n}\n/* latin-ext */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: normal;\n  font-weight: 700;\n  font-display: swap;\n  src: url(\"4cff0449-250a-43bf-9cb6-2563e0a9ead5\") format('woff2');\n  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;\n}\n/* latin */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: normal;\n  font-weight: 700;\n  font-display: swap;\n  src: url(\"0d5b048f-cc49-4002-8c3c-f6a415a2a681\") format('woff2');\n  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;\n}\n\n:root{\n/* One family. LARRI is a terminal product; the web page is set entirely in mono.\n   Courier Prime substitutes for Vulf Mono (commercial). */\n--font-mono:'Courier Prime','Courier New',Courier,monospace;\n--font-body:var(--font-mono);\n--font-display:var(--font-mono);\n/* Scale — small and typewriter-flat */\n--text-xs:12px;\n--text-sm:13px;\n--text-md:15px;   /* body */\n--text-lg:18px;\n--text-xl:24px;   /* page title (bold, not big) */\n--leading-tight:1.3;\n--leading-body:1.65;\n--tracking-caps:0.08em;\n}<\u002Fstyle>\n  <style>:root{\n--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:24px;--space-6:32px;--space-7:48px;--space-8:64px;--space-9:96px;\n/* Text page geometry */\n--measure:62ch;      /* max text column */\n--measure-narrow:44ch;\n--radius-0:0px;      /* the system has NO rounded corners */\n/* Borders: 1px hairlines and 1px solid ink; no shadows anywhere */\n}<\u002Fstyle>\n  <style>:root{\n/* Brand */\n--color-lobster:#c8371f; /* the red lobster — primary brand accent */\n--color-lobster-dark:#9c2a17; /* hover/press */\n--color-lobster-tint:#fdf1ef; /* faint wash for callouts */\n/* Page (light, vulfpeck-style: white paper, black ink) */\n--color-paper:#ffffff;\n--color-ink:#111111;\n--color-ink-dim:#808080;   /* term 244 — secondary text */\n--color-ink-label:#585858; /* term 240 — labels */\n--color-hairline:#e3e3e3;\n/* Semantic — light-background variants from internal/tui/view.go */\n--color-good:#008700; /* term 28 */\n--color-warn:#af5f00; /* term 130 — also \"money\" */\n--color-bad:#af0000;  /* term 124 */\n--color-info:#005faf; /* term 25 — TUI title */\n/* Terminal-dark variants (for dark code blocks) */\n--term-bg:#141414;\n--term-fg:#d7d7d7;\n--term-dim:#8a8a8a;   /* term 245 */\n--term-good:#5fd787;  /* term 78 */\n--term-warn:#ffaf00;  /* term 214 */\n--term-bad:#ff5f5f;   /* term 203 */\n--term-info:#00afff;  /* term 39 */\n/* Semantic aliases */\n--surface-page:var(--color-paper);\n--surface-card:var(--color-paper);\n--surface-terminal:var(--term-bg);\n--text-body:var(--color-ink);\n--text-muted:var(--color-ink-dim);\n--text-label:var(--color-ink-label);\n--text-brand:var(--color-lobster);\n--border-default:var(--color-hairline);\n--border-strong:var(--color-ink);\n--link-ink:var(--color-ink);\n--link-hover:var(--color-lobster);\n}\n/* latin-ext */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: italic;\n  font-weight: 400;\n  font-display: swap;\n  src: url(\"872c9efa-acc7-4069-90c4-e6daec98aa02\") format('woff2');\n  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;\n}\n/* latin */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: italic;\n  font-weight: 400;\n  font-display: swap;\n  src: url(\"351124c0-510a-4477-a631-54e834c93c64\") format('woff2');\n  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;\n}\n/* latin-ext */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: italic;\n  font-weight: 700;\n  font-display: swap;\n  src: url(\"508a1a53-2236-4a82-b514-a38b01e036da\") format('woff2');\n  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;\n}\n/* latin */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: italic;\n  font-weight: 700;\n  font-display: swap;\n  src: url(\"22b3a4ce-64ba-48d9-ac1c-152c77e42940\") format('woff2');\n  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;\n}\n/* latin-ext */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: normal;\n  font-weight: 400;\n  font-display: swap;\n  src: url(\"87aa2dd1-7b24-427d-9c4e-99bc585e6039\") format('woff2');\n  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;\n}\n/* latin */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: normal;\n  font-weight: 400;\n  font-display: swap;\n  src: url(\"ea384ddc-5ef3-4673-bbd1-92fa296beada\") format('woff2');\n  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;\n}\n/* latin-ext */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: normal;\n  font-weight: 700;\n  font-display: swap;\n  src: url(\"4cff0449-250a-43bf-9cb6-2563e0a9ead5\") format('woff2');\n  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;\n}\n/* latin */\n@font-face {\n  font-family: 'Courier Prime';\n  font-style: normal;\n  font-weight: 700;\n  font-display: swap;\n  src: url(\"0d5b048f-cc49-4002-8c3c-f6a415a2a681\") format('woff2');\n  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;\n}\n\n:root{\n/* One family. LARRI is a terminal product; the web page is set entirely in mono.\n   Courier Prime substitutes for Vulf Mono (commercial). */\n--font-mono:'Courier Prime','Courier New',Courier,monospace;\n--font-body:var(--font-mono);\n--font-display:var(--font-mono);\n/* Scale — small and typewriter-flat */\n--text-xs:12px;\n--text-sm:13px;\n--text-md:15px;   /* body */\n--text-lg:18px;\n--text-xl:24px;   /* page title (bold, not big) */\n--leading-tight:1.3;\n--leading-body:1.65;\n--tracking-caps:0.08em;\n}\n:root{\n--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:24px;--space-6:32px;--space-7:48px;--space-8:64px;--space-9:96px;\n/* Text page geometry */\n--measure:62ch;      /* max text column */\n--measure-narrow:44ch;\n--radius-0:0px;      /* the system has NO rounded corners */\n/* Borders: 1px hairlines and 1px solid ink; no shadows anywhere */\n}<\u002Fstyle>\n  <script src=\"a688519c-a3fb-4fb3-aff4-bdd19eb255d7\"><\u002Fscript>\n  <style>\n    html{scroll-behavior:auto;}\n    body{margin:0;background:var(--color-paper);color:var(--color-ink);font-family:var(--font-mono);font-size:var(--text-md);line-height:var(--leading-body);}\n    a{color:var(--link-ink);}\n    a:hover{color:var(--link-hover);}\n  <\u002Fstyle>\n<\u002Fhelmet>\n<div style=\"min-height:100vh;background:var(--color-paper);padding:56px 24px 64px;box-sizing:border-box\">\n  <div style=\"max-width:62ch;margin:0 auto\">\n\n    <header data-screen-label=\"Home\" style=\"text-align:center\">\n      <sc-if value=\"{{ showMascot }}\" hint-placeholder-val=\"{{ true }}\">\n        \n      <\u002Fsc-if>\n      <h1 style=\"font-size:var(--text-xl);margin:20px 0 4px;font-weight:700\">L.A.R.R.I. 🦞<\u002Fh1>\n      <div style=\"font-weight:700\">Local Agent for Remote Rigging of Inference<\u002Fdiv>\n      <div style=\"font-style:italic;color:var(--text-muted);margin:8px 0 28px\">Rent a GPU. Serve a model. Stop paying. Two commands.<\u002Fdiv>\n      <nav style=\"display:flex;justify-content:center;gap:8px;flex-wrap:wrap;font-size:var(--text-md)\">\n        <a href=\"#introduction\" style=\"text-decoration:underline\">introduction<\u002Fa>\n        <span style=\"color:var(--text-muted)\">·<\u002Fspan>\n        <a href=\"#features\" style=\"text-decoration:underline\">features<\u002Fa>\n        <span style=\"color:var(--text-muted)\">·<\u002Fspan>\n        <a href=\"#usage\" style=\"text-decoration:underline\">usage<\u002Fa>\n        <span style=\"color:var(--text-muted)\">·<\u002Fspan>\n        <a href=\"#architecture\" style=\"text-decoration:underline\">architecture<\u002Fa>\n        <span style=\"color:var(--text-muted)\">·<\u002Fspan>\n        <a href=\"#security\" style=\"text-decoration:underline\">security<\u002Fa>\n        <span style=\"color:var(--text-muted)\">·<\u002Fspan>\n        <a href=\"cookbook.html\" style=\"text-decoration:underline\">cookbook<\u002Fa>\n        <span style=\"color:var(--text-muted)\">·<\u002Fspan>\n        <a href=\"https://github.com/sovrenix/larri\" target=\"_blank\" rel=\"noreferrer\" style=\"text-decoration:underline\">source ↗<\u002Fa>\n      <\u002Fnav>\n      <sc-if value=\"{{ showAlpha }}\" hint-placeholder-val=\"{{ true }}\">\n        <div style=\"margin-top:28px;font-size:var(--text-sm);color:var(--text-label)\">\n          <x-import component-from-global-scope=\"LARRIDesignSystem_171b84.StatusBadge\" tone=\"warn\" hint-size=\"auto,20px\">ALPHA<\u002Fx-import>\n          <span> v0.9.0 · Vast.ai + RunPod · vLLM / llama.cpp / Ollama<\u002Fspan>\n        <\u002Fdiv>\n      <\u002Fsc-if>\n    <\u002Fheader>\n\n    <div style=\"margin:40px auto;max-width:44ch\"><x-import component-from-global-scope=\"LARRIDesignSystem_171b84.Rule\" char=\"·\" hint-size=\"100%,20px\"><\u002Fx-import><\u002Fdiv>\n\n    <section id=\"introduction\" data-screen-label=\"Introduction\" style=\"text-align:left\">\n      <h2 style=\"font-size:var(--text-lg);font-weight:700;margin:0 0 6px\">Introduction<\u002Fh2>\n      <p style=\"margin:0 0 16px\">LARRI is a single-binary Go CLI that rents a GPU on Vast.ai or RunPod, serves a model with vLLM, llama.cpp, or Ollama, and securely tunnels it to a stable local endpoint — <b>http://127.0.0.1:8000/v1<\u002Fb>, whatever the provider.<\u002Fp>\n      <p style=\"margin:0 0 16px\">One command brings a rig up. One command tears it down, confirms the machine is actually gone, and reports what it cost.<\u002Fp>\n      <div style=\"border-left:2px solid var(--color-lobster);background:var(--color-lobster-tint);padding:10px 14px;font-size:var(--text-sm)\">\n        ⚠ Treat it as alpha in the way that matters: <b>it spends money<\u002Fb>. Price caps and teardown limits are containment, not a refund.\n      <\u002Fdiv>\n    <\u002Fsection>\n\n    <div style=\"margin:40px 0\"><x-import component-from-global-scope=\"LARRIDesignSystem_171b84.Rule\" hint-size=\"100%,20px\"><\u002Fx-import><\u002Fdiv>\n\n    <section id=\"features\" data-screen-label=\"Features\" style=\"text-align:left\">\n      <h2 style=\"font-size:var(--text-lg);font-weight:700;margin:0 0 6px\">Features<\u002Fh2>\n      <p style=\"margin:0 0 20px;color:var(--text-muted)\">All the guarantees that matter.<\u002Fp>\n      <div style=\"display:flex;flex-direction:column\">\n        <sc-for list=\"{{ features }}\" as=\"f\" hint-placeholder-count=\"6\">\n          <div style=\"display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--color-hairline)\">\n            <span style=\"color:var(--color-good);flex:none\">✓<\u002Fspan>\n            <div><b>{{ f.name }}<\u002Fb> — {{ f.desc }}<\u002Fdiv>\n          <\u002Fdiv>\n        <\u002Fsc-for>\n      <\u002Fdiv>\n    <\u002Fsection>\n\n    <div style=\"margin:40px 0\"><x-import component-from-global-scope=\"LARRIDesignSystem_171b84.Rule\" hint-size=\"100%,20px\"><\u002Fx-import><\u002Fdiv>\n\n    <section id=\"usage\" data-screen-label=\"Usage\" style=\"text-align:left\">\n      <h2 style=\"font-size:var(--text-lg);font-weight:700;margin:0 0 6px\">Usage<\u002Fh2>\n      <p style=\"margin:0 0 20px;color:var(--text-muted)\">Two commands. Everything else is optional.<\u002Fp>\n      <x-import component-from-global-scope=\"LARRIDesignSystem_171b84.Terminal\" lines=\"{{ termLines }}\" hint-size=\"100%,220px\"><\u002Fx-import>\n      <div style=\"margin:24px 0 0\">\n        <x-import component-from-global-scope=\"LARRIDesignSystem_171b84.DataTable\" columns=\"{{ cmdCols }}\" rows=\"{{ cmdRows }}\" hint-size=\"100%,280px\"><\u002Fx-import>\n      <\u002Fdiv>\n      <p style=\"margin:24px 0 0;font-size:var(--text-sm)\">Install: <b>go install github.com/sovrenix/larri@latest<\u002Fb> — or grab a release binary from GitHub.<\u002Fp>\n    <\u002Fsection>\n\n    <div style=\"margin:40px 0\"><x-import component-from-global-scope=\"LARRIDesignSystem_171b84.Rule\" hint-size=\"100%,20px\"><\u002Fx-import><\u002Fdiv>\n\n    <section id=\"architecture\" data-screen-label=\"Architecture\" style=\"text-align:left\">\n      <h2 style=\"font-size:var(--text-lg);font-weight:700;margin:0 0 6px\">Architecture<\u002Fh2>\n      <p style=\"margin:0 0 20px;color:var(--text-muted)\">One binary at home, one rig away. Nothing in between to trust.<\u002Fp>\n      <pre style=\"margin:0;font-size:12px;line-height:1.45;font-family:var(--font-mono);color:var(--color-ink);overflow-x:auto\">{{ archDiagram }}<\u002Fpre>\n    <\u002Fsection>\n\n    <div style=\"margin:40px 0\"><x-import component-from-global-scope=\"LARRIDesignSystem_171b84.Rule\" hint-size=\"100%,20px\"><\u002Fx-import><\u002Fdiv>\n\n    <section id=\"security\" data-screen-label=\"Security\" style=\"text-align:left\">\n      <h2 style=\"font-size:var(--text-lg);font-weight:700;margin:0 0 6px\">Security<\u002Fh2>\n      <p style=\"margin:0 0 20px;color:var(--text-muted)\">The GPU is a stranger's machine. Design for that.<\u002Fp>\n      <p style=\"margin:0 0 16px\">The rented box sits on a public network. LARRI treats it accordingly: nothing is trusted because it answered, and nothing secret is left on it.<\u002Fp>\n      <div style=\"display:flex;flex-direction:column\">\n        <div style=\"display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--color-hairline)\">\n          <span style=\"color:var(--color-good);flex:none\">✓<\u002Fspan>\n          <div><b>Comms stay in the tunnel<\u002Fb> — the model port is never exposed publicly. All traffic between you and the rig travels through an encrypted SSH tunnel to <b>127.0.0.1<\u002Fb>; your prompts do not cross the open internet in the clear.<\u002Fdiv>\n        <\u002Fdiv>\n        <div style=\"display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--color-hairline)\">\n          <span style=\"color:var(--color-good);flex:none\">✓<\u002Fspan>\n          <div><b>Secrets stay home<\u002Fb> — provider API keys live in your local config, readable by your user only. They are never copied to the rig, baked into an image, or written to its disk.<\u002Fdiv>\n        <\u002Fdiv>\n        <div style=\"display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--color-hairline)\">\n          <span style=\"color:var(--color-good);flex:none\">✓<\u002Fspan>\n          <div><b>Per-rig keys<\u002Fb> — each rig gets a fresh SSH keypair, generated locally and discarded with the rig. No shared credentials, nothing to reuse after teardown.<\u002Fdiv>\n        <\u002Fdiv>\n        <div style=\"display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--color-hairline)\">\n          <span style=\"color:var(--color-good);flex:none\">✓<\u002Fspan>\n          <div><b>Nothing phones home<\u002Fb> — no telemetry, no analytics, no account. The only parties that see traffic are you, the provider's API, and the rig you rented.<\u002Fdiv>\n        <\u002Fdiv>\n        <div style=\"display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--color-hairline)\">\n          <span style=\"color:var(--color-good);flex:none\">✓<\u002Fspan>\n          <div><b>Teardown is verified<\u002Fb> — a 200 from a delete endpoint is a claim; absence from the inventory is evidence. LARRI checks the inventory before it tells you the rig is gone.<\u002Fdiv>\n        <\u002Fdiv>\n      <\u002Fdiv>\n      <div style=\"margin-top:20px;border-left:2px solid var(--color-lobster);background:var(--color-lobster-tint);padding:10px 14px;font-size:var(--text-sm)\">\n        ⚠ Honest limit: the provider owns the hardware. Weights and activations exist on their GPU while the rig runs. If a prompt must never leave your building, do not send it to a rented machine.\n      <\u002Fdiv>\n    <\u002Fsection>\n\n    <div style=\"margin:40px auto;max-width:44ch\"><x-import component-from-global-scope=\"LARRIDesignSystem_171b84.Rule\" char=\"·\" hint-size=\"100%,20px\"><\u002Fx-import><\u002Fdiv>\n\n    <section data-screen-label=\"Source\" style=\"text-align:center\">\n      <h2 style=\"font-size:var(--text-md);font-weight:700;margin:0 0 12px\">Source<\u002Fh2>\n      \n      <div style=\"display:flex;flex-direction:column;gap:10px;align-items:center;font-size:var(--text-md)\">\n        <x-import component-from-global-scope=\"LARRIDesignSystem_171b84.TextLink\" href=\"https://github.com/sovrenix/larri\" external=\"{{ true }}\" hint-size=\"auto,22px\">github.com/sovrenix/larri (GPL-3.0)<\u002Fx-import>\n        \n        \n        <x-import component-from-global-scope=\"LARRIDesignSystem_171b84.TextLink\" href=\"https://github.com/sovrenix/larri/issues\" external=\"{{ true }}\" hint-size=\"auto,22px\">report an issue<\u002Fx-import>\n      <\u002Fdiv><div style=\"margin-top:24px\">\n        <x-import component-from-global-scope=\"LARRIDesignSystem_171b84.Button\" href=\"https://github.com/sovrenix/larri\" hint-size=\"auto,40px\">View on GitHub →<\u002Fx-import>\n      <\u002Fdiv>\n    <\u002Fsection>\n\n    <footer style=\"margin-top:48px;text-align:center;font-size:var(--text-sm);color:var(--text-muted)\">\n      <div>🦞 <b>Larri the Lobster<\u002Fb> — same lobster, new shell.<\u002Fdiv>\n      <div style=\"margin-top:8px\">Sovrenix Inc. · licence GPL-3.0<\u002Fdiv>\n    <\u002Ffooter>\n\n  <\u002Fdiv>\n<\u002Fdiv>\n<\u002Fx-dc>\n<script type=\"text/x-dc\" data-dc-script=\"\" data-props=\"{&quot;showMascot&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Header&quot;},&quot;showAlphaBadge&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Header&quot;}}\">\nclass Component extends DCLogic {\n  renderVals() {\n    return {\n      showMascot: this.props.showMascot ?? true,\n      showAlpha: this.props.showAlphaBadge ?? true,\n      lobster: String.raw`                      \\        /\n                       \\      /\n       __/\\__           \\    /             __/\\__\n      /      \\           \\  /             /      \\\n      |  ()  |            \\/              |  ()  |\n      \\      /         ,------,           \\      /\n       \\    /         /  o  o  \\           \\    /\n        \\__/          |   ..   |            \\__/\n         \\____________|________|_____________/\n                      |########|\n                      |########|\n                      |########|\n                      \\########/\n                       \\______/\n                        \\ || /\n                        / || \\\n                      (__/  \\__)`,\n      archDiagram: String.raw`     your machine                                        public internet\n+----------------------+                           +------------------------+\n|  larri (one binary)  |                           | rented rig    [READY]  |\n|                      |            SSH            |                        |\n|  127.0.0.1:8000/v1   <=========( tunnel )========>  vLLM / llama.cpp /    |\n|    stable endpoint   |          encrypted        |  Ollama                |\n|                      |                           |  model port: never     |\n|  api keys + config   |                           |  public                |\n|    stay here         |                           | no secrets on disk     |\n+----------+-----------+                           +-----------+------------+\n           |                                                   ^\n           |           provider API (Vast.ai / RunPod)         |\n           +------------ rent · destroy · verify --------------+\n                          absence from inventory`,\n      features: [\n        {name:'Sizing before spending', desc:'weights and kv-cache are computed first; offers are ranked by price and fit before anything is rented.'},\n        {name:'One stable endpoint', desc:'the model always lands at http://127.0.0.1:8000/v1, whichever provider won the ranking.'},\n        {name:'Guaranteed teardown', desc:'larri down destroys the rig, confirms absence from the inventory, and reports the total cost.'},\n        {name:'Orphan hunting', desc:'larri orphans finds and destroys resources that local state does not account for.'},\n        {name:'Money-honest status', desc:'state, price, elapsed time, accrued cost — and why a past rig ended.'},\n        {name:'Live dashboard', desc:'larri tui runs the same lifecycle under a live dashboard.'},\n        {name:'Agent-ready', desc:'larri mcp exposes the lifecycle as MCP tools for Claude Code and other agents.'}\n      ],\n      termLines: [\n        {text:'larri up --model Qwen/Qwen3-Coder-30B --gpu A100 --max-price 1.50',tone:'cmd'},\n        {text:'  sizing    weights 19.1 GB · kv-cache 4.2 GB → 27.9 GB required',tone:'dim'},\n        {text:'  ranked    1. vastai  A100 80GB  $1.29/hr  fit 0.35  score 0.81',tone:'dim'},\n        {text:'  boot      image ✓ · weights ████████████ 100% (4m12s, $0.09)',tone:'dim'},\n        {text:'  ✓ rig 01J9Z… READY   http://127.0.0.1:8000/v1',tone:'good'},\n        {text:'larri down',tone:'cmd'},\n        {text:'  ✓ rig 01J9Z… DESTROYED · confirmed absent · total $2.87',tone:'good'}\n      ],\n      cmdCols: [{key:'cmd',label:'Command'},{key:'does',label:'Does'}],\n      cmdRows: [\n        {cmd:React.createElement('b',null,'larri up'),does:'Search, rank, provision, bootstrap, serve, supervise'},\n        {cmd:React.createElement('b',null,'larri status'),does:'State, price, elapsed time, accrued cost — and why a past rig ended'},\n        {cmd:React.createElement('b',null,'larri down'),does:'Destroy, confirm absence, report total cost'},\n        {cmd:React.createElement('b',null,'larri offers'),does:'Search and rank without spending anything'},\n        {cmd:React.createElement('b',null,'larri orphans'),does:'Find and destroy resources that local state does not account for'},\n        {cmd:React.createElement('b',null,'larri tui'),does:'The same lifecycle under a live dashboard'},\n        {cmd:React.createElement('b',null,'larri mcp'),does:'Expose the lifecycle as MCP tools for Claude Code and other agents'}\n      ]\n    };\n  }\n}\n<\u002Fscript>\n\n\n<\u002Fbody><\u002Fhtml>"
   </script>
 </body>
+
 </html>
