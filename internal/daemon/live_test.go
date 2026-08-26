@@ -4,6 +4,7 @@
 package daemon
 
 import (
+	"context"
 	"go.sovrenix.com/larri/internal/errs"
 	"net"
 	"strings"
@@ -301,5 +302,39 @@ func TestPendingContainersGetALongerStallTolerance(t *testing.T) {
 	}
 	if !bootOffline(&core.Instance{Status: "offline"}) {
 		t.Error("a vanished machine must still be caught by status")
+	}
+}
+
+// A live run was killed at thirty minutes reporting "context deadline
+// exceeded" — a message that names the mechanism and hides everything worth
+// knowing: which ceiling, how long it actually ran, and what the host was
+// doing. Twenty-two of those minutes were a weight download the host managed
+// at a third of its advertised link speed, which is ordinary rather than
+// broken, and vLLM was compiling when it died.
+func TestDeadlineExpiryExplainsItself(t *testing.T) {
+	o := &Orchestrator{lastProgress: "Dynamo bytecode transform time: 30.23 s"}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+
+	got := o.explainDeadline(ctx, context.DeadlineExceeded, 30*time.Minute,
+		time.Now().Add(-30*time.Minute))
+	if got == nil {
+		t.Fatal("expected an error")
+	}
+	msg := got.Error()
+	for _, want := range []string{"30m", "Dynamo", "--deadline"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message should carry %q: %s", want, msg)
+		}
+	}
+	if !errs.Is(got, errs.ClassHostFailure) {
+		t.Errorf("class = %s, want host-failure so it earns a fallback", errs.ClassOf(got))
+	}
+
+	// An unrelated error passes through untouched.
+	other := errs.Newf(errs.ClassModelFailure, "x", "boom")
+	if o.explainDeadline(ctx, other, time.Minute, time.Now()) != other {
+		t.Error("only a deadline expiry should be rewritten")
 	}
 }

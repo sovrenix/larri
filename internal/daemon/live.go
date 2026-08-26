@@ -708,6 +708,7 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 			logBytes = size
 			lastGrowth = time.Now()
 			if tail != "" {
+				o.lastProgress = tail
 				o.emit("ready", "%s", tail)
 			}
 		} else if act.Moving {

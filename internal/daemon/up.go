@@ -232,6 +232,10 @@ type Orchestrator struct {
 	// was doing, kept so a failure can say how far it got.
 	lastBootStatus string
 
+	// lastProgress is the most recent thing the *runtime* said, which after
+	// the host is up is the only account of what is happening.
+	lastProgress string
+
 	// excludedMachines holds hosts already tried and found unusable this run.
 	//
 	// Keyed by machine rather than by offer, because a marketplace lists
@@ -619,18 +623,42 @@ func (o *Orchestrator) attempt(ctx context.Context, req UpRequest) (*Live, *core
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
+	started := time.Now()
 	rig, err := o.Up(ctx, req)
 	if err != nil {
-		return nil, rig, err
+		return nil, rig, o.explainDeadline(ctx, err, deadline, started)
 	}
 	live, serr := o.Serve(ctx, rig, o.lastKeys, req.LocalPort, req.HFToken)
 	if serr != nil {
 		if live != nil {
 			_ = live.Close()
 		}
-		return nil, rig, serr
+		return nil, rig, o.explainDeadline(ctx, serr, deadline, started)
 	}
 	return live, rig, nil
+}
+
+// explainDeadline replaces a bare context expiry with something an operator
+// can act on.
+//
+// "context deadline exceeded" names the mechanism and hides everything worth
+// knowing: which ceiling, how long it actually ran, and what the host was
+// doing when it was killed. A live run reported exactly that after
+// twenty-eight minutes of visible progress, and the message gave no hint that
+// the fix was to raise a flag.
+func (o *Orchestrator) explainDeadline(ctx context.Context, err error,
+	deadline time.Duration, started time.Time) error {
+
+	if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() == nil {
+		return err
+	}
+	where := o.lastProgress
+	if where == "" {
+		where = orUnknown(o.lastBootStatus)
+	}
+	return errs.Newf(errs.ClassHostFailure, "daemon.attempt",
+		"bring-up hit the %s ceiling after %s, last: %s: raise it with --deadline",
+		deadline, time.Since(started).Round(time.Second), where)
 }
 
 // teardownAfterFailure destroys a rig whose bring-up failed, on a fresh

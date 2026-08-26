@@ -180,6 +180,12 @@ func cmdUp(ctx context.Context, args []string) error {
 	// listing that separates anything — the reliability scores of all three
 	// are within 0.003 of each other.
 	verifiedOnly := fs.Bool("verified-only", false, "rent only hosts the provider has verified")
+	// A ceiling, not a policy. Stall detection is what ends a bad attempt
+	// early; this only stops a runaway. A live run was killed at thirty
+	// minutes while vLLM was compiling — twenty-two of them had gone on a
+	// weight download the host was managing at a third of its advertised
+	// link speed, which is ordinary rather than broken.
+	bringupCap := fs.Duration("deadline", 75*time.Minute, "ceiling on one bring-up attempt")
 	allowDeverified := fs.Bool("allow-deverified", false, "include hosts whose verification was withdrawn")
 	port := fs.Int("port", 8000, "fixed local port clients are wired against")
 	yes := fs.Bool("yes", false, "do not prompt before spending")
@@ -344,7 +350,7 @@ func cmdUp(ctx context.Context, args []string) error {
 			MinClassSample:   rank.DefaultPolicy().MinClassSample,
 			SessionHours:     *session,
 		},
-		Deadline: 30 * time.Minute,
+		Deadline: *bringupCap,
 		Events:   events,
 
 		// The host enforces its own deadline, so an idle rig stops costing
