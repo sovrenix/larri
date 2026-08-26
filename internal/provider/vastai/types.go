@@ -220,6 +220,7 @@ type wireInstance struct {
 	CurState     *string        `json:"cur_state"`
 	StatusMsg    *string        `json:"status_msg"`
 	IntendedStat *string        `json:"intended_status"`
+	NextState    *string        `json:"next_state"`
 	Label        *string        `json:"label"`
 	SSHHost      *string        `json:"ssh_host"`
 	SSHPort      *int           `json:"ssh_port"`
@@ -277,6 +278,17 @@ func (i wireInstance) normalise() (core.Instance, error) {
 	}
 	if i.StatusMsg != nil {
 		out.StatusMsg = strings.TrimSpace(*i.StatusMsg)
+	}
+	// intended_status is the contract's own goal. It flips to "stopped" when
+	// Vast gives up on a container, while actual_status can still read
+	// "created" or "loading" — the pair is what distinguishes a slow boot
+	// from an abandoned one. next_state carries the same news when
+	// intended_status is absent.
+	switch {
+	case i.IntendedStat != nil && *i.IntendedStat != "":
+		out.Intent = strings.TrimSpace(*i.IntendedStat)
+	case i.NextState != nil && *i.NextState != "":
+		out.Intent = strings.TrimSpace(*i.NextState)
 	}
 	if i.Label != nil && *i.Label != "" {
 		if l, ok := core.DecodeLabel(*i.Label); ok {

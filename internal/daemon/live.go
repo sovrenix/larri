@@ -274,6 +274,13 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 			return nil, errs.Newf(errs.ClassProviderUnknownOutcome, "daemon.waitForSSH",
 				"instance %s vanished during boot", rig.Instance.InstanceID)
 
+		case bootAbandoned(inst):
+			// The provider has stopped trying. Every other clock in this loop
+			// measures patience, and patience is the wrong instrument once
+			// the host says it is giving up.
+			return nil, errs.Newf(errs.ClassHostFailure, "daemon.waitForSSH",
+				"provider gave up on the instance: %s", bootFailureReason(inst))
+
 		case inst.SSHHost != "" && inst.SSHPort > 0 || lastEndpoint.SSHHost != "":
 			// An address, once published, is remembered.
 			//
@@ -420,6 +427,42 @@ func bootPending(inst *core.Instance) bool {
 		return true
 	}
 	return false
+}
+
+// bootAbandoned reports whether the provider has stopped trying to start the
+// instance.
+//
+// This is the distinction every timeout in this loop is blind to. A live run
+// watched an instance report actual_status "created" — indistinguishable from
+// a boot in progress, and treated as one — while intended_status had already
+// flipped to "stopped" because the container could not be created at all:
+//
+//	OCI runtime create failed: ... failed to inject CDI devices:
+//	unresolvable CDI devices
+//
+// The GPUs could not be attached, so that container was never going to run.
+// LARRI printed "image still arriving" at it and waited out the stall timeout
+// for nothing, while the operator watched the provider's own console show
+// Inactive and an error. What the host intends is the only signal that
+// resolves this, and it is decisive: no amount of waiting reverses it.
+func bootAbandoned(inst *core.Instance) bool {
+	switch strings.ToLower(strings.TrimSpace(inst.Intent)) {
+	case "stopped", "exited", "error", "failed":
+		return true
+	}
+	return false
+}
+
+// bootFailureReason prefers the provider's own message, which usually names
+// the cause precisely, and falls back to the status pair.
+func bootFailureReason(inst *core.Instance) string {
+	if msg := strings.TrimSpace(inst.StatusMsg); msg != "" {
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		return msg
+	}
+	return fmt.Sprintf("status %s, intent %s", orUnknown(inst.Status), orUnknown(inst.Intent))
 }
 
 func describeBoot(inst *core.Instance) string {

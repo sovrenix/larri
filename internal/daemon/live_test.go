@@ -100,3 +100,51 @@ func TestGPUMemoryIsSummedAcrossCards(t *testing.T) {
 		})
 	}
 }
+
+// The failure every timeout in waitForSSH was blind to. A live run watched an
+// instance report actual_status "created" — indistinguishable from a boot in
+// progress — while intended_status had already flipped to "stopped" because
+// the GPUs could not be attached to the container:
+//
+//	OCI runtime create failed: ... unresolvable CDI devices
+//
+// LARRI printed "image still arriving" at it and waited, while the provider's
+// own console showed Inactive and the error.
+func TestProviderGivingUpIsRecognisedImmediately(t *testing.T) {
+	cases := []struct {
+		name string
+		inst core.Instance
+		want bool
+	}{
+		{"oci create failure", core.Instance{Status: "created", Intent: "stopped"}, true},
+		{"exited", core.Instance{Status: "loading", Intent: "exited"}, true},
+		{"still trying", core.Instance{Status: "loading", Intent: "running"}, false},
+		{"intent unreported", core.Instance{Status: "loading"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := bootAbandoned(&tc.inst); got != tc.want {
+				t.Errorf("bootAbandoned = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// "created" is a pending status, so without the intent check the wait
+	// would keep going. The two signals must be read together.
+	stuck := &core.Instance{Status: "created", Intent: "stopped"}
+	if !bootPending(stuck) {
+		t.Error("precondition: 'created' reads as pending, which is why intent is needed")
+	}
+
+	// The provider's own message is what names the cause, so it must survive
+	// into the error an operator sees.
+	msg := "Error response from daemon: OCI runtime create failed: unresolvable CDI devices"
+	got := bootFailureReason(&core.Instance{Status: "created", Intent: "stopped", StatusMsg: msg})
+	if !strings.Contains(got, "CDI devices") {
+		t.Errorf("reason should carry the provider's message, got %q", got)
+	}
+	// And with no message, it still says something usable.
+	if r := bootFailureReason(&core.Instance{Status: "created", Intent: "stopped"}); !strings.Contains(r, "created") {
+		t.Errorf("reason without a message = %q", r)
+	}
+}

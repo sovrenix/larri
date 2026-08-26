@@ -121,8 +121,17 @@ type Instance struct {
 	// carrying the progress. Waiting on a boot without reading these is
 	// waiting blind, and a blind timer cannot tell a 15 GB pull that is
 	// working from a host that has stopped trying.
-	Status     string            `json:"status,omitempty"`
-	StatusMsg  string            `json:"status_msg,omitempty"`
+	Status    string `json:"status,omitempty"`
+	StatusMsg string `json:"status_msg,omitempty"`
+
+	// Intent is what the provider means to do with this instance, as
+	// distinct from what it is doing. The two disagree exactly when
+	// something has gone wrong: a live run watched an instance sit at
+	// actual_status "created" — which reads as a boot in progress — while
+	// intended_status had already flipped to "stopped", because the
+	// container could not be created at all. Waiting on a host the provider
+	// has stopped trying to start is waiting forever, at cost.
+	Intent     string            `json:"intent,omitempty"`
 	SSHHost    string            `json:"ssh_host"`
 	SSHPort    int               `json:"ssh_port"`
 	SSHProxied bool              `json:"ssh_proxied,omitempty"`
