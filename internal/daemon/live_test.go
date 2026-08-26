@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"go.sovrenix.com/larri/internal/core"
 )
@@ -235,5 +236,33 @@ func TestBootDisplayShowsTheNewestLine(t *testing.T) {
 	}
 	if strings.Contains(got, "cf57d2112d89") {
 		t.Errorf("should not report minutes-old news as current: %q", got)
+	}
+}
+
+// Nothing is cached between rentals: every one fetches the runtime image and
+// then the weights, and the download is billed at the rig's hourly rate. Vast
+// publishes inet_down and it spans 22 Mbps to 43 Gbps — a 60x spread that
+// price says nothing about. A live run picked a 68.7 Mbps host for a 27B
+// model, where the image alone is half an hour.
+func TestColdStartIsEstimatedFromTheHostsLink(t *testing.T) {
+	plan := core.SizingPlan{WeightsBytes: 54 << 30} // a 27B model at bf16
+
+	fast := fetchETA(coldStartBytes(plan), 1371) // the market median
+	slow := fetchETA(coldStartBytes(plan), 68.7) // the host actually chosen
+
+	if fast > 15*time.Minute {
+		t.Errorf("median link should be quick, got %s", fast)
+	}
+	if slow < 2*time.Hour {
+		t.Errorf("68.7 Mbps must read as hours, got %s", slow)
+	}
+	// The whole point: the same rig, the same price, a 20x difference in
+	// what the operator waits and pays for.
+	if slow < 10*fast {
+		t.Errorf("spread collapsed: fast=%s slow=%s", fast, slow)
+	}
+	// An unreported link cannot be estimated, and must not be guessed at.
+	if got := fetchETA(coldStartBytes(plan), 0); got != 0 {
+		t.Errorf("unknown link must not produce an estimate, got %s", got)
 	}
 }

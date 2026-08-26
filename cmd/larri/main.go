@@ -149,6 +149,9 @@ func cmdUp(ctx context.Context, args []string) error {
 	maxPrice := fs.Float64("max-price", 0, "ceiling in $/hr")
 	disk := fs.Int("disk", 60, "disk in GB")
 	minRel := fs.Float64("min-reliability", 0.90, "reliability floor")
+	// Only about 3% of the market sits below this, and those are the hosts
+	// where a cold start runs into hours of billed downloading.
+	minNet := fs.Float64("min-netspeed", 200, "minimum host download link, Mbps (0 disables)")
 	port := fs.Int("port", 8000, "fixed local port clients are wired against")
 	yes := fs.Bool("yes", false, "do not prompt before spending")
 	dryRun := fs.Bool("dry-run", false, "search, size and select without spending")
@@ -316,7 +319,8 @@ func cmdUp(ctx context.Context, args []string) error {
 		DeadmanDeadline: *deadman,
 	}
 
-	crit := core.Criteria{MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk}
+	crit := core.Criteria{MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk,
+		MinNetMbps: *minNet}
 	if *gpu != "" {
 		crit.GPUModel = splitList(*gpu)
 	}

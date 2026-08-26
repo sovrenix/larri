@@ -357,6 +357,15 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 		if ok, why := reqs.SatisfiesCUDA(parseCUDA(of.CUDAVersion)); !ok {
 			return false, why
 		}
+		// A link too slow to deliver the cold start is a cost problem, not a
+		// preference: the download is billed at the rig's hourly rate.
+		if floor := req.Criteria.MinNetMbps; floor > 0 &&
+			of.NetDownMbps > 0 && of.NetDownMbps < floor {
+			return false, fmt.Sprintf("%.0f Mbps link below the %.0f Mbps floor (%s to fetch %s)",
+				of.NetDownMbps, floor,
+				fetchETA(coldStartBytes(plan), of.NetDownMbps).Round(time.Minute),
+				sizing.HumanBytes(coldStartBytes(plan)))
+		}
 		avail := uint64(of.VRAMTotalGB()) * sizing.GiB
 		if avail >= plan.RequiredVRAMBytes {
 			return true, ""
@@ -409,6 +418,23 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 	o.reportExclusions(sel)
 	o.emit("select", "%s %s %dGB $%.3f/hr (reliability %.2f)",
 		chosen.Provider, chosen.GPUModel, chosen.VRAMTotalGB(), chosen.PriceHr, chosen.Reliability)
+
+	// Say what the cold start will cost before asking for the money. Nothing
+	// is cached between rentals — the image and the weights are fetched every
+	// time — so on a slow link the download, not the inference, is most of
+	// what the operator pays for.
+	if chosen.NetDownMbps > 0 {
+		cold := coldStartBytes(plan)
+		eta := fetchETA(cold, chosen.NetDownMbps)
+		msg := fmt.Sprintf("%.0f Mbps link: about %s to fetch %s before it can serve (~$%.2f)",
+			chosen.NetDownMbps, roundETA(eta), sizing.HumanBytes(cold),
+			eta.Hours()*chosen.PriceHr)
+		if eta > 30*time.Minute {
+			o.warn("coldstart", "%s", msg)
+		} else {
+			o.emit("coldstart", "%s", msg)
+		}
+	}
 
 	// The report above is queued, not printed. Let it land before asking.
 	o.Sync(ctx)
@@ -626,6 +652,35 @@ func checkLocalPort(port int) error {
 			"local port %d is already in use: choose another with --port", port)
 	}
 	return ln.Close()
+}
+
+// runtimeImageBytes is what a stock runtime image costs to fetch. The vLLM
+// image is the large one at roughly 15 GB; it is an estimate, used only to
+// tell an operator how long a cold start will take.
+const runtimeImageBytes = 15 << 30
+
+// coldStartBytes is everything a fresh rental downloads before it can serve:
+// the runtime image, then the weights.
+func coldStartBytes(plan core.SizingPlan) uint64 {
+	return runtimeImageBytes + plan.WeightsBytes
+}
+
+// roundETA rounds to a unit an operator can act on: minutes under an hour,
+// tenths of an hour above it.
+func roundETA(d time.Duration) time.Duration {
+	if d < time.Hour {
+		return d.Round(time.Minute)
+	}
+	return d.Round(6 * time.Minute)
+}
+
+// fetchETA converts a size and a link speed into billed waiting time.
+func fetchETA(bytes uint64, mbps float64) time.Duration {
+	if mbps <= 0 {
+		return 0
+	}
+	seconds := float64(bytes) * 8 / (mbps * 1e6)
+	return time.Duration(seconds * float64(time.Second))
 }
 
 // parseCUDA reads a provider's CUDA version string. Unparseable means

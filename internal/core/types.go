@@ -37,6 +37,17 @@ type Criteria struct {
 	MinReliability float64  `json:"min_reliability,omitempty"`
 	Providers      []string `json:"providers,omitempty"`
 	CertifiedOnly  bool     `json:"certified_only,omitempty"` // datacentre-certified hosts only
+
+	// MinNetMbps floors the host's download link.
+	//
+	// Every rental pays for its own cold start: the runtime image and then
+	// the weights, tens of gigabytes, at the host's link speed and on the
+	// operator's bill. Vast publishes inet_down and it spans 22 Mbps to 43
+	// Gbps across the market — a 60x spread that decides whether a rig is
+	// ready in a minute or in five hours, and which price alone tells you
+	// nothing about. A live run picked a 68.7 Mbps host for a 27B model,
+	// where the image alone is half an hour.
+	MinNetMbps float64 `json:"min_net_mbps,omitempty"`
 }
 
 // Source is where model weights come from.
