@@ -238,7 +238,7 @@ type Orchestrator struct {
 	// on the same box each time, since only the offer ID had changed.
 	excludedMachines []string
 
-	// failedModels counts host failures per GPU model this run.
+	// failedModels counts host failures per GPU model and failure kind.
 	//
 	// Machine-level exclusion is not enough on a marketplace that lists a
 	// deep pool of identical boxes. A live run failed on three different
@@ -248,11 +248,19 @@ type Orchestrator struct {
 	// same pool every time because a fresh cheap box always outranks a
 	// dearer working one.
 	//
-	// Two independent hosts of one model failing identically is evidence
+	// Two independent hosts of one model failing *the same way* is evidence
 	// about the model or the seller behind it, not about the boxes. So the
-	// second failure retires the model for the rest of the run.
-	failedModels map[string]int
+	// second such failure retires the model for the rest of the run.
+	//
+	// Keyed by failure kind as well as model, because unrelated failures are
+	// not a pattern: a live run retired 151 RTX 3090 offers after one host
+	// failed its hardware check and a different one never answered SSH, which
+	// is two ordinary bad rentals rather than evidence about RTX 3090s.
+	failedModels map[modelFailure]int
 }
+
+// modelFailure is a GPU model together with the operation that failed on it.
+type modelFailure struct{ model, op string }
 
 // modelStrikes is how many host failures on one GPU model retire it for the
 // rest of the run. One is a bad box; two is a pattern worth acting on.
@@ -510,12 +518,13 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 			o.excludedMachines = append(o.excludedMachines, machineKey(rig.Offer))
 			if m := strings.TrimSpace(rig.Offer.GPUModel); m != "" {
 				if o.failedModels == nil {
-					o.failedModels = map[string]int{}
+					o.failedModels = map[modelFailure]int{}
 				}
-				o.failedModels[m]++
-				if o.failedModels[m] == modelStrikes {
-					o.warn("fallback", "%d %s hosts failed the same way — trying different hardware",
-						modelStrikes, m)
+				k := modelFailure{model: m, op: errs.OpOf(err)}
+				o.failedModels[k]++
+				if o.failedModels[k] == modelStrikes {
+					o.warn("fallback", "%d %s hosts failed the same way (%s) — trying different hardware",
+						modelStrikes, m, orUnknown(k.op))
 				}
 			}
 		}
@@ -646,10 +655,12 @@ func (o *Orchestrator) hostIdleLimit() time.Duration {
 // retiredModels lists the GPU models that have failed enough times this run
 // to stop being offered.
 func (o *Orchestrator) retiredModels() []string {
+	seen := map[string]bool{}
 	var out []string
-	for m, n := range o.failedModels {
-		if n >= modelStrikes {
-			out = append(out, m)
+	for k, n := range o.failedModels {
+		if n >= modelStrikes && !seen[k.model] {
+			seen[k.model] = true
+			out = append(out, k.model)
 		}
 	}
 	sort.Strings(out)

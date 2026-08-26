@@ -481,19 +481,52 @@ func (o *Orchestrator) verifyPlacedHardware(ctx context.Context, sess runtime.Se
 		o.warn("boot", "could not read GPU memory to re-verify sizing")
 		return nil
 	}
-	totalMB := parseFirstInt(string(out))
+	totalMB, gpus := sumGPUMemoryMB(string(out))
 	if totalMB <= 0 {
 		return nil
 	}
 	haveBytes := uint64(totalMB) * 1024 * 1024
 	if haveBytes < rig.Plan.RequiredVRAMBytes {
 		return errs.Newf(errs.ClassHostFailure, "daemon.verifyPlacedHardware",
-			"placed hardware has %s but the plan needs %s",
-			sizing.HumanBytes(haveBytes), sizing.HumanBytes(rig.Plan.RequiredVRAMBytes))
+			"placed hardware has %s across %d gpu(s) but the plan needs %s",
+			sizing.HumanBytes(haveBytes), gpus, sizing.HumanBytes(rig.Plan.RequiredVRAMBytes))
 	}
-	o.emit("boot", "GPU reports %s, plan needs %s",
-		sizing.HumanBytes(haveBytes), sizing.HumanBytes(rig.Plan.RequiredVRAMBytes))
+	// A box with fewer cards than the listing promised still has to shard the
+	// model across what is actually there, so the launch plan is corrected to
+	// the hardware rather than to the advertisement.
+	if gpus > 0 && gpus != rig.Plan.TensorParallelSize {
+		o.warn("boot", "listing promised %d gpu(s), host has %d — sharding across %d",
+			rig.Plan.TensorParallelSize, gpus, gpus)
+		rig.Plan.TensorParallelSize = gpus
+	}
+	o.emit("boot", "GPU reports %s across %d gpu(s), plan needs %s",
+		sizing.HumanBytes(haveBytes), gpus, sizing.HumanBytes(rig.Plan.RequiredVRAMBytes))
 	return nil
+}
+
+// sumGPUMemoryMB totals the VRAM nvidia-smi reports, and counts the cards.
+//
+// The query prints one line per GPU. Reading only the first compares a single
+// card against a requirement the whole box is meant to satisfy, which rejects
+// exactly the multi-GPU hosts that are the only affordable way to hold a large
+// model: a live run rented a 3x3090 box and failed it for "24.0 GB but the
+// plan needs 64.0 GB", then an 8x3060 box for "12.0 GB", each after paying to
+// boot and pull the image.
+//
+// Summing is what the plan already assumes — sizing multiplies VRAM per GPU by
+// GPU count, and tensor parallelism shards the weights across every card.
+func sumGPUMemoryMB(out string) (totalMB, gpus int) {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if mb := parseFirstInt(line); mb > 0 {
+			totalMB += mb
+			gpus++
+		}
+	}
+	return totalMB, gpus
 }
 
 // waitReady waits for a real completion, in two regimes.

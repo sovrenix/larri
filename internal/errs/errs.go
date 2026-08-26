@@ -140,3 +140,15 @@ func Is(err error, class Class) bool { return ClassOf(err) == class }
 
 // Retryable reports whether err may be retried unchanged.
 func Retryable(err error) bool { return ClassOf(err).Retryable() }
+
+// OpOf returns the operation that failed, or "" when the error does not name
+// one. It lets a caller tell two failures apart by what broke rather than by
+// the prose, which is what distinguishes a host that could not be reached
+// from one whose hardware did not match its listing.
+func OpOf(err error) string {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Op
+	}
+	return ""
+}

@@ -4,6 +4,7 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 
 	"go.sovrenix.com/larri/internal/core"
@@ -42,11 +43,19 @@ func TestBootPendingSeparatesPullingFromDead(t *testing.T) {
 // boxes: price-dominated ranking walks back into it every time, because a
 // fresh cheap box always outranks a dearer working one.
 func TestRepeatedModelFailuresRetireTheModel(t *testing.T) {
-	o := &Orchestrator{failedModels: map[string]int{"Tesla V100": 1}}
+	ssh := modelFailure{"Tesla V100", "daemon.waitForSSH"}
+	o := &Orchestrator{failedModels: map[modelFailure]int{ssh: 1}}
 	if got := o.retiredModels(); len(got) != 0 {
 		t.Errorf("one failure is a bad box, not a pattern: got %v", got)
 	}
-	o.failedModels["Tesla V100"] = modelStrikes
+	// Two failures of *different* kinds are two ordinary bad rentals, not
+	// evidence about the model. A live run retired 151 RTX 3090 offers on
+	// exactly this: one hardware-check failure and one unreachable host.
+	o.failedModels[modelFailure{"Tesla V100", "daemon.verifyPlacedHardware"}] = 1
+	if got := o.retiredModels(); len(got) != 0 {
+		t.Errorf("unrelated failures must not retire a model: got %v", got)
+	}
+	o.failedModels[ssh] = modelStrikes
 	if got := o.retiredModels(); len(got) != 1 || got[0] != "Tesla V100" {
 		t.Errorf("retiredModels() = %v, want [Tesla V100]", got)
 	}
@@ -59,5 +68,35 @@ func TestRepeatedModelFailuresRetireTheModel(t *testing.T) {
 	kept := withoutModels(offers, []string{"Tesla V100"})
 	if len(kept) != 1 || kept[0].GPUModel != "A100" {
 		t.Fatalf("withoutModels kept %v", kept)
+	}
+}
+
+// nvidia-smi prints one line per GPU. Reading only the first compares a single
+// card against a requirement the whole box is meant to satisfy — which
+// rejected exactly the multi-GPU hosts that are the only affordable way to
+// hold a 27B model. A live run paid to boot and pull the image on a 3x3090 box
+// and then failed it for "24.0 GB but the plan needs 64.0 GB", and did the
+// same on an 8x3060.
+func TestGPUMemoryIsSummedAcrossCards(t *testing.T) {
+	cases := []struct {
+		name      string
+		out       string
+		wantMB    int
+		wantCount int
+	}{
+		{"3x3090", "24576\n24576\n24576\n", 73728, 3},
+		{"8x3060", strings.Repeat("12288\n", 8), 98304, 8},
+		{"single card", "24576\n", 24576, 1},
+		{"trailing blanks tolerated", "24576\n24576\n\n", 49152, 2},
+		{"nothing reported", "\n\n", 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mb, n := sumGPUMemoryMB(tc.out)
+			if mb != tc.wantMB || n != tc.wantCount {
+				t.Errorf("sumGPUMemoryMB = (%d MB, %d gpus), want (%d, %d)",
+					mb, n, tc.wantMB, tc.wantCount)
+			}
+		})
 	}
 }
