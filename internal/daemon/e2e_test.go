@@ -100,7 +100,12 @@ func TestE2ERentServeDestroy(t *testing.T) {
 		Store: st, Provider: p, Runtime: eng,
 		Resolver: sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
 		Policy:   rank.DefaultPolicy(),
-		Deadline: 20 * time.Minute,
+		// The same ceiling the CLI got wrong, and for the same reason: a
+		// cold start is bringup plus a runtime image plus weights plus
+		// compilation, and this ran out at sixteen minutes while vLLM was
+		// initialising FlashAttention. Stall detection is what ends a bad
+		// attempt here; this only stops a runaway.
+		Deadline: 45 * time.Minute,
 		// Live runs put the host failure rate on the cheap tier well above
 		// what three attempts covers: dead containers behind live contracts,
 		// hosts that never boot, image pulls that never start. Reliability

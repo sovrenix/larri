@@ -117,8 +117,13 @@ func newOrchestrator(st *state.Store, runtimeKind string, events chan<- daemon.E
 		LabelSealer: sealer,
 		Resolver:    sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
 		Policy:      rank.DefaultPolicy(),
-		Deadline:    30 * time.Minute,
-		Events:      events,
+		// Matches the CLI's default rather than undercutting it. An agent
+		// cannot pass --deadline, so a short ceiling here is one it can
+		// neither see nor raise: a live run destroyed a healthy rig at
+		// thirty minutes while vLLM was compiling, and from MCP that would
+		// have surfaced as an unexplained failure.
+		Deadline: 75 * time.Minute,
+		Events:   events,
 
 		// An agent-driven rig needs this most: nothing about an MCP host
 		// guarantees it will still be there in an hour.
