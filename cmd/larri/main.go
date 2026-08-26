@@ -168,6 +168,10 @@ func cmdUp(ctx context.Context, args []string) error {
 	// Only about 3% of the market sits below this, and those are the hosts
 	// where a cold start runs into hours of billed downloading.
 	minNet := fs.Float64("min-netspeed", 200, "minimum host download link, Mbps (0 disables)")
+	// How long the rig will be used is what decides whether a cheap slow host
+	// or a dearer fast one is the better buy. Under a couple of hours the
+	// download dominates the bill; over a long session the hourly rate does.
+	session := fs.Float64("session", 1, "hours of use to optimise the choice for")
 	port := fs.Int("port", 8000, "fixed local port clients are wired against")
 	yes := fs.Bool("yes", false, "do not prompt before spending")
 	dryRun := fs.Bool("dry-run", false, "search, size and select without spending")
@@ -323,6 +327,7 @@ func cmdUp(ctx context.Context, args []string) error {
 			ReliabilityFloor: *minRel,
 			OutlierFactor:    rank.DefaultPolicy().OutlierFactor,
 			MinClassSample:   rank.DefaultPolicy().MinClassSample,
+			SessionHours:     *session,
 		},
 		Deadline: 30 * time.Minute,
 		Events:   events,

@@ -395,7 +395,12 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 			}
 		}
 	}
-	sel := rank.Select(offers, req.Criteria, fits, o.Policy)
+	// Ranking cannot weigh a download it has not been told about. Without
+	// this the sort falls back to the hourly rate, which is the behaviour
+	// that kept selecting hosts too slow to deliver.
+	policy := o.Policy
+	policy.ColdStartBytes = coldStartBytes(plan)
+	sel := rank.Select(offers, req.Criteria, fits, policy)
 	if sel.Selected == nil {
 		short := sizing.Analyse(sizing.Request{Spec: req.Model, Facts: facts}, offers)
 		return nil, errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.survey", "%s", short.String())
@@ -425,14 +430,23 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 	// what the operator pays for.
 	if chosen.NetDownMbps > 0 {
 		cold := coldStartBytes(plan)
-		eta := fetchETA(cold, chosen.NetDownMbps)
-		msg := fmt.Sprintf("%.0f Mbps link: about %s to fetch %s before it can serve (~$%.2f)",
-			chosen.NetDownMbps, roundETA(eta), sizing.HumanBytes(cold),
-			eta.Hours()*chosen.PriceHr)
-		if eta > 30*time.Minute {
-			o.warn("coldstart", "%s", msg)
-		} else {
-			o.emit("coldstart", "%s", msg)
+		download := fetchETA(cold, chosen.NetDownMbps)
+		ready := provisionEstimate + download
+		hours := o.sessionHours()
+
+		// Time and cost, for all three phases, before the money is spent.
+		// Which of them dominates depends entirely on how long the rig will
+		// be used, so the session length is stated rather than assumed
+		// silently: an hourly rate only becomes a bill once there is a
+		// duration attached to it.
+		o.emit("plan", "ready in ~%s (%s bringup + %s fetching %s over a %.0f Mbps link)",
+			roundETA(ready), provisionEstimate, roundETA(download),
+			sizing.HumanBytes(cold), chosen.NetDownMbps)
+		o.emit("plan", "cost: $%.2f to reach ready, $%.2f for %gh of use, $%.2f total",
+			ready.Hours()*chosen.PriceHr, hours*chosen.PriceHr, hours,
+			(ready.Hours()+hours)*chosen.PriceHr)
+		if download > 30*time.Minute {
+			o.warn("plan", "most of that is downloading, not serving — a faster link would cost less overall")
 		}
 	}
 
@@ -652,6 +666,23 @@ func checkLocalPort(port int) error {
 			"local port %d is already in use: choose another with --port", port)
 	}
 	return ln.Close()
+}
+
+// provisionEstimate is how long a host takes to go from rented to reachable,
+// before any download begins. Measured across live runs on both providers:
+// contract start to sshd answering is consistently a couple of minutes, and
+// it is the same for every offer, so it shifts the reported time without
+// shifting the ranking.
+const provisionEstimate = 2 * time.Minute
+
+// sessionHours is how long the operator expects to use the rig. It is what
+// decides whether a cheap slow host or a dearer fast one is the better buy,
+// so it is a setting rather than a constant.
+func (o *Orchestrator) sessionHours() float64 {
+	if o.Policy.SessionHours > 0 {
+		return o.Policy.SessionHours
+	}
+	return 1
 }
 
 // runtimeImageBytes is what a stock runtime image costs to fetch, measured

@@ -318,3 +318,80 @@ func TestReliabilityFloorStillExcludesAReportedLowScore(t *testing.T) {
 		t.Error("a reported 0.40 was not excluded by the 0.90 floor")
 	}
 }
+
+// The cheapest hourly rate is routinely the most expensive way to get a
+// working endpoint, because the download is billed at that rate too. Live
+// pair from one market: $0.216/hr on a 1347 Mbps link reaches ready in six
+// minutes; $0.109/hr on a 68.7 Mbps link needs nearly two hours of billed
+// downloading first — and is unusable for those two hours.
+func TestSelectionWeighsTheBilledDownloadNotJustTheRate(t *testing.T) {
+	const coldStart = 60 << 30 // a 27B model plus the runtime image
+
+	fast := core.Offer{OfferID: "fast", Provider: "p", GPUModel: "RTX 3090",
+		VRAMPerGPUGB: 24, GPUCount: 4, PriceHr: 0.216, Reliability: 0.99, NetDownMbps: 1347}
+	cheap := core.Offer{OfferID: "cheap", Provider: "p", GPUModel: "RTX 3090",
+		VRAMPerGPUGB: 24, GPUCount: 4, PriceHr: 0.109, Reliability: 0.99, NetDownMbps: 68.7}
+	offers := []core.Offer{cheap, fast} // cheap first, so order cannot carry the result
+
+	pol := func(hours float64) Policy {
+		p := DefaultPolicy()
+		p.ColdStartBytes = coldStart
+		p.SessionHours = hours
+		p.OutlierFactor = 0 // not what is under test
+		return p
+	}
+
+	// A short session: the download dominates, so the fast link wins despite
+	// costing twice as much per hour.
+	got := Select(offers, core.Criteria{}, nil, pol(1))
+	if got.Selected == nil || got.Selected.Offer.OfferID != "fast" {
+		t.Errorf("1h session selected %v, want the fast link", selectedID(got))
+	}
+
+	// A long session: the download amortises away and the hourly rate is
+	// what is left, so the cheap host is right after all.
+	got = Select(offers, core.Criteria{}, nil, pol(24))
+	if got.Selected == nil || got.Selected.Offer.OfferID != "cheap" {
+		t.Errorf("24h session selected %v, want the cheap rate", selectedID(got))
+	}
+
+	// With nothing to download, the two are ranked as they always were.
+	p := pol(1)
+	p.ColdStartBytes = 0
+	got = Select(offers, core.Criteria{}, nil, p)
+	if got.Selected == nil || got.Selected.Offer.OfferID != "cheap" {
+		t.Errorf("with no download, selected %v, want the cheap rate", selectedID(got))
+	}
+}
+
+// A provider that publishes no link speed must neither win by default nor
+// lose by default, so it is scored at the market's median.
+func TestUnreportedLinkSpeedIsScoredAtTheMedian(t *testing.T) {
+	known := []core.Offer{
+		{OfferID: "a", NetDownMbps: 100}, {OfferID: "b", NetDownMbps: 500},
+		{OfferID: "c", NetDownMbps: 900},
+	}
+	if got := medianNetMbps(known); got != 500 {
+		t.Errorf("medianNetMbps = %v, want 500", got)
+	}
+	silent := core.Offer{OfferID: "silent", PriceHr: 1}
+	h := coldStartHours(silent, 60<<30, 500)
+	if h <= 0 {
+		t.Fatal("an unreported link must still be given a cold start")
+	}
+	// Identical to an offer that reports the median explicitly.
+	if h2 := coldStartHours(core.Offer{NetDownMbps: 500, PriceHr: 1}, 60<<30, 500); h != h2 {
+		t.Errorf("silent %v vs explicit median %v", h, h2)
+	}
+	// And a market that reports nothing at all falls back to rate-only.
+	if got := medianNetMbps([]core.Offer{{OfferID: "x"}}); got != 0 {
+		t.Errorf("no speeds reported should give 0, got %v", got)
+	}
+}
+
+func selectedID(r Result) string {
+	if r.Selected == nil {
+		return "<none>"
+	}
+	return r.Selected.Offer.OfferID
+}

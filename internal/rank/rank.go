@@ -35,11 +35,73 @@ type Policy struct {
 	// test means anything. A class with four listings has no distribution to
 	// be an outlier in.
 	MinClassSample int
+
+	// ColdStartBytes is what this rig must download before it can serve: the
+	// runtime image, then the weights. Zero falls back to ranking on the
+	// hourly rate alone.
+	ColdStartBytes uint64
+
+	// SessionHours is how long the operator is expected to use the rig, and
+	// it is what turns an hourly rate into a bill.
+	//
+	// The cheapest hourly rate is routinely the most expensive way to get a
+	// working endpoint, because the download is billed at that rate too. A
+	// measured pair from one market: $0.216/hr on a 1347 Mbps link reaches
+	// ready in six minutes; $0.109/hr on a 68.7 Mbps link needs nearly two
+	// hours of billed downloading first. The cheap host costs more for any
+	// session under six hours, and is unusable for the first two of them.
+	SessionHours float64
 }
 
 // DefaultPolicy is what runs when the operator has configured nothing.
 func DefaultPolicy() Policy {
-	return Policy{ReliabilityFloor: 0.90, OutlierFactor: 3.0, MinClassSample: 8}
+	return Policy{ReliabilityFloor: 0.90, OutlierFactor: 3.0, MinClassSample: 8,
+		SessionHours: 1}
+}
+
+// coldStartHours is how long this offer spends downloading before it serves.
+//
+// An offer whose link speed is unreported gets the market's median rather
+// than a zero, so a provider that publishes nothing neither wins by default
+// nor loses by default.
+func coldStartHours(o core.Offer, bytes uint64, medianMbps float64) float64 {
+	if bytes == 0 {
+		return 0
+	}
+	mbps := o.NetDownMbps
+	if mbps <= 0 {
+		mbps = medianMbps
+	}
+	if mbps <= 0 {
+		return 0
+	}
+	return float64(bytes) * 8 / (mbps * 1e6) / 3600
+}
+
+// sessionCost is what an operator actually pays for this offer: the billed
+// download plus the billed use.
+func sessionCost(o core.Offer, p Policy, medianMbps float64) float64 {
+	hours := p.SessionHours
+	if hours <= 0 {
+		hours = 1
+	}
+	return (coldStartHours(o, p.ColdStartBytes, medianMbps) + hours) * o.PriceHr
+}
+
+// medianNetMbps is the market's typical link, used to stand in for offers
+// that do not report one.
+func medianNetMbps(offers []core.Offer) float64 {
+	var speeds []float64
+	for _, o := range offers {
+		if o.NetDownMbps > 0 {
+			speeds = append(speeds, o.NetDownMbps)
+		}
+	}
+	if len(speeds) == 0 {
+		return 0
+	}
+	sort.Float64s(speeds)
+	return speeds[len(speeds)/2]
 }
 
 // Reason is why an offer was not selected. Typed, because FR-SRCH-03 requires
@@ -109,11 +171,21 @@ func Select(offers []core.Offer, c core.Criteria, fits FitFunc, p Policy) Result
 		cands = append(cands, cand)
 	}
 
-	// Cheapest first, then deterministic tie-breaks, so the same market
-	// produces the same choice twice — which is what makes a selection
-	// reproducible in a bug report.
+	// Cheapest *to a working endpoint* first, then deterministic tie-breaks,
+	// so the same market produces the same choice twice — which is what makes
+	// a selection reproducible in a bug report.
+	//
+	// Sorting on the hourly rate alone is what kept choosing hosts that could
+	// not deliver: the download is billed at that rate, so a slow link turns
+	// the cheapest listing into the dearest rig and leaves it unusable for
+	// hours first.
+	median := medianNetMbps(offers)
 	sort.SliceStable(cands, func(i, j int) bool {
 		a, b := cands[i].Offer, cands[j].Offer
+		ca, cb := sessionCost(a, p, median), sessionCost(b, p, median)
+		if ca != cb {
+			return ca < cb
+		}
 		if a.PriceHr != b.PriceHr {
 			return a.PriceHr < b.PriceHr
 		}
@@ -137,8 +209,9 @@ func Select(offers []core.Offer, c core.Criteria, fits FitFunc, p Policy) Result
 			c := &res.Candidates[i]
 			if c != res.Selected && c.Reason == ReasonEligible {
 				c.Reason = ReasonCostlier
-				c.Detail = fmt.Sprintf("$%.3f/hr against the selected $%.3f/hr",
-					c.Offer.PriceHr, res.Selected.Offer.PriceHr)
+				c.Detail = fmt.Sprintf("$%.3f against the selected $%.3f to serve %gh",
+					sessionCost(c.Offer, p, median),
+					sessionCost(res.Selected.Offer, p, median), sessionHours(p))
 			}
 		}
 	}
@@ -217,4 +290,12 @@ func median(sorted []float64) float64 {
 		return sorted[n/2]
 	}
 	return (sorted[n/2-1] + sorted[n/2]) / 2
+}
+
+// sessionHours is SessionHours with its default applied.
+func sessionHours(p Policy) float64 {
+	if p.SessionHours <= 0 {
+		return 1
+	}
+	return p.SessionHours
 }
