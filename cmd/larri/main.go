@@ -38,6 +38,7 @@ const usage = `larri — Local Agent for Remote Rigging of Inference
   larri offers  search and rank without spending anything
   larri orphans find and destroy resources local state does not account for
   larri privacy what the machine you rent can see, in full
+  larri label-key generate a key that seals provider-side labels
   larri config  edit saved criteria, previewing what they would rent
   larri tui     bring a rig up under a live dashboard
   larri mcp     expose the lifecycle as MCP tools for Claude Code and other agents
@@ -69,6 +70,8 @@ func main() {
 		err = cmdOrphans(ctx, os.Args[2:])
 	case "config":
 		err = cmdConfig(ctx, os.Args[2:])
+	case "label-key":
+		err = cmdLabelKey(os.Args[2:])
 	case "privacy":
 		// The full explanation, on demand. Every run still carries the rule
 		// in one line; this is where the reasoning behind it lives once the

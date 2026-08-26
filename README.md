@@ -163,8 +163,59 @@ larri up --model Qwen/Qwen3-Coder-30B \
 | `larri config` | Edit saved criteria, with a live preview of what they would rent |
 | `larri tui` | The same lifecycle under a live dashboard: cost, idle, health, `d` to destroy |
 | `larri mcp` | Expose the lifecycle as MCP tools for Claude Code and other agents |
+| `larri privacy` | What the machine you rent can see, in full |
+| `larri label-key` | Generate a key that seals provider-side labels |
 
 A web console with graphs and a chat pane is designed (§14.4) but not built.
+
+### Credentials
+
+Two are read from the environment, and neither is ever written into state files
+or echoed into output.
+
+| Variable | For |
+|---|---|
+| `VASTAI_API_KEY` | Renting on Vast.ai |
+| `RUNPOD_API_KEY` | Renting on RunPod |
+| `HF_TOKEN` | Downloading gated weights from Hugging Face |
+
+### Sealing what the provider can see (`LARRI_LABEL_KEY`)
+
+LARRI stamps every resource it rents with a label, so an abandoned rig can be
+found and destroyed later. That label carries the rig ID **and** a description
+— model, runtime, price — and the provider and host operator can read it.
+
+`LARRI_LABEL_KEY` seals the description. Generate one:
+
+```bash
+export LARRI_LABEL_KEY=$(larri label-key)
+```
+
+It is 32 random bytes, base64-encoded — the command prints the key on stdout
+and the explanation on stderr, so the line above captures exactly the key.
+Anything that decodes to 32 bytes is accepted, so `openssl rand -base64 32`
+works equally well.
+
+Put it in your shell profile, or keep it in a file and point at that:
+
+```bash
+export LARRI_LABEL_KEY_FILE=~/.config/larri/label.key
+```
+
+**Optional, and safe to skip.** Without it, rigs are still labelled and still
+attributable — the rig ID stays in the clear, so orphan detection and teardown
+are unaffected. Only the description is written in the open, and LARRI says so
+at every bring-up rather than letting you assume otherwise.
+
+**LARRI will never generate one for you.** A key it invented and stored would
+be a key you do not know exists, cannot back up, and lose on reinstall — at
+which point the details of every surviving rig become unreadable, in exactly
+the situation where an orphan most needs explaining.
+
+**Keep it, and keep it stable.** Losing it strands no rig, but `larri orphans`
+can no longer say what a surviving one was for. Changing it has the same
+effect on rigs labelled with the old one, so use a different key per machine
+only if you also want their details to be mutually unreadable.
 
 ### Saved criteria
 
