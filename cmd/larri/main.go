@@ -36,6 +36,7 @@ const usage = `larri — Local Agent for Remote Rigging of Inference
   larri resume  rebuild the tunnel to a rig that outlived the last process
   larri offers  search and rank without spending anything
   larri orphans find and destroy resources local state does not account for
+  larri privacy what the machine you rent can see, in full
   larri config  edit saved criteria, previewing what they would rent
   larri tui     bring a rig up under a live dashboard
   larri mcp     expose the lifecycle as MCP tools for Claude Code and other agents
@@ -67,6 +68,11 @@ func main() {
 		err = cmdOrphans(ctx, os.Args[2:])
 	case "config":
 		err = cmdConfig(ctx, os.Args[2:])
+	case "privacy":
+		// The full explanation, on demand. Every run still carries the rule
+		// in one line; this is where the reasoning behind it lives once the
+		// first run has been and gone.
+		fmt.Println(notice.PrivacyFull())
 	case "tui":
 		err = cmdTUI(ctx, os.Args[2:])
 	case "mcp":
@@ -132,7 +138,17 @@ func firstRun(cfg config.Config, mode config.Mode, haveFile bool) {
 		}
 		fmt.Println()
 	}
-	fmt.Println(notice.PrivacyFull())
+	// The full explanation is for the run that has never seen it; after that
+	// the headline carries the same rule in one line. Twenty-five lines
+	// before every command is how an operator learns to scroll past the
+	// paragraph that matters — the notice has to stay readable to keep
+	// working, and it still prints, unconditionally, on every run.
+	if !haveFile {
+		fmt.Println(notice.PrivacyFull())
+	} else {
+		fmt.Printf("  privacy     %s\n", notice.PrivacyShort())
+		fmt.Println("              (full explanation: larri privacy)")
+	}
 	fmt.Println()
 	if !mode.Interactive() {
 		fmt.Printf("  (running %s; proceeding on the above)\n\n", mode)

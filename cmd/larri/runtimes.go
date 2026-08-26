@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"go.sovrenix.com/larri/internal/config"
 	"os"
 	"strings"
 	"time"
@@ -125,13 +126,44 @@ func securityNotes(r runtime.Runtime) []string {
 // One call site for what was six copies of `vastai.New(os.Getenv(...))`. The
 // duplication was harmless while there was one provider and would have been
 // six edits and a missed one the moment there were two.
+// openProvider resolves which provider to rent from.
+//
+// An explicit flag wins. Otherwise the configured order decides, and only a
+// machine with no usable provider at all is an error. Refusing to choose
+// between two configured providers made --provider mandatory the moment a
+// second one was compiled in, which is a flag the operator has to get right
+// before anything works and which the configuration already answers.
 func openProvider(name string) (provider.Provider, error) {
-	if name == "" {
-		d, err := provider.Default()
-		if err != nil {
-			return nil, err
-		}
-		name = d
+	if name != "" {
+		return provider.Open(name)
 	}
-	return provider.Open(name)
+	if d, err := provider.Default(); err == nil {
+		return provider.Open(d)
+	}
+	// Several are available: take the first configured one that opens. A
+	// provider fails to open when its credential is absent, so this also
+	// skips the ones the operator has not set up.
+	var configured []string
+	if res, err := config.Resolve(config.Request{}); err == nil && res != nil {
+		configured = res.Config.Providers
+	}
+	var last error
+	for _, n := range configured {
+		p, err := provider.Open(n)
+		if err == nil {
+			return p, nil
+		}
+		last = err
+	}
+	for _, n := range provider.Names() {
+		p, err := provider.Open(n)
+		if err == nil {
+			return p, nil
+		}
+		last = err
+	}
+	if last == nil {
+		last = fmt.Errorf("no providers are compiled in")
+	}
+	return nil, last
 }

@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"go.sovrenix.com/larri/internal/provider"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -209,5 +210,39 @@ func TestConfigRefusesAnUnknownProfileLikeUpDoes(t *testing.T) {
 	// And `up` must refuse the same name, for the same reason.
 	if _, rerr := config.Resolve(config.Request{Path: file, Profile: "codr"}); rerr == nil {
 		t.Error("resolution accepted the same unknown profile")
+	}
+}
+
+// Friction is a security property here, not a cosmetic one: an operator who
+// finds LARRI harder than the provider's own one-click deploy will use the
+// one-click deploy — which publishes the inference port behind a fixed token
+// and makes no teardown guarantee. So refusing to choose between two
+// configured providers was not caution; it made --provider mandatory the
+// moment a second provider was compiled in, and the configuration already
+// answers the question.
+func TestProviderResolvesWithoutBeingNamed(t *testing.T) {
+	names := provider.Names()
+	if len(names) < 2 {
+		t.Skipf("only %d provider(s) compiled in; nothing to choose between", len(names))
+	}
+	// provider.Default deliberately still refuses — the ambiguity is real and
+	// the registry is not the place that resolves it.
+	if _, err := provider.Default(); err == nil {
+		t.Error("registry Default should stay strict about ambiguity")
+	}
+	// The CLI resolves it, or reports why it cannot — never "name one".
+	p, err := openProvider("")
+	if err != nil {
+		if strings.Contains(err.Error(), "--provider") {
+			t.Errorf("the operator should not be told to supply a flag the config answers: %v", err)
+		}
+		t.Skipf("no provider credential available in this environment: %v", err)
+	}
+	if p == nil {
+		t.Fatal("resolved a nil provider")
+	}
+	// An explicit name still wins.
+	if _, err := openProvider(names[0]); err != nil {
+		t.Logf("explicit %s unavailable here: %v", names[0], err)
 	}
 }
