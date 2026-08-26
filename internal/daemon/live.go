@@ -263,9 +263,21 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 		endpointAt    time.Time
 		announcedEP   bool
 		announcedPull bool
+		offlineSince  time.Time
 	)
 	for time.Now().Before(deadline) {
 		inst, err := o.Provider.Get(ctx, rig.Instance.InstanceID)
+		// Watched before the dispatch rather than as a case of it: a host
+		// that flaps offline for one poll and carries on must keep its
+		// place, so this records when the outage began and clears it the
+		// moment the host answers again.
+		switch {
+		case inst == nil || !bootOffline(inst):
+			offlineSince = time.Time{}
+		case offlineSince.IsZero():
+			offlineSince = time.Now()
+			o.warn("boot", "host reports offline; giving it %s to come back", offlineGrace)
+		}
 		switch {
 		case err != nil:
 			// Unreachable is not absent; keep asking (FR-SUP-11). A provider
@@ -274,6 +286,13 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 		case inst == nil:
 			return nil, errs.Newf(errs.ClassProviderUnknownOutcome, "daemon.waitForSSH",
 				"instance %s vanished during boot", rig.Instance.InstanceID)
+
+		case bootOffline(inst) && !offlineSince.IsZero() && time.Since(offlineSince) > offlineGrace:
+			// The machine has dropped off the provider's network and stayed
+			// off. Nothing LARRI waits for can happen while it is gone.
+			return nil, errs.Newf(errs.ClassHostFailure, "daemon.waitForSSH",
+				"host went offline and stayed offline for %s",
+				time.Since(offlineSince).Round(time.Second))
 
 		case bootAbandoned(inst):
 			// The provider has stopped trying. Every other clock in this loop
@@ -384,7 +403,21 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 		// has actually shown progress; the endpoint probe above is what
 		// catches a host that never comes up at all.
 		if everSpoke {
-			if idle := time.Since(changedAt); idle > stall {
+			// A container the provider is still preparing gets longer.
+			//
+			// Docker narrates a download and then goes quiet to unpack it,
+			// and the vLLM image has a single 4.6 GB layer whose extraction
+			// is disk-bound and silent. A live run died at eight minutes on
+			// "Pull complete" — the host was unpacking, not stuck. The
+			// tolerance is safe to widen because the dangerous case no longer
+			// depends on it: a provider that gives up is now detected from
+			// its own intent, and a machine that drops off is detected from
+			// its status, both in seconds rather than minutes.
+			limit := stall
+			if bootPending(inst) {
+				limit = stall * 2
+			}
+			if idle := time.Since(changedAt); idle > limit {
 				return nil, errs.Newf(errs.ClassHostFailure, "daemon.waitForSSH",
 					"no progress for %s (last: %s)",
 					idle.Round(time.Second), orUnknown(lastSeen))
@@ -429,6 +462,22 @@ func bootPending(inst *core.Instance) bool {
 		return true
 	}
 	return false
+}
+
+// offlineGrace is how long a machine may report offline before LARRI treats
+// it as gone.
+//
+// Not zero, because the status flaps: a live run saw a host report offline
+// for one poll in the middle of an image pull and carry straight on. Acting
+// on the first sample would destroy a working rental; ignoring the status
+// entirely costs five minutes of the reachability clock on a host that has
+// actually vanished.
+const offlineGrace = 90 * time.Second
+
+// bootOffline reports whether the provider says the machine itself is
+// unreachable, as distinct from the container not being ready.
+func bootOffline(inst *core.Instance) bool {
+	return strings.EqualFold(strings.TrimSpace(inst.Status), "offline")
 }
 
 // bootAbandoned reports whether the provider has stopped trying to start the

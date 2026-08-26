@@ -266,3 +266,40 @@ func TestColdStartIsEstimatedFromTheHostsLink(t *testing.T) {
 		t.Errorf("unknown link must not produce an estimate, got %s", got)
 	}
 }
+
+// A live run watched a host report offline for a single poll in the middle of
+// an image pull and carry straight on. Acting on the first sample would
+// destroy a working rental; ignoring the status entirely spends five minutes
+// of the reachability clock on a machine that has actually vanished.
+func TestOfflineIsJudgedOverTimeNotOnOneSample(t *testing.T) {
+	if !bootOffline(&core.Instance{Status: "offline"}) {
+		t.Error("offline must be recognised")
+	}
+	for _, s := range []string{"loading", "running", "created", ""} {
+		if bootOffline(&core.Instance{Status: s}) {
+			t.Errorf("%q is not offline", s)
+		}
+	}
+	if offlineGrace < 30*time.Second {
+		t.Errorf("offlineGrace %s is short enough to kill a flapping host", offlineGrace)
+	}
+}
+
+// Docker narrates a download and then goes quiet to unpack it, and the vLLM
+// image has one 4.6 GB layer whose extraction is disk-bound and silent. A
+// live run died at the eight-minute stall on "Pull complete" — the host was
+// unpacking, not stuck.
+func TestPendingContainersGetALongerStallTolerance(t *testing.T) {
+	pulling := &core.Instance{Status: "loading", StatusMsg: "7e00c5c1cfdb: Pull complete"}
+	if !bootPending(pulling) {
+		t.Fatal("a loading container must read as pending, or it gets the short clock")
+	}
+	// The widening is only safe because the dangerous cases are now caught by
+	// evidence rather than by the clock.
+	if !bootAbandoned(&core.Instance{Status: "created", Intent: "stopped"}) {
+		t.Error("an abandoned instance must still be caught immediately")
+	}
+	if !bootOffline(&core.Instance{Status: "offline"}) {
+		t.Error("a vanished machine must still be caught by status")
+	}
+}
