@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LARRI — User Guide</title>
+<link rel="icon" type="image/png" href="larri.png">
+<meta name="description" content="Set up LARRI end to end: provider keys, Hugging Face token, label key, bringing a rig up, wiring your editor and chat client, and stopping the bill.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root{
+--color-lobster:#c8371f;--color-lobster-dark:#9c2a17;--color-lobster-tint:#fdf1ef;
+--color-paper:#ffffff;--color-ink:#111111;--color-ink-dim:#808080;--color-ink-label:#585858;
+--color-hairline:#e3e3e3;--color-good:#008700;--color-warn:#af5f00;--color-bad:#af0000;
+--term-bg:#141414;--term-fg:#d7d7d7;--term-dim:#8a8a8a;--term-good:#5fd787;--term-warn:#ffaf00;
+--font-mono:'Courier Prime','Courier New',Courier,monospace;
+--text-xs:12px;--text-sm:13px;--text-md:15px;--text-lg:18px;--text-xl:24px;
+--measure:74ch;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--color-paper);color:var(--color-ink);
+     font-family:var(--font-mono);font-size:var(--text-md);line-height:1.65;padding:56px 24px 64px}
+.wrap{max-width:var(--measure);margin:0 auto}
+a{color:var(--color-ink)}a:hover{color:var(--color-lobster)}
+h1{font-size:var(--text-xl);margin:20px 0 4px;font-weight:700}
+h2{font-size:var(--text-lg);font-weight:700;margin:0 0 6px}
+h3{font-size:var(--text-md);font-weight:700;margin:26px 0 4px}
+header{text-align:center}
+nav{display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin-top:14px}
+nav a{text-decoration:underline}
+.dim{color:var(--color-ink-dim)}
+.rule{border:0;border-top:1px solid var(--color-hairline);margin:40px 0}
+.note{border-left:2px solid var(--color-lobster);background:var(--color-lobster-tint);
+      padding:10px 14px;font-size:var(--text-sm);margin:16px 0}
+.cmd{position:relative;background:var(--term-bg);color:var(--term-fg);
+     padding:12px 14px;margin:10px 0 4px;overflow-x:auto;font-size:var(--text-sm)}
+.cmd code{white-space:pre;display:block}
+.copy{position:absolute;top:6px;right:6px;background:transparent;color:var(--term-dim);
+      border:1px solid var(--term-dim);font-family:inherit;font-size:var(--text-xs);
+      padding:2px 7px;cursor:pointer;border-radius:0}
+.copy:hover,.copy[data-done="1"]{color:var(--term-good);border-color:var(--term-good)}
+.out{background:var(--term-bg);color:var(--term-dim);padding:12px 14px;margin:4px 0 16px;
+     overflow-x:auto;font-size:var(--text-sm);white-space:pre}
+.out b{color:var(--term-good);font-weight:400}
+.out i{color:var(--term-warn);font-style:normal}
+table{border-collapse:collapse;width:100%;font-size:var(--text-sm);margin:12px 0}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--color-hairline);vertical-align:top}
+th{color:var(--color-ink-label);font-weight:700}
+ol.steps{padding-left:0;list-style:none;counter-reset:s}
+ol.steps>li{counter-increment:s;padding:0 0 4px 34px;position:relative;margin-bottom:26px}
+ol.steps>li::before{content:counter(s);position:absolute;left:0;top:0;
+  width:22px;height:22px;line-height:22px;text-align:center;
+  border:1px solid var(--color-ink);font-size:var(--text-sm);font-weight:700}
+.req{display:inline-block;font-size:var(--text-xs);padding:1px 6px;margin-left:6px;
+     border:1px solid var(--color-hairline);color:var(--color-ink-label)}
+footer{margin-top:48px;text-align:center;font-size:var(--text-sm);color:var(--color-ink-dim)}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --color-paper:#0e0e0e;--color-ink:#e6e6e6;--color-hairline:#2a2a2a;
+    --color-ink-dim:#8a8a8a;--color-ink-label:#a0a0a0;--color-lobster-tint:#25120e;
+  }
+}
+</style>
+</head><body>
+<div class="wrap">
+
+<header>
+  <h1>L.A.R.R.I. 🦞 User Guide</h1>
+  <div style="font-weight:700">Nothing to a working endpoint, in order.</div>
+  <div class="dim" style="font-style:italic;margin:8px 0 0">About five cents, start to finish.</div>
+  <nav>
+    <a href="./index.html">home</a><span class="dim">·</span>
+    <a href="./cookbook.html">cookbook</a><span class="dim">·</span>
+    <a href="#quick">quick start</a><span class="dim">·</span>
+    <a href="#prereqs">setup</a><span class="dim">·</span>
+    <a href="#first">first rig</a><span class="dim">·</span>
+    <a href="#clients">wire a client</a><span class="dim">·</span>
+    <a href="#stop">stop paying</a><span class="dim">·</span>
+    <a href="#daily">daily use</a><span class="dim">·</span>
+    <a href="#trouble">when it fails</a>
+  </nav>
+</header>
+
+<hr class="rule">
+
+<section id="quick">
+  <h2>Quick start</h2>
+  <p class="dim" style="margin:0 0 16px">Four commands, about five cents. Every
+  section below expands on one of them.</p>
+
+  <div class="cmd"><button class="copy">copy</button><code>export VASTAI_API_KEY=...                        # a funded provider account
+export HF_TOKEN=...                              # for gated models
+export LARRI_LABEL_KEY=$(bin/larri label-key)    # optional: seal what the provider sees
+
+bin/larri up --model Qwen/Qwen2.5-1.5B-Instruct --dry-run   # costs nothing
+bin/larri up --model Qwen/Qwen2.5-1.5B-Instruct             # rents, serves, holds the tunnel</code></div>
+
+  <p style="margin:14px 0 10px">The last command prints the three values every
+  client needs, and holds the rig until you stop it:</p>
+
+  <div class="out">  ✓ rig 01M0ZXE8… <b>READY</b>   http://127.0.0.1:8000/v1   model: <i>qwen2.5-1.5b-instruct</i>
+    key: <i>fKLtIo4OscEe1W7a0TYJasIlaH6Q0tc530Vi-n5n7Ow</i>
+
+  holding the tunnel — Ctrl-C to tear down and stop paying</div>
+
+  <p style="margin:0 0 10px">Point any OpenAI-compatible client at
+  <b>http://127.0.0.1:8000/v1</b> with that key and model name. <b>Ctrl-C</b>
+  destroys the rig and stops the bill.</p>
+
+  <div class="note">
+    Two habits worth forming immediately: run <b>--dry-run</b> first, every time —
+    it shows the hardware, the wait and the bill without renting anything. And
+    <b>copy the key when it appears</b>: it is minted per bring-up and printed once.
+  </div>
+
+  <p class="dim" style="font-size:var(--text-sm);margin:14px 0 0">
+    That is the whole product. The rest of this page is detail:
+    <a href="#prereqs" style="text-decoration:underline">setup</a> ·
+    <a href="#first" style="text-decoration:underline">first rig</a> ·
+    <a href="#clients" style="text-decoration:underline">wiring a client</a> ·
+    <a href="#stop" style="text-decoration:underline">stopping</a> ·
+    <a href="#daily" style="text-decoration:underline">daily commands</a> ·
+    <a href="#trouble" style="text-decoration:underline">failures</a>
+  </p>
+</section>
+
+<hr class="rule">
+
+<section id="prereqs">
+  <h2>Setup, in detail</h2>
+  <p class="dim" style="margin:0 0 20px">The three environment variables above,
+  and what each one actually buys you. Once per machine; only the first is
+  mandatory.</p>
+
+  <ol class="steps">
+    <li>
+      <h3 style="margin-top:0">A provider API key <span class="req">required</span></h3>
+      <p style="margin:0 0 4px">You need a funded account with at least one provider.
+      LARRI never handles the money — it spends what is already there.</p>
+      <div class="cmd"><button class="copy">copy</button><code>export VASTAI_API_KEY=...    # console.vast.ai → Account → API Keys
+export RUNPOD_API_KEY=...    # runpod.io → Settings → API Keys</code></div>
+      <p class="dim" style="font-size:var(--text-sm);margin:4px 0 0">With both set,
+      LARRI uses whichever your configuration lists first. Name one explicitly with
+      <b>--provider vastai</b> or <b>--provider runpod</b>.</p>
+    </li>
+
+    <li>
+      <h3 style="margin-top:0">A Hugging Face token <span class="req">recommended</span></h3>
+      <p style="margin:0 0 4px">Needed for gated models — Llama and Gemma among them —
+      and harmless otherwise.</p>
+      <div class="cmd"><button class="copy">copy</button><code>export HF_TOKEN=...          # huggingface.co/settings/tokens (read scope)</code></div>
+      <div class="note">Set it before you need it. A gated repository fails
+      <b>after</b> the rig is already rented and paid for — the download is the
+      first thing that discovers the token is missing.</div>
+    </li>
+
+    <li>
+      <h3 style="margin-top:0">A label key <span class="req">optional</span></h3>
+      <p style="margin:0 0 4px">LARRI stamps every rented resource so an abandoned one
+      can be found and destroyed later. This seals the descriptive part of that stamp —
+      model, runtime, price — so the provider and host operator cannot read it.</p>
+      <div class="cmd"><button class="copy">copy</button><code>export LARRI_LABEL_KEY=$(bin/larri label-key)</code></div>
+      <p class="dim" style="font-size:var(--text-sm);margin:4px 0 0">32 random bytes,
+      base64. The command prints the key on stdout and its explanation on stderr, so
+      that line captures exactly the key.</p>
+      <div class="note">
+        <b>Keep it.</b> Without a key, rigs are still labelled and still destroyable —
+        the rig ID is always in the clear, so orphan detection works either way.
+        But lose a key you have been using and <b>larri orphans</b> can no longer say
+        what a surviving rig was <em>for</em>. LARRI will never generate one silently,
+        because a key you do not know exists is a key you cannot back up.
+      </div>
+    </li>
+
+    <li>
+      <h3 style="margin-top:0">Make them permanent</h3>
+      <p style="margin:0 0 4px">All three are read from the environment on every run.
+      LARRI writes none of them to disk.</p>
+      <div class="cmd"><button class="copy">copy</button><code># ~/.bashrc or ~/.zshrc
+export VASTAI_API_KEY=...
+export HF_TOKEN=...
+export LARRI_LABEL_KEY=...</code></div>
+      <p class="dim" style="font-size:var(--text-sm);margin:4px 0 0">Prefer a file?
+      Use <b>LARRI_LABEL_KEY_FILE=~/.config/larri/label.key</b> instead.</p>
+    </li>
+  </ol>
+
+  <h3>Check what LARRI resolved</h3>
+  <div class="cmd"><button class="copy">copy</button><code>bin/larri up --model Qwen/Qwen2.5-1.5B-Instruct --dry-run</code></div>
+  <div class="out">  labels      <b>environment</b> — provider-side labels are sealed
+  sizing      Qwen/Qwen2.5-1.5B-Instruct needs ~4.6 GB VRAM
+  select      vastai RTX 3060 12GB $0.047/hr (reliability 0.98)
+  plan        ready in ~4m0s (2m0s bringup + 2m0s fetching 10.9 GB)
+  plan        cost: $0.00 to reach ready, $0.05 for 1h of use, <b>$0.05 total</b></div>
+  <p style="margin:0">The <b>labels</b> line tells you whether the key was found.
+  <b>--dry-run</b> stops there — nothing has been rented.</p>
+</section>
+
+<hr class="rule">
+
+<section id="first">
+  <h2>Your first rig</h2>
+  <div class="cmd"><button class="copy">copy</button><code>bin/larri up --model Qwen/Qwen2.5-1.5B-Instruct</code></div>
+  <p style="margin:0 0 10px">It asks once, before it spends:</p>
+  <div class="out">  rent RTX 3060 12GB at $0.047/hr? [y/N] y</div>
+  <p style="margin:0 0 10px">Then it rents the machine, installs a throwaway SSH key,
+  pins the host key, checks the host can actually reach Hugging Face, launches the
+  runtime, and waits for a <em>real completion</em> to come back — not a health check,
+  an actual generated token.</p>
+  <div class="out">  ✓ rig 01M0ZXE8… <b>READY</b>   http://127.0.0.1:8000/v1   model: <i>qwen2.5-1.5b-instruct</i>
+    vastai RTX 3060 at $0.047/hr
+    key: <i>fKLtIo4OscEe1W7a0TYJasIlaH6Q0tc530Vi-n5n7Ow</i>
+
+  policy: idle 30m0s → destroy · no budget ceiling
+  holding the tunnel — Ctrl-C to tear down and stop paying</div>
+  <div class="note">
+    <b>Copy the key now.</b> It is minted per bring-up and printed once;
+    <b>larri status</b> does not repeat it. Leave this terminal open — it is holding
+    the tunnel and supervising the rig.
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="clients">
+  <h2>Wire a client</h2>
+  <p style="margin:0 0 12px">Three values, from the lines above. The base URL never
+  changes, whichever provider or GPU won the ranking — that is what the tunnel is for.</p>
+
+  <table>
+    <tr><th>Field</th><th>Value</th></tr>
+    <tr><td>Base URL</td><td><b>http://127.0.0.1:8000/v1</b></td></tr>
+    <tr><td>API key</td><td>the <b>key:</b> line — changes every bring-up</td></tr>
+    <tr><td>Model</td><td>the <b>model:</b> line</td></tr>
+  </table>
+
+  <h3>Check it before configuring anything</h3>
+  <div class="cmd"><button class="copy">copy</button><code>curl -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"model":"qwen2.5-1.5b-instruct","messages":[{"role":"user","content":"hello"}]}' \
+  http://127.0.0.1:8000/v1/chat/completions</code></div>
+
+  <h3>Where it goes</h3>
+  <table>
+    <tr><th>Client</th><th>Setting</th></tr>
+    <tr><td><b>AnythingLLM</b></td><td>Settings → AI Providers → LLM → <b>Generic OpenAI</b>.
+      Set token context window to the model's, and Max Tokens below it.</td></tr>
+    <tr><td><b>Continue.dev</b></td><td><b>~/.continue/config.yaml</b> — covers VS Code and JetBrains</td></tr>
+    <tr><td><b>VS Code</b></td><td>Copilot Chat BYOK → OpenAI-compatible provider</td></tr>
+    <tr><td><b>LibreChat</b>, <b>Open WebUI</b></td><td>Custom OpenAI endpoint</td></tr>
+  </table>
+
+  <div class="note">
+    Running the client in <b>Docker</b>? Give it <b>--network=host</b>. The endpoint
+    binds loopback only, so <b>host.docker.internal</b> cannot reach it — and that
+    bind is what stops any page in your browser from spending your money.
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="stop">
+  <h2>Stop paying</h2>
+  <p style="margin:0 0 10px"><b>Ctrl-C</b> in the terminal holding the rig, or from anywhere:</p>
+  <div class="cmd"><button class="copy">copy</button><code>bin/larri down</code></div>
+  <p style="margin:0 0 10px">It destroys the rig, <b>re-queries the provider to confirm
+  it is actually gone</b>, and reports the total. A 200 from a delete endpoint is a
+  claim; absence from the inventory is evidence.</p>
+
+  <h3>If a LARRI process ever dies unexpectedly</h3>
+  <div class="cmd"><button class="copy">copy</button><code>bin/larri orphans
+bin/larri orphans --destroy</code></div>
+  <div class="note">
+    A rented container <b>cannot end its own billing</b> — measured, not assumed:
+    the capability to reboot itself is not granted to it. So if the local process
+    dies, <b>larri orphans</b> is the only thing that stops an abandoned rig costing
+    money. Run it if a machine ever crashes on you.
+  </div>
+  <p class="dim" style="font-size:var(--text-sm);margin:0">By default an idle rig
+  destroys itself after 30 minutes and says so at bring-up. Change it with
+  <b>--idle-timeout 15m</b>.</p>
+</section>
+
+<hr class="rule">
+
+<section id="daily">
+  <h2>Daily use</h2>
+  <table>
+    <tr><th>Command</th><th>Does</th></tr>
+    <tr><td><b>larri up</b></td><td>Search, rank, provision, serve, supervise</td></tr>
+    <tr><td><b>larri status</b></td><td>State, price, elapsed, accrued cost — and why a past rig ended</td></tr>
+    <tr><td><b>larri down</b></td><td>Destroy, confirm absence, report total cost</td></tr>
+    <tr><td><b>larri resume</b></td><td>Rebuild the tunnel to a rig that outlived the last process</td></tr>
+    <tr><td><b>larri offers</b></td><td>Search and rank without spending anything</td></tr>
+    <tr><td><b>larri orphans</b></td><td>Find and destroy what local state cannot account for</td></tr>
+    <tr><td><b>larri config</b></td><td>Save criteria as profiles, so <b>larri up</b> needs no flags</td></tr>
+    <tr><td><b>larri tui</b></td><td>The same lifecycle under a live dashboard</td></tr>
+    <tr><td><b>larri mcp</b></td><td>Hand the lifecycle to Claude Code as MCP tools</td></tr>
+    <tr><td><b>larri privacy</b></td><td>What the machine you rent can see, in full</td></tr>
+    <tr><td><b>larri label-key</b></td><td>Generate a key that seals provider-side labels</td></tr>
+  </table>
+  <p style="margin:12px 0 0">Ready-made commands per task — chat, coding, reasoning,
+  documents, vision — are in the <a href="./cookbook.html" style="text-decoration:underline">cookbook</a>.</p>
+</section>
+
+<hr class="rule">
+
+<section id="trouble">
+  <h2>When it fails</h2>
+  <p class="dim" style="margin:0 0 16px">The cheap end of the market is rough. LARRI
+  checks what it can before spending and falls back when a host fails anyway; expect
+  an attempt or two to be discarded. That is the market, not a malfunction.</p>
+
+  <table>
+    <tr><th>What you see</th><th>What it means</th></tr>
+    <tr><td><b>host has no working internet</b></td>
+        <td>The machine cannot reach Hugging Face <em>or</em> Docker Hub. It is a bad
+        rental; LARRI abandons it in about 20 seconds and takes the next offer.</td></tr>
+    <tr><td><b>host cannot reach huggingface.co</b><br>
+        <span class="dim">…retry with --hf-endpoint</span></td>
+        <td>The machine is online but its region cannot route to Hugging Face. It names
+        a mirror it <em>can</em> reach. Opt-in: weights would then come from a third party.</td></tr>
+    <tr><td><b>provider gave up on the instance</b></td>
+        <td>The provider's own container runtime failed — often GPUs that could not be
+        attached. Nothing you can fix; LARRI moves on immediately.</td></tr>
+    <tr><td><b>verification-withdrawn</b></td>
+        <td>Not an error. The provider granted this host verification and later took it
+        back, so LARRI skips it. <b>--allow-deverified</b> to include them anyway.</td></tr>
+    <tr><td><b>local port 8000 is already in use</b></td>
+        <td>Something else holds the port. Use <b>--port 8080</b>. Checked before
+        renting, so it costs nothing.</td></tr>
+    <tr><td><b>bring-up hit the … ceiling</b></td>
+        <td>A slow host ran past the attempt limit. Raise it with <b>--deadline</b>.</td></tr>
+    <tr><td><b>400 "auto" tool choice requires…</b></td>
+        <td>Agent mode needs a tool-call parser. LARRI derives one from the model; if a
+        client still reports malformed calls, set <b>--tool-parser</b> explicitly.</td></tr>
+  </table>
+
+  <div class="note">
+    ⚠ <b>The host can read your prompts.</b> Inference happens in plaintext on a
+    stranger's GPU, and whoever owns that machine has root. The tunnel protects your
+    traffic on the way there; it cannot protect it from the far end. Run
+    <b>larri privacy</b> for the whole explanation. Send a rented GPU nothing you
+    could not afford to publish.
+  </div>
+</section>
+
+<footer>
+  <div>🦞 <b>Larri the Lobster</b> — same lobster, new shell.</div>
+  <div style="margin-top:8px">Sovrenix Inc. · licence GPL-3.0 ·
+    <a href="https://github.com/sovrenix/larri">source</a></div>
+</footer>
+
+</div>
+<script>
+document.querySelectorAll('.copy').forEach(function (b) {
+  b.addEventListener('click', function () {
+    var code = b.parentElement.querySelector('code').textContent;
+    var done = function () {
+      b.textContent = 'copied'; b.dataset.done = '1';
+      setTimeout(function () { b.textContent = 'copy'; delete b.dataset.done; }, 1400);
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(code).then(done, function () { b.textContent = 'select it'; });
+      return;
+    }
+    var t = document.createElement('textarea');
+    t.value = code; t.style.position = 'fixed'; t.style.opacity = '0';
+    document.body.appendChild(t); t.select();
+    try { document.execCommand('copy'); done(); } catch (e) { b.textContent = 'select it'; }
+    document.body.removeChild(t);
+  });
+});
+</script>
+</body></html>

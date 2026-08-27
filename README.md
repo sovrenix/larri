@@ -127,9 +127,67 @@ that matters is the second one.
 ## How to use
 
 **New here? [QUICKSTART.md](QUICKSTART.md) gets you to a working endpoint for
-about five cents.** For copy-paste commands per task — chat, coding,
-reasoning, documents, vision — with the hardware and cost each one lands on,
-see the [cookbook](https://sovrenix.github.io/larri/cookbook.html).
+about five cents.** The same thing on the web, with the setup steps expanded, is
+the [user guide](https://sovrenix.github.io/larri/guide.html). For copy-paste
+commands per task — chat, coding, reasoning, documents, vision — with the
+hardware and cost each one lands on, see the
+[cookbook](https://sovrenix.github.io/larri/cookbook.html).
+
+### Before you start
+
+Four steps, once per machine. Only the first is mandatory.
+
+**1. A provider key.** At least one, funded. LARRI never handles the money; it
+spends what is already in the account.
+
+```bash
+export VASTAI_API_KEY=...     # console.vast.ai → Account → API Keys
+export RUNPOD_API_KEY=...     # runpod.io → Settings → API Keys
+```
+
+With both set, `larri up` uses whichever your configuration lists first; name
+one explicitly with `--provider vastai` or `--provider runpod`.
+
+**2. A Hugging Face token.** Needed for gated models — Llama and Gemma among
+them — and harmless otherwise. Without it a gated repository fails *after* the
+rig is paid for, so set it before you need it.
+
+```bash
+export HF_TOKEN=...           # huggingface.co/settings/tokens (read scope)
+```
+
+**3. A label key**, if you would rather the provider could not read what you
+are running. LARRI stamps every rented resource so an abandoned one can be
+found later; this seals the descriptive part of that stamp.
+
+```bash
+export LARRI_LABEL_KEY=$(bin/larri label-key)
+```
+
+Optional. Without it, rigs are still labelled and still destroyable — the rig
+ID stays in the clear — but the model name, runtime and price are written where
+the provider and host operator can read them. **Keep the key**: lose it and
+`larri orphans` can no longer say what a surviving rig was for.
+
+**4. Put them in your shell profile.** These are read from the environment on
+every run. Nothing is written to disk by LARRI, and nothing is copied to the
+rented host except the Hugging Face token, which the runtime needs in order to
+download weights.
+
+```bash
+# ~/.bashrc or ~/.zshrc
+export VASTAI_API_KEY=...
+export HF_TOKEN=...
+export LARRI_LABEL_KEY=...
+```
+
+Check what LARRI resolved before spending anything:
+
+```bash
+bin/larri up --model Qwen/Qwen2.5-1.5B-Instruct --dry-run
+```
+
+The `labels` line tells you whether the key was found.
 
 ### Bring up a rig
 
@@ -319,19 +377,33 @@ still billing and may still be wanted. `larri resume` reattaches; `larri down` s
 > port; point clients at it yourself for now. Automatic config writing — detect, back up,
 > and revert on `down` — is designed (§10.2) and is the next surface to land.
 
-Any OpenAI-compatible client works. Use the endpoint and key `larri up` prints:
+Any OpenAI-compatible client works. Once the rig is up, `larri up` prints the
+three values every client asks for:
 
 ```
-base URL   http://127.0.0.1:8000/v1
-api key    (printed at bring-up)
-model      the --served-name you chose
+  ✓ rig 01M0ZXE8… READY   http://127.0.0.1:8000/v1   model: qwen2.5-1.5b-instruct
+    vastai RTX 3060 at $0.047/hr
+    key: fKLtIo4OscEe1W7a0TYJasIlaH6Q0tc530Vi-n5n7Ow
 ```
+
+| Field | Value | Where it comes from |
+|---|---|---|
+| Base URL | `http://127.0.0.1:8000/v1` | Always the same, whichever provider or GPU won |
+| API key | the `key:` line | Minted per bring-up — **it changes every time** |
+| Model | the `model:` line | Your `--served-name`, or derived from the model reference |
+
+**Copy the key when it appears.** It is printed once, at bring-up; `larri
+status` does not repeat it. Lose it and the quickest fix is a fresh rig.
 
 | Client | Where it goes |
 |---|---|
 | **Continue.dev** | `~/.continue/config.yaml` — covers VS Code **and** JetBrains |
 | **VS Code** | Copilot Chat BYOK, OpenAI-compatible provider |
-| **LibreChat**, **Open WebUI**, **AnythingLLM** | Custom OpenAI endpoint |
+| **LibreChat**, **Open WebUI**, **AnythingLLM** | Custom OpenAI endpoint / "Generic OpenAI" |
+
+If the client runs in **Docker**, give it `--network=host`. The endpoint binds
+loopback only, so `host.docker.internal` cannot reach it — and that bind is
+what stops any page in your browser from spending your money.
 
 ---
 
