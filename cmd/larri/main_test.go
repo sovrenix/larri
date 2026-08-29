@@ -4,8 +4,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"go.sovrenix.com/larri/internal/provider"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +17,8 @@ import (
 
 	"go.sovrenix.com/larri/internal/config"
 	"go.sovrenix.com/larri/internal/core"
+	"go.sovrenix.com/larri/internal/daemon"
+	"go.sovrenix.com/larri/internal/provider"
 	"go.sovrenix.com/larri/internal/rank"
 	"go.sovrenix.com/larri/internal/state"
 )
@@ -244,5 +248,69 @@ func TestProviderResolvesWithoutBeingNamed(t *testing.T) {
 	// An explicit name still wins.
 	if _, err := openProvider(names[0]); err != nil {
 		t.Logf("explicit %s unavailable here: %v", names[0], err)
+	}
+}
+
+// Progress and the confirmation prompt used to reach the terminal by
+// different routes — progress through a channel drained on a goroutine, the
+// question written directly by the lifecycle. A live run printed the question
+// into the middle of the exclusion report it referred to, and the next queued
+// line wrote over it: no visible prompt, at the one moment LARRI was about to
+// spend money.
+func TestPromptPrintsAfterEverythingQueuedBeforeIt(t *testing.T) {
+	events := make(chan daemon.Event, 64)
+	prompts := make(chan cliPrompt)
+	var out bytes.Buffer
+
+	done := make(chan struct{})
+	go func() { defer close(done); renderCLI(&out, strings.NewReader("y\n"), events, prompts) }()
+
+	// Everything a survey emits before it asks.
+	for i := 0; i < 12; i++ {
+		events <- daemon.Event{Phase: "excluded", Message: fmt.Sprintf("offer %d", i)}
+	}
+	events <- daemon.Event{Phase: "select", Message: "vastai RTX 3060 12GB"}
+
+	// The lifecycle asks, exactly as Confirm does.
+	result := make(chan bool)
+	prompts <- cliPrompt{Offer: core.Offer{GPUModel: "RTX 3060", VRAMPerGPUGB: 12, GPUCount: 1, PriceHr: 0.047}, Result: result}
+	if !<-result {
+		t.Error(`"y" should confirm`)
+	}
+	close(events)
+	<-done
+
+	got := out.String()
+	promptAt := strings.Index(got, "rent RTX 3060")
+	if promptAt < 0 {
+		t.Fatalf("no prompt in output:\n%s", got)
+	}
+	// Every queued line must already be on screen when the question appears.
+	for _, must := range []string{"offer 0", "offer 11", "vastai RTX 3060 12GB"} {
+		at := strings.Index(got, must)
+		if at < 0 {
+			t.Errorf("%q never printed", must)
+		} else if at > promptAt {
+			t.Errorf("%q printed after the prompt; the question would land mid-report", must)
+		}
+	}
+	// And nothing follows the question, so the cursor stays on it.
+	if tail := strings.TrimSpace(got[promptAt:]); !strings.HasSuffix(tail, "[y/N]") {
+		t.Errorf("output continued past the prompt: %q", tail)
+	}
+}
+
+// "n" declines, and anything else declines too — the flag is [y/N].
+func TestPromptDefaultsToDeclining(t *testing.T) {
+	for _, answer := range []string{"n\n", "\n", "maybe\n"} {
+		events := make(chan daemon.Event, 4)
+		prompts := make(chan cliPrompt)
+		go renderCLI(io.Discard, strings.NewReader(answer), events, prompts)
+		result := make(chan bool)
+		prompts <- cliPrompt{Offer: core.Offer{GPUModel: "X"}, Result: result}
+		if <-result {
+			t.Errorf("%q should not confirm a purchase", answer)
+		}
+		close(events)
 	}
 }

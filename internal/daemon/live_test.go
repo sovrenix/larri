@@ -333,6 +333,18 @@ func TestDeadlineExpiryExplainsItself(t *testing.T) {
 		t.Errorf("class = %s, want host-failure so it earns a fallback", errs.ClassOf(got))
 	}
 
+	// An outer cancellation is not this attempt's ceiling. A live run
+	// reported "hit the 45m0s ceiling after 3m17s" — self-contradictory, and
+	// pointing at a flag that would not have helped.
+	early := o.explainDeadline(ctx, context.DeadlineExceeded, 45*time.Minute,
+		time.Now().Add(-3*time.Minute))
+	if strings.Contains(early.Error(), "raise it with --deadline") {
+		t.Errorf("an outer cancellation must not blame the ceiling: %v", early)
+	}
+	if !strings.Contains(early.Error(), "cancelled") {
+		t.Errorf("it should say it was cancelled: %v", early)
+	}
+
 	// An unrelated error passes through untouched.
 	other := errs.Newf(errs.ClassModelFailure, "x", "boom")
 	if o.explainDeadline(ctx, other, time.Minute, time.Now()) != other {

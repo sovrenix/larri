@@ -135,10 +135,16 @@ not afford to publish.
 
 **The cheap end of the market is rough.** Hosts fail: no internet, container
 runtimes that cannot attach GPUs, machines that drop off mid-pull. LARRI
-checks what it can before spending — compute capability, CUDA version, VRAM
-actually present, the local port, whether the host can reach Hugging Face —
-and falls back to the next offer when a host fails anyway. Expect an attempt
-or two to be discarded. That is the market, not a malfunction.
+checks the local port before spending. Once connected, it verifies compute
+capability, CUDA version, VRAM across every card, and whether the host can
+reach Hugging Face before downloading weights, then falls back when a host
+fails anyway.
+Expect an attempt or two to be discarded. That is the market, not a
+malfunction.
+
+Two flags shift the odds: `--verified-only` rents only hosts the provider has
+verified, and `--min-netspeed` floors the download link. Both cost more per
+hour and waste less.
 
 **Idle rigs destroy themselves after 30 minutes** by default, and say so.
 Change it with `--idle-timeout`, or turn it off and watch your own bill.

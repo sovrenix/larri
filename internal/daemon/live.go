@@ -275,7 +275,16 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 		announcedEP   bool
 		announcedPull bool
 		offlineSince  time.Time
+
+		// lastStatusReport paces the reminder below. Without it a provider
+		// that reports one status and then goes quiet leaves the operator
+		// with nothing on screen for minutes, which reads as a hang.
+		lastStatusReport time.Time
 	)
+	if _, ok := o.Provider.(provider.BootLogger); !ok {
+		o.emit("boot", "%s reports status but no boot logs; waiting for an ssh endpoint",
+			o.Provider.Name())
+	}
 	for time.Now().Before(deadline) {
 		inst, err := o.Provider.Get(ctx, rig.Instance.InstanceID)
 		// Watched before the dispatch rather than as a case of it: a host
@@ -341,7 +350,8 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 				endpointAt = time.Now()
 			}
 			if !announcedEP {
-				o.emit("boot", "endpoint %s:%d published — probing", inst.SSHHost, inst.SSHPort)
+				o.emit("boot", "endpoint %s:%d published — probing for up to %s",
+					inst.SSHHost, inst.SSHPort, unreachable)
 				announcedEP = true
 			}
 			if perr := sshx.Probe(ctx, inst.SSHHost, inst.SSHPort, 15*time.Second); perr == nil {
@@ -383,6 +393,7 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 					now := describeBoot(inst)
 					o.emit("boot", "%s", now)
 					lastSig, lastSeen, changedAt = sig, now, time.Now()
+					lastStatusReport = changedAt
 					o.lastBootStatus = now
 
 					// The endpoint clock is progress-driven too, and for the
@@ -401,6 +412,14 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 					if !endpointAt.IsZero() {
 						endpointAt = time.Now()
 					}
+				} else if time.Since(lastStatusReport) >= 30*time.Second {
+					// Silence is the normal state during a long image pull,
+					// and an operator watching it cannot tell a working host
+					// from a dead one. Saying how long it has been quiet
+					// costs nothing and answers that.
+					o.emit("boot", "%s status unchanged for %s; still waiting for an ssh endpoint",
+						o.Provider.Name(), time.Since(changedAt).Round(time.Second))
+					lastStatusReport = time.Now()
 				}
 			}
 		}
@@ -1418,7 +1437,11 @@ func isAuthFailure(err error) bool {
 	e := strings.ToLower(err.Error())
 	return strings.Contains(e, "unable to authenticate") ||
 		strings.Contains(e, "no supported methods remain") ||
-		strings.Contains(e, "permission denied")
+		strings.Contains(e, "permission denied") ||
+		// A host that drops the connection during the handshake has not
+		// finished installing the key. It reads as a transport failure and
+		// is the same wait-and-retry as an outright rejection.
+		strings.Contains(e, "handshake failed: eof")
 }
 
 // idleSince renders how long a runtime has been quiet, rounded to something a

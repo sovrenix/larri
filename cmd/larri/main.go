@@ -10,13 +10,15 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"go.sovrenix.com/larri/internal/runtime"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
+
+	"go.sovrenix.com/larri/internal/runtime"
 
 	"go.sovrenix.com/larri/internal/buildinfo"
 	"go.sovrenix.com/larri/internal/config"
@@ -47,6 +49,67 @@ const usage = `larri — Local Agent for Remote Rigging of Inference
 
 Run 'larri <command> -h' for the flags of each.
 `
+
+// cliPrompt is a question the lifecycle needs answered on the terminal.
+type cliPrompt struct {
+	Offer  core.Offer
+	Result chan<- bool
+}
+
+// printCLIOutput gives one goroutine sole ownership of stdout.
+//
+// Progress and prompts used to reach the terminal by different routes:
+// progress through a channel drained here, the confirmation written directly
+// by the lifecycle. A live run showed what that costs — the question printed
+// into the middle of the exclusion report it referred to, and the next queued
+// line wrote over it, leaving an operator staring at output with no visible
+// prompt at the one moment LARRI was about to spend money.
+//
+// With both routed through this loop the interleaving cannot happen. The
+// prompt arrives on its own channel, and because Confirm blocks on that send,
+// everything the lifecycle emitted beforehand is already queued: draining what
+// is buffered is therefore enough to guarantee the question prints last.
+func printCLIOutput(events <-chan daemon.Event, prompts <-chan cliPrompt) {
+	renderCLI(os.Stdout, os.Stdin, events, prompts)
+}
+
+// renderCLI is printCLIOutput with its streams supplied, so the ordering it
+// exists to guarantee can be tested without a terminal.
+func renderCLI(out io.Writer, in io.Reader, events <-chan daemon.Event, prompts <-chan cliPrompt) {
+	show := func(e daemon.Event) {
+		if !e.Show() {
+			return
+		}
+		mark := " "
+		if e.Warning {
+			mark = "!"
+		}
+		fmt.Fprintf(out, "  %s %-10s %s\n", mark, e.Phase, e.Message)
+	}
+	for {
+		select {
+		case e, ok := <-events:
+			if !ok {
+				return
+			}
+			show(e)
+		case p := <-prompts:
+			for drained := false; !drained; {
+				select {
+				case e := <-events:
+					show(e)
+				default:
+					drained = true
+				}
+			}
+			fmt.Fprintf(out, "\n  rent %s %dGB at $%.3f/hr? [y/N] ",
+				p.Offer.GPUModel, p.Offer.VRAMTotalGB(), p.Offer.PriceHr)
+			var answer string
+			_, _ = fmt.Fscanln(in, &answer)
+			p.Result <- strings.EqualFold(strings.TrimSpace(answer), "y")
+		}
+	}
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -198,6 +261,10 @@ func cmdUp(ctx context.Context, args []string) error {
 	// Named only to override the model-derived choice, or "none" to serve
 	// without tool calling at all.
 	toolParser := fs.String("tool-parser", "", "vLLM tool-call parser, or 'none' (default: derived from the model)")
+	// How long a freshly created host may take to publish a reachable
+	// endpoint and accept the rig key. Cheap hardware is slower at both.
+	sshTimeout := fs.Duration("ssh-timeout", 0,
+		"how long to wait for the published SSH endpoint (0: use ssh_timeout from config)")
 	allowDeverified := fs.Bool("allow-deverified", false, "include hosts whose verification was withdrawn")
 	port := fs.Int("port", 8000, "fixed local port clients are wired against")
 	yes := fs.Bool("yes", false, "do not prompt before spending")
@@ -212,6 +279,9 @@ func cmdUp(ctx context.Context, args []string) error {
 		"how long the host waits without hearing from larri before stopping itself "+
 			"(0: derive from --idle-timeout; -1: disable)")
 	_ = fs.Parse(args)
+	if *sshTimeout < 0 {
+		return errors.New("ssh-timeout must not be negative")
+	}
 
 	// Which flags the operator actually passed, so that a flag set to a value
 	// equal to its default still beats the file. Without this, --max-price 0
@@ -264,6 +334,10 @@ func cmdUp(ctx context.Context, args []string) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	sshWait := cfg.SSHTimeout
+	if *sshTimeout != 0 {
+		sshWait = *sshTimeout
+	}
 	mode := config.DetectMode(config.Invocation{ForceNonInteractive: *yes}, os.Getenv)
 	firstRun(cfg, mode, res.File != "")
 
@@ -296,18 +370,8 @@ func cmdUp(ctx context.Context, args []string) error {
 		name = strings.ToLower(filepath.Base(*model))
 	}
 	events := make(chan daemon.Event, 64)
-	go func() {
-		for e := range events {
-			if !e.Show() {
-				continue
-			}
-			mark := " "
-			if e.Warning {
-				mark = "!"
-			}
-			fmt.Printf("  %s %-10s %s\n", mark, e.Phase, e.Message)
-		}
-	}()
+	prompts := make(chan cliPrompt)
+	go printCLIOutput(events, prompts)
 	defer close(events)
 
 	p := prov
@@ -390,8 +454,10 @@ func cmdUp(ctx context.Context, args []string) error {
 		// money even if this process is killed. Derived from the local
 		// timeout and always longer, so the supervisor — which can tell a
 		// busy rig from an idle one — acts first.
-		IdleTimeout:     cfg.Idle.Timeout,
-		DeadmanDeadline: *deadman,
+		IdleTimeout:        cfg.Idle.Timeout,
+		DeadmanDeadline:    *deadman,
+		EndpointStallLimit: sshWait,
+		AuthStallTimeout:   sshWait,
 	}
 
 	crit := core.Criteria{MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk,
@@ -414,16 +480,17 @@ func cmdUp(ctx context.Context, args []string) error {
 		}
 	} else if mode.Interactive() {
 		req.Confirm = func(o core.Offer, _ core.SizingPlan) bool {
-			fmt.Printf("\n  rent %s %dGB at $%.3f/hr? [y/N] ",
-				o.GPUModel, o.VRAMTotalGB(), o.PriceHr)
-			var in string
-			fmt.Scanln(&in)
-			return strings.EqualFold(strings.TrimSpace(in), "y")
+			result := make(chan bool)
+			prompts <- cliPrompt{Offer: o, Result: result}
+			return <-result
 		}
 	}
 
 	if *dryRun {
 		_, err := o.Up(ctx, req)
+		if errors.Is(err, daemon.ErrConfirmationDeclined) {
+			return nil
+		}
 		return err
 	}
 

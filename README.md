@@ -233,14 +233,38 @@ A web console with graphs and a chat pane is designed (§14.4) but not built.
 
 ### Credentials
 
-Two are read from the environment, and neither is ever written into state files
-or echoed into output.
+All are read from the environment. None is written into state files or echoed into
+output, and only `HF_TOKEN` ever reaches the rented host — the runtime needs it to
+download weights.
 
 | Variable | For |
 |---|---|
 | `VASTAI_API_KEY` | Renting on Vast.ai |
 | `RUNPOD_API_KEY` | Renting on RunPod |
 | `HF_TOKEN` | Downloading gated weights from Hugging Face |
+
+### Flags worth knowing
+
+`larri up --help` lists all 26. These are the ones that change what you pay or whether
+it works at all.
+
+| Flag | Why |
+|---|---|
+| `--dry-run` | Sizing, hardware, wait and bill — without renting. Use it first. |
+| `--session 8` | Optimise the choice for a long session: the download amortises and the hourly rate starts to dominate. |
+| `--max-price 0.50` | Hard ceiling per hour. |
+| `--gpu "RTX 3090"` | Restrict to hardware you trust. |
+| `--verified-only` | Only hosts the provider has verified. Costs more, fails less. |
+| `--allow-deverified` | Include hosts whose verification was **withdrawn**. Off by default. |
+| `--min-netspeed 200` | Floor the host's download link, in Mbps. The download is billed. |
+| `--context 32768` | Bigger window, bigger KV cache, bigger GPU. |
+| `--quantization Q4_K_M` | Weight format. GGUF engines default to a Q4; vLLM to fp16. |
+| `--tool-parser` | Override the parser derived from the model, or `none` to disable tool calling. |
+| `--hf-endpoint URL` | A Hugging Face mirror, for hosts whose region cannot route to it. |
+| `--port 8080` | When something else already holds 8000. |
+| `--deadline 75m` | Ceiling on one bring-up attempt. Stall detection ends a bad one sooner. |
+| `--ssh-timeout 3m` | How long a new host may take to publish and accept a reachable endpoint. |
+| `--idle-timeout 15m` | Destroy sooner when nobody is using it. |
 
 ### Sealing what the provider can see (`LARRI_LABEL_KEY`)
 

@@ -43,6 +43,9 @@ type Event struct {
 	Ack chan struct{}
 }
 
+// ErrConfirmationDeclined reports that the operator declined before a provider call.
+var ErrConfirmationDeclined = errors.New("cancelled before spending")
+
 // Show reports whether e carries something to render, and releases e if it
 // does not. Every surface draining an event channel must call it for each
 // event and skip the ones it rejects — that call is what unblocks a sync.
@@ -467,7 +470,7 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 	// The report above is queued, not printed. Let it land before asking.
 	o.Sync(ctx)
 	if req.Confirm != nil && !req.Confirm(chosen, plan) {
-		return nil, errs.Newf(errs.ClassModelFailure, "daemon.Up", "cancelled before spending")
+		return nil, errs.New(errs.ClassModelFailure, "daemon.Up", ErrConfirmationDeclined)
 	}
 
 	// ---- mint the ID, then write intent, then spend ----------------------
@@ -504,8 +507,14 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 		// behind which local port. Sealed when a key is configured; the rig
 		// ID stays readable either way, because attribution must not depend
 		// on holding a key.
-		Label:   core.EncodeLabel(core.LabelFor(rig), o.LabelLimit, o.LabelSealer),
-		OnStart: keys.OnStartScript(),
+		Label: core.EncodeLabel(core.LabelFor(rig), o.LabelLimit, o.LabelSealer),
+
+		// Both routes to the same key, because providers differ in which one
+		// they honour. RunPod reads this field into PUBLIC_KEY, which its
+		// images install at boot; nothing set it before, so that path was
+		// dead and only the script was doing the work.
+		SSHPublicKey: keys.AuthorizedKey(),
+		OnStart:      keys.OnStartScript(),
 		// FR-SEC-15: SSH only. A container port that was never mapped is
 		// unreachable regardless of what listens on it.
 		Ports: nil,
@@ -519,6 +528,22 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 		return rig, err
 	}
 	o.emit("create", "instance %s", inst.InstanceID)
+
+	// The key is NOT attached through the provider API here, and that is a
+	// measured decision rather than an omission.
+	//
+	// Attaching at create time looks like an improvement — it removes the
+	// dependency on the boot script having run, which is the window a host
+	// spends refusing a key it has not yet been given. Tried live, it broke
+	// every rental: five consecutive attempts reported the key installed and
+	// then failed to authenticate, because Vast writes authorized_keys from
+	// that field when the container starts and overwrites what the boot
+	// script put there.
+	//
+	// KeyAttacher is for a *running* instance, which is the case adopt.go
+	// uses it for and where it works. Here the boot script is the route, with
+	// SSHPublicKey above feeding the providers that install from the
+	// environment instead.
 	o.lastKeys = keys
 	return rig, nil
 }
@@ -533,6 +558,11 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 // class: a host failure means try elsewhere, while a model or config failure
 // means the next host fails identically and retrying only spends more.
 func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, error) {
+	// Exclusions belong to one bring-up. The orchestrator outlives a single
+	// call — an MCP session holds one for hours — so carrying them forward
+	// would let a host that failed this morning stay barred this afternoon,
+	// for no reason the operator can see or clear.
+	o.excludedMachines, o.failedModels = nil, nil
 	// The local port is a precondition, so it is checked before the money.
 	//
 	// A live run rented a GPU, booted it, launched vLLM and began pulling
@@ -577,10 +607,22 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 				"host did not finish coming up within the deadline")
 			lastErr = err
 		}
+		// Excluded on any host failure, not only when an instance survived to
+		// be torn down. A create that fails outright still says something
+		// about that machine, and leaving it in the pool invites the fallback
+		// to select it again immediately.
+		//
+		// The nil guard stays: rig is non-nil by the check above, and a
+		// future edit to that check should not turn this into a panic while
+		// an operator is mid-spend.
+		if rig != nil && errs.ClassOf(err) == errs.ClassHostFailure {
+			if key := machineKey(rig.Offer); key != "" {
+				o.excludedMachines = append(o.excludedMachines, key)
+			}
+		}
 		if rig != nil && rig.Instance != nil {
 			o.warn("cleanup", "tearing down rather than leaving it billing")
 			o.teardownAfterFailure(rig, core.ReasonHostFailure, err)
-			o.excludedMachines = append(o.excludedMachines, machineKey(rig.Offer))
 			if m := strings.TrimSpace(rig.Offer.GPUModel); m != "" {
 				if o.failedModels == nil {
 					o.failedModels = map[modelFailure]int{}
@@ -656,9 +698,20 @@ func (o *Orchestrator) explainDeadline(ctx context.Context, err error,
 	if where == "" {
 		where = orUnknown(o.lastBootStatus)
 	}
+	// Whose deadline actually fired. context.WithTimeout inherits an earlier
+	// parent deadline, so an outer cancellation arrives here indistinguishable
+	// from this attempt's own ceiling — and reporting it as the ceiling
+	// produced "hit the 45m0s ceiling after 3m17s", which contradicts itself
+	// and points at a flag that would not have helped.
+	elapsed := time.Since(started).Round(time.Second)
+	if elapsed < deadline {
+		return errs.Newf(errs.ClassHostFailure, "daemon.attempt",
+			"bring-up cancelled after %s, well inside the %s ceiling, last: %s",
+			elapsed, deadline, where)
+	}
 	return errs.Newf(errs.ClassHostFailure, "daemon.attempt",
 		"bring-up hit the %s ceiling after %s, last: %s: raise it with --deadline",
-		deadline, time.Since(started).Round(time.Second), where)
+		deadline, elapsed, where)
 }
 
 // teardownAfterFailure destroys a rig whose bring-up failed, on a fresh

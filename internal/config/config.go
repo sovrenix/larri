@@ -49,6 +49,7 @@ type Budget struct {
 type Config struct {
 	Providers         []string           `yaml:"providers" json:"providers"`
 	LocalPort         int                `yaml:"local_port" json:"local_port"`
+	SSHTimeout        time.Duration      `yaml:"ssh_timeout" json:"ssh_timeout"`
 	MaxConcurrentRigs int                `yaml:"max_concurrent_rigs" json:"max_concurrent_rigs"`
 	Idle              Idle               `yaml:"idle" json:"idle"`
 	Budget            Budget             `yaml:"budget" json:"budget"`
@@ -76,6 +77,7 @@ func Default() Config {
 	return Config{
 		Providers:         []string{"vastai"},
 		LocalPort:         8000,
+		SSHTimeout:        3 * time.Minute,
 		MaxConcurrentRigs: 1,
 		Idle:              Idle{Timeout: 30 * time.Minute, Action: IdleDestroy},
 		Budget:            Budget{MaxUSD: 0, Action: IdleDestroy},
@@ -90,6 +92,9 @@ func Default() Config {
 func (c Config) Validate() error {
 	if c.LocalPort < 1 || c.LocalPort > 65535 {
 		return fmt.Errorf("config: local_port %d out of range: expected 1-65535", c.LocalPort)
+	}
+	if c.SSHTimeout <= 0 {
+		return fmt.Errorf("config: ssh_timeout must be positive, got %s", c.SSHTimeout)
 	}
 	if c.MaxConcurrentRigs < 1 {
 		return fmt.Errorf("config: max_concurrent_rigs must be at least 1, got %d",

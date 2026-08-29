@@ -42,7 +42,12 @@ func cmdTUI(ctx context.Context, args []string) error {
 	idleFor := fs.Duration("idle-timeout", 0, "reclaim after this long without operator inference")
 	idleAct := fs.String("idle-action", "", "destroy or warn")
 	budget := fs.Float64("budget", 0, "spend ceiling in $")
+	sshTimeout := fs.Duration("ssh-timeout", 0,
+		"how long to wait for the published SSH endpoint (0: 3m default)")
 	_ = fs.Parse(args)
+	if *sshTimeout < 0 {
+		return errors.New("ssh-timeout must not be negative")
+	}
 
 	if *model == "" {
 		return errors.New("--model is required")
@@ -100,6 +105,11 @@ func cmdTUI(ctx context.Context, args []string) error {
 		return err
 	}
 	o.Policy.ReliabilityFloor = *minRel
+	sshWait := cfg.SSHTimeout
+	if *sshTimeout != 0 {
+		sshWait = *sshTimeout
+	}
+	o.EndpointStallLimit, o.AuthStallTimeout = sshWait, sshWait
 
 	m := newTUIModel()
 	prog := term.NewProgram(m, term.WithAltScreen(), term.WithContext(ctx))

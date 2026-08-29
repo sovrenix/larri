@@ -5,6 +5,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -151,7 +152,7 @@ func TestConfirmationCanCancelBeforeSpending(t *testing.T) {
 	req := upReq()
 	req.Confirm = func(core.Offer, core.SizingPlan) bool { return false }
 
-	if _, err := o.Up(context.Background(), req); err == nil {
+	if _, err := o.Up(context.Background(), req); !errors.Is(err, ErrConfirmationDeclined) {
 		t.Fatal("declining confirmation must abort")
 	}
 	if p.Count() != 0 {

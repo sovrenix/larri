@@ -2,12 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status: greenfield
+## Status: alpha, v0.9.0, spending real money
 
-The repo currently contains only `README.md` and a GPL-3.0 `LICENSE` (one commit, `main`).
-There is no `go.mod`, no source, and no build yet. Everything below is the agreed design
-contract for the code that gets written — treat it as the spec, not as a description of
-existing files. Update this file as the real structure lands.
+The lifecycle works end to end on **Vast.ai and RunPod**, with **vLLM, llama.cpp and
+Ollama**. Rent → serve → prompt → destroy is verified live on both providers at real
+cost, and `docs/PROJECT_STATE.md` is the current status per requirement — generated from
+the status column in the requirements spec, which is the source of truth and is enforced
+by `internal/lint`.
+
+What is missing is the half an operator touches after the endpoint exists: client
+wiring, the browser surfaces, and observability. What is present is everything up to and
+including a working `http://127.0.0.1:8000/v1`.
+
+Everything below is the design contract. Where the code and this file disagree, fix one
+of them deliberately.
 
 ## Authoritative documents
 
@@ -136,6 +144,46 @@ hold in code:
   is not, and that is what makes destroy-by-default defensible.
 - Show running cost. The user should never have to open a provider dashboard to learn what
   they are spending.
+
+### 4a. Check what can be checked before the money
+
+Every precondition that can be established without renting must be, because the
+alternative is paying to discover it. This has been learned the expensive way often
+enough to be an invariant rather than a habit:
+
+- **Hardware floors come from the pinned image, not the engine's docs.** vLLM's support
+  matrix says compute capability 7.0; `vllm/vllm-openai` ships no Volta kernels and
+  requires CUDA 13.0. The gap rented three V100 boxes that could never have loaded one.
+  `make refresh-image` re-reads the digest and both floors together.
+- **VRAM is summed across every card.** `nvidia-smi --query-gpu=memory.total` prints one
+  line per GPU; reading the first rejects exactly the multi-GPU hosts that are the only
+  affordable way to hold a large model.
+- **The local port is checked before the create call**, not after the weights download.
+- **The host is asked whether it can reach the weight source**, with a control host
+  alongside it. Both failing means no route anywhere — a bad rental. Only the source
+  failing means a good rental in a region that cannot route there, and the remedy is a
+  mirror rather than a different machine.
+- **A provider that has given up says so.** Read `intended_status`, not just
+  `actual_status`: an instance can report `created` while the contract has already
+  flipped to `stopped` because the container could not start.
+
+The corollary is that a check which cannot run proves nothing. Absence of evidence is
+never failure: an unreported CUDA version, an unmeasurable cache, a probe with no curl
+and no python — all pass, because failing closed on a missing field empties the market.
+
+### 4b. Time is billed, so rank on time-and-cost
+
+The download is billed at the rig's hourly rate, which makes the cheapest listing
+routinely the dearest rig: $0.109/hr on a 68 Mbps link costs more for any session under
+six hours than $0.216/hr on a 1347 Mbps one, and is unusable for the first two of them.
+Selection therefore ranks on the **cost of a working endpoint over a session** —
+provisioning plus download plus use — with the session length a setting rather than an
+assumption.
+
+Waits are **progress-driven, never fixed clocks** (§12.2.1). A deadline that expires
+while a host is working throws away a partly-finished download and starts the same one
+elsewhere. Three separate bugs came from clocks measuring the wrong thing, so: act on
+silence, and prefer evidence over elapsed time wherever evidence exists.
 
 ### 5. VRAM math is cross-cutting
 
@@ -283,6 +331,23 @@ accident:
 - **Host key pinning does not exclude the provider** — LARRI learns the fingerprint from the
   provider's own API, so pinning proves only that the same party is on both ends. The provider
   is inside the TCB for transport integrity. There is no clean fix; it is accepted and stated.
+- **On RunPod the daemon is on a public IP**, where Vast fronts SSH with a proxy. The
+  distribution default is therefore the configuration facing the internet, so the start
+  command writes an explicit `sshd_config.d` drop-in — no password auth, no empty
+  passwords, root by key only — before starting it.
+- **The key is installed by the boot script, not by the provider's attach API.**
+  Attaching at create time looks better and is not: Vast writes `authorized_keys` from
+  that field when the container starts and overwrites what the script put there, which
+  broke five consecutive rentals. `KeyAttacher` is for a *running* instance, which is
+  what `adopt.go` uses it for.
+- **A provider flag that injects "your SSH keys" injects the wrong ones.** RunPod's
+  template `startSsh` supplies the deployer's account-registered keys, which is the
+  opposite of an ephemeral per-rig identity. Templates were evaluated and rejected for
+  this and for publishing the inference port (§5.5).
+- **A quantised model is a third party's re-upload of someone else's weights**, executed
+  on hardware holding the operator's HF token. Suggesting one is a supply-chain
+  decision: name the publisher when it is not the model's owner, require a safe
+  container format, and never substitute silently.
 - **None of this protects you from the host, which has root.** Prompts, completions, weights,
   and any token in the process environment are visible to whoever owns the machine.
   Confidential computing is the only real answer and is not available on commodity
@@ -377,6 +442,8 @@ go test ./internal/sizing -run TestKVCacheFit -v  # a single test
 go test -race ./...                               # race detector
 go vet ./...
 gofmt -l .                                        # must print nothing
+make refresh-image                                # re-read the image digest and its floors
+make site-extract / make site-embed               # edit gh-pages/index.html safely
 ```
 
 ## Testing against paid, stateful APIs

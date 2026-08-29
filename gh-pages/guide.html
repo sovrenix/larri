@@ -299,6 +299,21 @@ bin/larri orphans --destroy</code></div>
     <tr><td><b>larri privacy</b></td><td>What the machine you rent can see, in full</td></tr>
     <tr><td><b>larri label-key</b></td><td>Generate a key that seals provider-side labels</td></tr>
   </table>
+
+  <h3>Flags that change what you pay</h3>
+  <table>
+    <tr><th>Flag</th><th>Why</th></tr>
+    <tr><td><b>--dry-run</b></td><td>Sizing, hardware, wait and bill — without renting. Use it first.</td></tr>
+    <tr><td><b>--session 8</b></td><td>Optimise for a long session: the download amortises, the hourly rate starts to dominate.</td></tr>
+    <tr><td><b>--max-price 0.50</b></td><td>Hard ceiling per hour.</td></tr>
+    <tr><td><b>--verified-only</b></td><td>Only hosts the provider has verified. Costs more, fails less.</td></tr>
+    <tr><td><b>--min-netspeed 200</b></td><td>Floor the host's link, in Mbps. The download is billed at the rig's rate.</td></tr>
+    <tr><td><b>--context 32768</b></td><td>Bigger window, bigger KV cache, bigger GPU.</td></tr>
+    <tr><td><b>--hf-endpoint URL</b></td><td>A Hugging Face mirror, for hosts whose region cannot route to it.</td></tr>
+    <tr><td><b>--tool-parser</b></td><td>Override the parser derived from the model, or <b>none</b> to disable tool calling.</td></tr>
+    <tr><td><b>--deadline 75m</b> · <b>--ssh-timeout 3m</b></td><td>Ceilings for a slow host. Stall detection ends a bad attempt sooner.</td></tr>
+    <tr><td><b>--port 8080</b> · <b>--idle-timeout 15m</b></td><td>When 8000 is taken; destroy sooner when idle.</td></tr>
+  </table>
   <p style="margin:12px 0 0">Ready-made commands per task — chat, coding, reasoning,
   documents, vision — are in the <a href="./cookbook.html" style="text-decoration:underline">cookbook</a>.</p>
 </section>

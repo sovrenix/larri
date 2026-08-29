@@ -122,6 +122,7 @@ func header() string {
 	b.WriteString("# failure this program exists to prevent.\n#\n")
 	b.WriteString("# Prompts sent to a rig travel to rented third-party hardware whose\n")
 	b.WriteString("# operator has root on it. Send nothing you could not afford to disclose.\n#\n")
+	b.WriteString("# ssh_timeout controls how long a new host may take to accept the rig key.\n")
 	b.WriteString("# Secrets are never stored here. API keys come from the environment or the\n")
 	b.WriteString("# OS keyring (FR-SEC-01).\n\n")
 	return b.String()

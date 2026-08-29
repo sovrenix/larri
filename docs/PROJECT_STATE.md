@@ -25,10 +25,10 @@ and "shown to work" are different claims and are recorded as such.
 | Area | Reqs | ✅ live | ☑️ done | 🟡 part | ⬜ plan | Complete |
 |---|---:|---:|---:|---:|---:|---:|
 | Criteria | 6 | 2 | 4 | 0 | 0 | **100%** |
-| Provisioning | 6 | 5 | 1 | 0 | 0 | **100%** |
+| Provisioning | 8 | 7 | 1 | 0 | 0 | **100%** |
 | State | 5 | 4 | 1 | 0 | 0 | **100%** |
-| Search & selection | 10 | 6 | 3 | 0 | 1 | **90%** |
-| Runtimes | 15 | 11 | 2 | 1 | 1 | 87% |
+| Search & selection | 13 | 9 | 3 | 0 | 1 | **92%** |
+| Runtimes | 18 | 14 | 2 | 2 | 0 | 89% |
 | Non-functional | 12 | 6 | 4 | 1 | 1 | 83% |
 | Configuration | 10 | 0 | 8 | 1 | 1 | 80% |
 | Teardown & cost safety | 11 | 3 | 5 | 3 | 0 | 73% |
@@ -37,16 +37,20 @@ and "shown to work" are different claims and are recorded as such.
 | Surfaces | 13 | 1 | 2 | 3 | 7 | 23% |
 | Endpoint & client wiring | 14 | 3 | 0 | 1 | 10 | 21% |
 | Observability | 10 | 0 | 1 | 0 | 9 | 10% |
-| **Total** | **161** | **61** | **44** | **16** | **40** | **65%** |
+| **Total** | **169** | **69** | **44** | **17** | **39** | **67%** |
 
-Sixty-five per cent of requirements are implemented, and **the lifecycle is the part that is
-done.** Renting, sizing, serving, supervising, reconnecting and tearing down are at or near
-100%; what is missing clusters into three areas missing almost entirely — client wiring, the
-browser surfaces, and observability.
+Sixty-seven per cent of requirements are implemented, and **the lifecycle is the part
+that is done.** Criteria, provisioning and state are at 100%; search, selection and the
+runtimes are near it. What is missing clusters into the same three areas as before —
+client wiring, the browser surfaces, and observability — none of which a rig needs in
+order to serve.
 
-Note where the movement has been. Total completion has barely shifted, but 61 requirements
-are now `live` against 57 a fortnight ago — the work went into *proving* things that were
-already written, on a second provider that had never run them.
+Eight requirements were added rather than reclassified. They record behaviour that was
+built during a long run of live failures and had no requirement to point at: ranking on time-and-cost to a working endpoint, the host-verification tier, the link floor, the
+checks that run before money is spent, telling a blocked host from a dead one, deriving
+hardware floors from the pinned image, offering a quantised publication, and naming the
+tool-call parser. Writing them down after the fact is worse than writing them first; not
+writing them at all would be worse still.
 
 ---
 
@@ -97,11 +101,12 @@ FR-SEC-17, so templates were evaluated and rejected in favour of installing sshd
 
 ## 🟡 Partial — what is missing, specifically
 
-Sixteen requirements are partly met. The gap for each:
+Seventeen requirements are partly met. The gap for each:
 
 | ID | Gap |
 |---|---|
-| FR-RT-10 | Tool-calling parsers are passed through; **refusing** a rig when tool calling is required and unavailable is not enforced. |
+| FR-RT-10 | The parser is now derived from the model family and both vLLM flags are set, so tool calling works unasked. **Refusing** a rig when tool calling is *required* and no parser exists is still not enforced. |
+| FR-RT-11 | The runtime image is pinned by digest and the hardware floors are derived from it (`make refresh-image`). The images are still **stock upstream**, not project-maintained and pre-baked, so bring-up still discovers the launcher at runtime. |
 | FR-SUP-03 | Fallback picks the next-ranked offer without comparing its price to the original, so a silent upgrade is possible. |
 | FR-SUP-05 | Budget ceilings are **per rig**; there is no global ceiling across rigs. |
 | FR-SUP-09 | Deadline warnings reach the CLI and TUI; "every surface" is not met while surfaces are missing. |
@@ -113,7 +118,7 @@ Sixteen requirements are partly met. The gap for each:
 | FR-SEC-01 | Keys resolve from the **environment**; OS keyring support is not implemented. |
 | FR-SEC-13 | The Hugging Face token sent to a host is the operator's own, not a scoped read-only credential. |
 | FR-WIRE-09 | The proxy carries a served-model name but routes a single upstream; multi-rig routing is not built. |
-| FR-UI-01 | `up`, `down`, `status`, `offers`, `orphans`, `config`, `resume`, `mcp`, `tui` ship; **no `logs` command** (it exists only as an MCP tool) and no `daemon`. |
+| FR-UI-01 | `up`, `down`, `status`, `offers`, `orphans`, `config`, `resume`, `mcp`, `tui`, `privacy`, `label-key` ship; **no `logs` command** (it exists only as an MCP tool), no `daemon`, and no `--json` anywhere. |
 | FR-UI-06 | Surfaces share state through one store, but with no daemon there is no cross-process consistency guarantee. |
 | FR-UI-11 | The tool registry enforces the safe/consequential split; there is no chat pane to apply it to. |
 | NFR-08 | Structured events and an append-only journal exist; no rig-scoped correlation ID is plumbed through. |

@@ -87,19 +87,24 @@ func (m *modelInfo) baseModel() string {
 
 // modelConfig is the subset of config.json LARRI reads.
 type modelConfig struct {
-	NumHiddenLayers   *int `json:"num_hidden_layers"`
-	NumAttentionHeads *int `json:"num_attention_heads"`
-	NumKeyValueHeads  *int `json:"num_key_value_heads"`
-	HiddenSize        *int `json:"hidden_size"`
-	HeadDim           *int `json:"head_dim"`
-	MaxPositionEmbed  *int `json:"max_position_embeddings"`
-	NumExperts        *int `json:"num_local_experts"`
+	// NumParameters is a fallback for repositories the API reports no
+	// safetensors metadata for. Some publishers record it in config.json
+	// instead, and one number there beats refusing to size the model.
+	NumParameters     *float64 `json:"num_parameters"`
+	NumHiddenLayers   *int     `json:"num_hidden_layers"`
+	NumAttentionHeads *int     `json:"num_attention_heads"`
+	NumKeyValueHeads  *int     `json:"num_key_value_heads"`
+	HiddenSize        *int     `json:"hidden_size"`
+	HeadDim           *int     `json:"head_dim"`
+	MaxPositionEmbed  *int     `json:"max_position_embeddings"`
+	NumExperts        *int     `json:"num_local_experts"`
 	TextConfig        *struct {
-		NumHiddenLayers  *int `json:"num_hidden_layers"`
-		NumKeyValueHeads *int `json:"num_key_value_heads"`
-		HiddenSize       *int `json:"hidden_size"`
-		HeadDim          *int `json:"head_dim"`
-		MaxPositionEmbed *int `json:"max_position_embeddings"`
+		NumParameters    *float64 `json:"num_parameters"`
+		NumHiddenLayers  *int     `json:"num_hidden_layers"`
+		NumKeyValueHeads *int     `json:"num_key_value_heads"`
+		HiddenSize       *int     `json:"hidden_size"`
+		HeadDim          *int     `json:"head_dim"`
+		MaxPositionEmbed *int     `json:"max_position_embeddings"`
 	} `json:"text_config"`
 }
 
@@ -122,6 +127,7 @@ func (h *HFResolver) Resolve(ctx context.Context, ref, revision string) (Facts, 
 	if cached, ok := h.fromCache(ref, info.SHA); ok {
 		return cached, nil
 	}
+	base := info.baseModel()
 	cfg, err := h.fetchConfig(ctx, ref, info.SHA)
 	if err != nil {
 		// A repository with no config.json is not necessarily unsizable: a
@@ -131,7 +137,6 @@ func (h *HFResolver) Resolve(ctx context.Context, ref, revision string) (Facts, 
 		//
 		// Only one hop. Base models that name base models are a chain this
 		// has no business walking, and one step covers the case that exists.
-		base := info.baseModel()
 		if base == "" || base == ref {
 			return Facts{}, err
 		}
@@ -146,7 +151,20 @@ func (h *HFResolver) Resolve(ctx context.Context, ref, revision string) (Facts, 
 	}
 	f, err := factsFrom(ref, info, cfg)
 	if err != nil {
-		return Facts{}, err
+		// A config that exists but cannot answer is the same problem as no
+		// config at all, and has the same remedy. Quantised and converted
+		// repositories routinely publish a partial config — enough to load
+		// the model, not enough to size it — while naming the model they came
+		// from, which can answer.
+		if base == "" || base == ref {
+			return Facts{}, err
+		}
+		baseFacts, berr := h.Resolve(ctx, base, "")
+		if berr != nil {
+			return Facts{}, err // the original miss is the more useful one
+		}
+		baseFacts.Ref = ref
+		return baseFacts, nil
 	}
 	h.toCache(f)
 	return f, nil
@@ -274,6 +292,10 @@ func factsFrom(ref string, info *modelInfo, cfg *modelConfig) (Facts, error) {
 	f := Facts{Ref: ref, Revision: info.SHA}
 	if info.Safetensors != nil && info.Safetensors.Total > 0 {
 		f.Params = float64(info.Safetensors.Total) / 1e9
+	} else if cfg.NumParameters != nil && *cfg.NumParameters > 0 {
+		f.Params = *cfg.NumParameters / 1e9
+	} else if t := cfg.TextConfig; t != nil && t.NumParameters != nil && *t.NumParameters > 0 {
+		f.Params = *t.NumParameters / 1e9
 	}
 	if layers != nil {
 		f.Layers = *layers

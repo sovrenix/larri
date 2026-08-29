@@ -71,6 +71,86 @@ func TestResolveRealisticModel(t *testing.T) {
 	}
 }
 
+func TestParameterCountFallsBackToConfig(t *testing.T) {
+	info := `{"sha":"abc123","gated":false,
+	  "safetensors":null,
+	  "siblings":[{"rfilename":"config.json"},{"rfilename":"model.safetensors"}]}`
+	config := `{"num_parameters":27500000000,"num_hidden_layers":48,
+	  "num_attention_heads":32,"num_key_value_heads":8,
+	  "hidden_size":6144,"head_dim":192,"max_position_embeddings":32768}`
+	r := hfServer(t, info, config, nil)
+	f, err := r.Resolve(context.Background(), "Qwen/Qwen3.8-27B", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Params != 27.5 {
+		t.Errorf("Params = %.3f B, want 27.5", f.Params)
+	}
+}
+
+func TestParameterCountFallsBackToNestedTextConfig(t *testing.T) {
+	info := `{"sha":"abc123","gated":false,
+	  "safetensors":null,
+	  "siblings":[{"rfilename":"config.json"},{"rfilename":"model.safetensors"}]}`
+	config := `{"text_config":{"num_parameters":27500000000,
+	  "num_hidden_layers":48,"num_attention_heads":32,"num_key_value_heads":8,
+	  "hidden_size":6144,"head_dim":192,"max_position_embeddings":32768}}`
+	r := hfServer(t, info, config, nil)
+	f, err := r.Resolve(context.Background(), "unsloth/Qwen3.8-27B-GGUF", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Params != 27.5 {
+		t.Errorf("Params = %.3f B, want 27.5", f.Params)
+	}
+}
+
+// A config that exists but cannot answer is the same problem as no config at
+// all: quantised and converted repositories routinely publish a partial one —
+// enough to load the model, not enough to size it — while naming the model
+// they came from.
+func TestIncompleteConfigFallsBackToDeclaredBaseModel(t *testing.T) {
+	ggufInfo := `{"sha":"gguf123","gated":false,
+	  "siblings":[{"rfilename":"config.json"},{"rfilename":"model.Q4_K_M.gguf"}],
+	  "cardData":{"base_model":["Qwen/Qwen3.8-27B"]}}`
+	baseInfo := `{"sha":"base123","gated":false,
+	  "safetensors":{"total":27781427952},
+	  "siblings":[{"rfilename":"config.json"},{"rfilename":"model.safetensors"}]}`
+	incomplete := `{"text_config":{"num_hidden_layers":64,
+	  "num_attention_heads":24,"num_key_value_heads":4,
+	  "hidden_size":5120,"head_dim":256,"max_position_embeddings":32768}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "unsloth/Qwen3.8-27B-GGUF"):
+			if strings.Contains(r.URL.Path, "config.json") {
+				fmt.Fprint(w, incomplete)
+			} else {
+				fmt.Fprint(w, ggufInfo)
+			}
+		case strings.Contains(r.URL.Path, "Qwen/Qwen3.8-27B"):
+			if strings.Contains(r.URL.Path, "config.json") {
+				fmt.Fprint(w, configJSON)
+			} else {
+				fmt.Fprint(w, baseInfo)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	r := &HFResolver{Endpoint: srv.URL, HTTP: srv.Client(), CacheDir: t.TempDir()}
+	f, err := r.Resolve(context.Background(), "unsloth/Qwen3.8-27B-GGUF", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Params < 27.7 || f.Params > 27.8 {
+		t.Errorf("Params = %.3f B, want ~27.8", f.Params)
+	}
+	if f.Ref != "unsloth/Qwen3.8-27B-GGUF" {
+		t.Errorf("Ref = %q, want the requested GGUF repository", f.Ref)
+	}
+}
+
 // FR-SEC-29: pickle checkpoints deserialise into live objects, which is code
 // execution on the host holding the operator's token. Refused during sizing,
 // before an instance exists.
