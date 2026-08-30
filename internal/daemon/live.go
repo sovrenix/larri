@@ -1316,6 +1316,7 @@ func (o *Orchestrator) pinAndDial(ctx context.Context, inst *core.Instance,
 		lastStatus string
 		changedAt  = time.Now()
 		deadline   = time.Now().Add(o.authCap())
+		attached   bool
 	)
 	for time.Now().Before(deadline) {
 		key, err := o.stableHostKey(ctx, inst)
@@ -1334,6 +1335,18 @@ func (o *Orchestrator) pinAndDial(ctx context.Context, inst *core.Instance,
 			case isHostKeyMismatch(derr):
 				o.emit("boot", "host key changed during boot; re-pinning")
 			case isAuthFailure(derr):
+				if !attached {
+					if attacher, ok := o.Provider.(provider.KeyAttacher); ok {
+						o.emit("boot", "host rejected the startup key; attaching it through %s",
+							o.Provider.Name())
+						if err := attacher.AttachSSHKey(ctx, inst.InstanceID, keys.AuthorizedKey()); err != nil {
+							return nil, nil, errs.Newf(errs.ClassHostFailure, "daemon.pinAndDial",
+								"attach rig ssh key through %s: %v", o.Provider.Name(), err)
+						}
+						attached = true
+						o.emit("boot", "rig ssh key attached; waiting for it to take effect")
+					}
+				}
 				// The key LARRI generated is installed by the provider's
 				// start-up script, which runs *after* sshd is listening. So
 				// between the banner appearing and the script finishing there
