@@ -27,6 +27,13 @@ type Facts struct {
 	Ref      string
 	Revision string
 
+	// QuantMethod is the packing scheme declared in config.json —
+	// "bitsandbytes", "awq", "compressed-tensors" and so on — normalised to
+	// lower case, empty when the weights are unquantised or the repository
+	// does not say. It exists so an engine that cannot load the scheme can
+	// refuse before anything is rented.
+	QuantMethod string
+
 	// MoE models carry a total parameter count far larger than the count
 	// active per token. Weights must be resident regardless of which experts
 	// fire, so Params is the total; ActiveParams is recorded for throughput

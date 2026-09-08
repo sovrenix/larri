@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -335,5 +336,40 @@ func TestRepoWithNeitherConfigNorBaseModelStillFails(t *testing.T) {
 
 	if _, err := r.Resolve(context.Background(), "org/nothing", "main"); err == nil {
 		t.Fatal("an unsizable repository was accepted")
+	}
+}
+
+// A cache entry written before a field existed deserialises with that field
+// empty, and empty is indistinguishable from "the model does not have one".
+// Facts.QuantMethod was added so a bitsandbytes build could be refused before
+// renting; the refusal never fired, because the entry on disk predated the
+// field and the model looked unquantised. Two more rentals paid to be told
+// otherwise by the engine.
+func TestCacheEntriesFromAnOlderSchemaAreIgnored(t *testing.T) {
+	dir := t.TempDir()
+	r := &HFResolver{CacheDir: dir}
+	f := Facts{
+		Ref: "org/model", Revision: "abc", Params: 4.4, Layers: 34,
+		KVHeads: 4, HeadDim: 256, HiddenSize: 2560, MaxContextLen: 8192,
+		QuantMethod: "bitsandbytes",
+	}
+	r.toCache(f)
+
+	got, ok := r.fromCache("org/model", "abc")
+	if !ok {
+		t.Fatal("a freshly written entry must read back")
+	}
+	if got.QuantMethod != "bitsandbytes" {
+		t.Errorf("QuantMethod = %q, want it to survive the round trip", got.QuantMethod)
+	}
+
+	// An entry from before the version existed — exactly what was on disk.
+	old := `{"Params":4.4,"Layers":34,"KVHeads":4,"HeadDim":256,` +
+		`"HiddenSize":2560,"MaxContextLen":8192,"Ref":"org/model","Revision":"abc"}`
+	if err := os.WriteFile(r.cachePath("org/model", "abc"), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.fromCache("org/model", "abc"); ok {
+		t.Error("an entry with no schema version must be refetched, not trusted")
 	}
 }

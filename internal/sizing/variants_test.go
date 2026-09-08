@@ -131,3 +131,23 @@ func TestFineTunesAreNotRepackagings(t *testing.T) {
 		}
 	}
 }
+
+// A scheme the engine cannot load is knowable from config.json, and refusing
+// it there costs nothing. A live run rented twice for a bitsandbytes build
+// before vLLM rejected it at launch with "Unknown quantization method:
+// bitsandbytes".
+func TestQuantMethodNormalisesToTheRuntimeVocabulary(t *testing.T) {
+	for method, want := range map[string]string{
+		"bitsandbytes":         "bitsandbytes",
+		"BitsAndBytes":         "bitsandbytes",
+		"awq":                  "awq",
+		"auto-round":           "int4",
+		"compressed-tensors":   "", // vLLM loads it; not ours to classify
+		"some-new-scheme-2027": "",
+		"":                     "",
+	} {
+		if got := NormaliseQuantMethod(method); got != want {
+			t.Errorf("NormaliseQuantMethod(%q) = %q, want %q", method, got, want)
+		}
+	}
+}

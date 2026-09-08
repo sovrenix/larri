@@ -98,7 +98,15 @@ type modelConfig struct {
 	HeadDim           *int     `json:"head_dim"`
 	MaxPositionEmbed  *int     `json:"max_position_embeddings"`
 	NumExperts        *int     `json:"num_local_experts"`
-	TextConfig        *struct {
+
+	// QuantizationConfig names the scheme the weights are packed in. It is
+	// read so a runtime that cannot load that scheme can say so before a
+	// machine is rented: vLLM rejects bitsandbytes outright, and the refusal
+	// otherwise arrives from the engine after the rig is paid for.
+	QuantizationConfig *struct {
+		QuantMethod *string `json:"quant_method"`
+	} `json:"quantization_config"`
+	TextConfig *struct {
 		NumParameters    *float64 `json:"num_parameters"`
 		NumHiddenLayers  *int     `json:"num_hidden_layers"`
 		NumKeyValueHeads *int     `json:"num_key_value_heads"`
@@ -290,6 +298,9 @@ func factsFrom(ref string, info *modelInfo, cfg *modelConfig) (Facts, error) {
 		kvHeads = cfg.NumAttentionHeads
 	}
 	f := Facts{Ref: ref, Revision: info.SHA}
+	if q := cfg.QuantizationConfig; q != nil && q.QuantMethod != nil {
+		f.QuantMethod = strings.ToLower(strings.TrimSpace(*q.QuantMethod))
+	}
 	if info.Safetensors != nil && info.Safetensors.Total > 0 {
 		f.Params = float64(info.Safetensors.Total) / 1e9
 	} else if cfg.NumParameters != nil && *cfg.NumParameters > 0 {
@@ -335,6 +346,26 @@ func (h *HFResolver) cachePath(ref, sha string) string {
 	return filepath.Join(h.CacheDir, strings.ReplaceAll(ref, "/", "_")+"@"+sha+".json")
 }
 
+// factsSchema is the shape of a cached Facts. Raise it whenever a field is
+// added, removed, or given a new meaning.
+//
+// Without it a cache entry written before a field existed deserialises with
+// that field empty, and empty is indistinguishable from "the model does not
+// have one". A live run added Facts.QuantMethod so a bitsandbytes build could
+// be refused before renting, and the refusal never fired: the entry on disk
+// predated the field, so the model looked unquantised and two more rentals
+// paid to be told otherwise by the engine.
+//
+// Every future field carries the same trap, so the version is checked rather
+// than the fields.
+const factsSchema = 2
+
+// cachedFacts is Facts plus the version it was written under.
+type cachedFacts struct {
+	Schema int `json:"schema"`
+	Facts
+}
+
 func (h *HFResolver) fromCache(ref, sha string) (Facts, bool) {
 	p := h.cachePath(ref, sha)
 	if p == "" {
@@ -344,11 +375,11 @@ func (h *HFResolver) fromCache(ref, sha string) (Facts, bool) {
 	if err != nil {
 		return Facts{}, false
 	}
-	var f Facts
-	if json.Unmarshal(b, &f) != nil || f.Validate() != nil {
+	var c cachedFacts
+	if json.Unmarshal(b, &c) != nil || c.Schema != factsSchema || c.Facts.Validate() != nil {
 		return Facts{}, false
 	}
-	return f, true
+	return c.Facts, true
 }
 
 func (h *HFResolver) toCache(f Facts) {
@@ -359,7 +390,7 @@ func (h *HFResolver) toCache(f Facts) {
 	if os.MkdirAll(filepath.Dir(p), 0o700) != nil {
 		return
 	}
-	if b, err := json.Marshal(f); err == nil {
+	if b, err := json.Marshal(cachedFacts{Schema: factsSchema, Facts: f}); err == nil {
 		_ = os.WriteFile(p, b, 0o600)
 	}
 }

@@ -411,6 +411,14 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 	// that kept selecting hosts too slow to deliver.
 	policy := o.Policy
 	policy.ColdStartBytes = coldStartBytes(plan)
+	// A scheme the engine cannot load is a model failure, not a host failure:
+	// every offer in the market would fail it identically, so the refusal
+	// belongs here rather than after a rental has paid to discover it. A live
+	// run rented twice for a bitsandbytes build before vLLM rejected it at
+	// launch with "Unknown quantization method".
+	if err := o.checkQuantSupported(facts); err != nil {
+		return nil, err
+	}
 	sel := rank.Select(offers, req.Criteria, fits, policy)
 	if sel.Selected == nil {
 		short := sizing.Analyse(sizing.Request{Spec: req.Model, Facts: facts}, offers)
@@ -865,6 +873,27 @@ func fetchETA(bytes uint64, mbps float64) time.Duration {
 	}
 	seconds := float64(bytes) * 8 / (mbps * 1e6)
 	return time.Duration(seconds * float64(time.Second))
+}
+
+// checkQuantSupported refuses a model packed in a scheme the runtime cannot
+// load.
+//
+// One-sided on purpose. A scheme LARRI does not recognise passes, because new
+// packings appear faster than the table that names them and blocking working
+// weights is the worse error. Only a scheme it knows and the engine declines
+// is refused.
+func (o *Orchestrator) checkQuantSupported(facts sizing.Facts) error {
+	scheme := sizing.NormaliseQuantMethod(facts.QuantMethod)
+	if scheme == "" {
+		return nil
+	}
+	acc, ok := o.Runtime.(runtime.QuantAccepter)
+	if !ok || acc.AcceptsQuant(scheme) {
+		return nil
+	}
+	return errs.Newf(errs.ClassModelFailure, "daemon.survey",
+		"%s is packed as %s, which %s cannot load: choose a different build",
+		facts.Ref, facts.QuantMethod, o.Runtime.Kind())
 }
 
 // parseCUDA reads a provider's CUDA version string. Unparseable means

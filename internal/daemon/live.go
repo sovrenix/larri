@@ -417,8 +417,18 @@ func (o *Orchestrator) waitForSSH(ctx context.Context, rig *core.Rig) (*core.Ins
 					// and an operator watching it cannot tell a working host
 					// from a dead one. Saying how long it has been quiet
 					// costs nothing and answers that.
-					o.emit("boot", "%s status unchanged for %s; still waiting for an ssh endpoint",
-						o.Provider.Name(), time.Since(changedAt).Round(time.Second))
+					//
+					// What is being waited *for* changes once an address
+					// exists, and saying "still waiting for an ssh endpoint"
+					// underneath a line announcing one is the kind of
+					// contradiction that makes an operator distrust the rest
+					// of the output.
+					waiting := "still waiting for an ssh endpoint"
+					if announcedEP {
+						waiting = "sshd not answering yet"
+					}
+					o.emit("boot", "%s status unchanged for %s; %s",
+						o.Provider.Name(), time.Since(changedAt).Round(time.Second), waiting)
 					lastStatusReport = time.Now()
 				}
 			}

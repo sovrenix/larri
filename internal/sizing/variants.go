@@ -288,3 +288,33 @@ func (h *HFResolver) FindQuantised(ctx context.Context, ref string, accept func(
 	})
 	return out, nil
 }
+
+// NormaliseQuantMethod maps a repository's declared quant_method onto the
+// vocabulary DetectQuant produces, so a runtime can be asked one question
+// about both.
+//
+// Deliberately partial. An unrecognised scheme returns "", which callers must
+// treat as "no evidence" rather than as a rejection — refusing a model because
+// LARRI has not heard of its packing would block working weights, and new
+// schemes appear faster than this table is updated.
+func NormaliseQuantMethod(m string) string {
+	switch strings.ToLower(strings.TrimSpace(m)) {
+	case "bitsandbytes", "bnb":
+		return "bitsandbytes"
+	case "awq", "awq_marlin":
+		return "awq"
+	case "gptq", "gptq_marlin", "auto_gptq":
+		return "gptq"
+	case "auto-round", "auto_round", "autoround":
+		return "int4"
+	case "fp8":
+		return "fp8"
+	case "mxfp4":
+		return "mxfp4"
+	case "nvfp4":
+		return "nvfp4"
+	case "gguf":
+		return "gguf"
+	}
+	return ""
+}
