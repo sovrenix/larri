@@ -589,3 +589,47 @@ func TestUnknownFamilyGetsNoParser(t *testing.T) {
 		}
 	}
 }
+
+// vLLM serves without tool-call flags and answers ordinary chat, so their
+// absence only surfaces on the first request carrying tools — inside a chat
+// client, as `400 "auto" tool choice requires --enable-auto-tool-choice`,
+// with nothing connecting it to the model that was chosen. A live run met it
+// exactly that way with medgemma, whose chat template has no tool support at
+// all: no parser would have helped, and silence was the wrong answer.
+func TestToolCallingNoteSpeaksOnlyWhenItWillNotWork(t *testing.T) {
+	r := New()
+
+	// A family with a parser: the flags are set, so nothing to say.
+	if note := r.ToolCallingNote(core.ModelSpec{
+		Ref: "Qwen/Qwen2.5-1.5B-Instruct", ToolCalling: core.Allow,
+	}); note != "" {
+		t.Errorf("a supported family should be silent, got %q", note)
+	}
+
+	// A family without one: say so, and say what it costs.
+	note := r.ToolCallingNote(core.ModelSpec{
+		Ref: "google/medgemma-1.5-4b-it", ToolCalling: core.Allow,
+	})
+	if note == "" {
+		t.Fatal("an unsupported family must be reported before the rig is used")
+	}
+	for _, want := range []string{"agent", "ordinary chat is unaffected", "--tool-parser"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note should carry %q: %s", want, note)
+		}
+	}
+
+	// An explicit parser is trusted, whatever the family.
+	if note := r.ToolCallingNote(core.ModelSpec{
+		Ref: "some-lab/Novel-Model", ToolCalling: core.Allow, ToolParser: "hermes",
+	}); note != "" {
+		t.Errorf("an explicit parser should be silent, got %q", note)
+	}
+
+	// Turned off deliberately is still worth stating, in different words.
+	if note := r.ToolCallingNote(core.ModelSpec{
+		Ref: "Qwen/Qwen2.5-1.5B-Instruct", ToolCalling: core.Forbid,
+	}); !strings.Contains(note, "off") {
+		t.Errorf("a deliberate refusal should say so: %q", note)
+	}
+}

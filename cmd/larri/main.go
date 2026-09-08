@@ -436,6 +436,15 @@ func cmdUp(ctx context.Context, args []string) error {
 	for _, note := range securityNotes(eng) {
 		fmt.Printf("  ! runtime    %s\n", note)
 	}
+	// Said here rather than discovered in a chat client. vLLM serves without
+	// tool-call flags and answers ordinary chat, so the absence only shows up
+	// on the first request carrying tools — several steps from the model
+	// choice that caused it.
+	if r, ok := eng.(runtime.ToolCallingReporter); ok {
+		if note := r.ToolCallingNote(spec); note != "" {
+			fmt.Printf("  ! tools      %s\n", note)
+		}
+	}
 
 	o := &daemon.Orchestrator{
 		Store: st, Provider: p, Runtime: eng,

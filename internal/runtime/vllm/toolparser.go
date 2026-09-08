@@ -3,7 +3,11 @@
 
 package vllm
 
-import "strings"
+import (
+	"strings"
+
+	"go.sovrenix.com/larri/internal/core"
+)
 
 // ToolParserFor names the parser vLLM needs to turn a model's tool-call
 // syntax into OpenAI tool calls, or "" when the family is not recognised.
@@ -58,4 +62,22 @@ func ToolParserFor(ref string) string {
 		return "phi4_mini_json"
 	}
 	return ""
+}
+
+// ToolCallingNote reports why tool calling will not work, or "" when it will.
+//
+// Silence is the answer for a model whose family has a parser: the flags are
+// set and agent clients work unasked. It speaks only when they will not, and
+// says which of the two reasons applies, because an operator can act on one
+// of them and not the other.
+func (r *Runtime) ToolCallingNote(spec core.ModelSpec) string {
+	if spec.ToolCalling == core.Forbid {
+		return "tool calling is off (--tool-parser none); agent modes in chat clients will refuse"
+	}
+	if spec.ToolParser != "" || ToolParserFor(spec.Ref) != "" {
+		return ""
+	}
+	return "no tool-call parser is known for this model, so agent modes will fail with " +
+		`400 "auto" tool choice requires --enable-auto-tool-choice — ordinary chat is unaffected; ` +
+		"name one with --tool-parser if the model emits tool calls"
 }

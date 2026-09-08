@@ -317,3 +317,15 @@ type WeightsProgressor interface {
 	// be measured. It is sampled during readiness and must be cheap.
 	WeightsOnDisk(ctx context.Context, sess Session) (uint64, error)
 }
+
+// ToolCallingReporter is implemented by runtimes that can say, before a rig
+// is used, whether tool calling will work for a given model.
+//
+// The failure it exists to prevent is silent and remote: vLLM serves happily
+// without tool-call flags and answers ordinary chat, then refuses the first
+// request carrying tools. The operator meets that inside a chat client, as
+// `400 "auto" tool choice requires --enable-auto-tool-choice`, with nothing
+// connecting it to the model they chose.
+type ToolCallingReporter interface {
+	ToolCallingNote(spec core.ModelSpec) string
+}
