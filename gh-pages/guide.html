@@ -347,8 +347,10 @@ bin/larri orphans --destroy</code></div>
     <tr><td><b>bring-up hit the … ceiling</b></td>
         <td>A slow host ran past the attempt limit. Raise it with <b>--deadline</b>.</td></tr>
     <tr><td><b>400 "auto" tool choice requires…</b></td>
-        <td>Agent mode needs a tool-call parser. LARRI derives one from the model; if a
-        client still reports malformed calls, set <b>--tool-parser</b> explicitly.</td></tr>
+        <td>The model cannot do tool calling. LARRI derives a parser from the model
+        family and warns at bring-up when it cannot — Gemma and MedGemma have no tool
+        support in their chat template, so no parser helps and agent mode is out.
+        Ordinary chat still works. <b>--tool-parser</b> overrides if you know better.</td></tr>
   </table>
 
   <div class="note">
