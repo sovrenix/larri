@@ -373,11 +373,15 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 				fetchETA(coldStartBytes(plan), of.NetDownMbps).Round(time.Minute),
 				sizing.HumanBytes(coldStartBytes(plan)))
 		}
-		avail := uint64(of.VRAMTotalGB()) * sizing.GiB
+		// Usable, not total. A runtime is given a fraction of the card —
+		// the rest belongs to the driver, the CUDA context and the
+		// allocator — so measuring fit against the full figure selects
+		// hardware the engine will then refuse to start on.
+		avail := sizing.UsableVRAM(uint64(of.VRAMTotalGB()) * sizing.GiB)
 		if avail >= plan.RequiredVRAMBytes {
 			return true, ""
 		}
-		return false, fmt.Sprintf("%s short",
+		return false, fmt.Sprintf("%s short of usable VRAM",
 			sizing.HumanBytes(plan.RequiredVRAMBytes-avail))
 	}
 	if len(o.excludedMachines) > 0 {

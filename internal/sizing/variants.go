@@ -60,6 +60,14 @@ func (v Variant) SavingOver(baseBytes uint64) float64 {
 var quantMarkers = []struct{ marker, quant string }{
 	{"gguf", "gguf"},
 	{"mlx", "mlx"},
+	// bitsandbytes is a 4-bit scheme vLLM does not load. Matched before the
+	// precision markers for the same reason mlx is: "…-bnb-4bit" contains
+	// "4bit", so precision-first classified it as int4, vLLM accepted it, and
+	// LARRI recommended a model the engine rejects at launch with "Unknown
+	// quantization method: bitsandbytes" — after two rentals had paid to
+	// discover it.
+	{"bitsandbytes", "bitsandbytes"},
+	{"bnb", "bitsandbytes"},
 	{"awq", "awq"},
 	{"gptq", "gptq"},
 	{"autoround", "int4"},

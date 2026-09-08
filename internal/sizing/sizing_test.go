@@ -232,3 +232,38 @@ func TestPickleWeightsAreRejectedPreSpend(t *testing.T) {
 		}
 	}
 }
+
+// A runtime is given a fraction of a card, not the whole of it — the driver,
+// the CUDA context and the allocator live in the same memory. Selection and
+// the launch must agree on that fraction, and once did not: an 11.2 GB model
+// was measured against a 12 GB card's *total* and accepted, then handed 0.90
+// of it — 10.8 GB — and OOMed at engine init with 0.63 GiB left for a KV
+// cache needing 0.74.
+//
+// The fix is that whatever the filter calls "fits" must be no more than what
+// the launch is allowed to ask for.
+func TestFitAndLaunchAgreeOnUsableVRAM(t *testing.T) {
+	const card = 12 * GiB
+	var required uint64 = 11468 * (GiB / 1024) // 11.2 GiB, the live case
+
+	usable := UsableVRAM(card)
+	if required > usable {
+		t.Fatalf("precondition: 11.2 GiB should fit %d bytes of usable VRAM", usable)
+	}
+	// The launch must be able to ask for at least the fraction the filter
+	// implicitly promised, or accepting the offer was a lie.
+	needed := float64(required) / float64(card)
+	if needed > MaxGPUUtilisation {
+		t.Errorf("filter accepted a card needing %.2f of it, above the %.2f ceiling",
+			needed, MaxGPUUtilisation)
+	}
+	// And the old placeholder is demonstrably not enough for this case, which
+	// is why it has to be recomputed once the card is known.
+	if needed <= 0.90 {
+		t.Errorf("precondition: 0.90 should be too little (%.3f needed)", needed)
+	}
+	// A card that cannot host it even at the ceiling must be rejected.
+	if UsableVRAM(11*GiB) >= required {
+		t.Error("an 11 GB card must not pass")
+	}
+}

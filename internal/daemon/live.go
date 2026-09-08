@@ -809,6 +809,24 @@ func (o *Orchestrator) verifyPlacedHardware(ctx context.Context, sess runtime.Se
 			rig.Plan.TensorParallelSize, gpus, gpus)
 		rig.Plan.TensorParallelSize = gpus
 	}
+	// The plan was sized before a card was known, so its memory fraction is a
+	// placeholder. Now that the hardware has answered, ask the runtime for as
+	// much of it as the model actually needs.
+	//
+	// Leaving the placeholder is what produced an OOM on a card the plan said
+	// fitted: 11.2 GB required, a 12 GB card, and vLLM handed 0.90 of it —
+	// 10.8 GB — which it spent on weights and then had 0.63 GiB left for a KV
+	// cache needing 0.74.
+	if want := float64(rig.Plan.RequiredVRAMBytes) / float64(haveBytes); want > 0 {
+		if want > sizing.MaxGPUUtilisation {
+			want = sizing.MaxGPUUtilisation
+		}
+		if want > rig.Plan.GPUMemUtilization {
+			o.emit("boot", "asking the runtime for %.0f%% of the card, not %.0f%%",
+				want*100, rig.Plan.GPUMemUtilization*100)
+			rig.Plan.GPUMemUtilization = want
+		}
+	}
 	o.emit("boot", "GPU reports %s across %d gpu(s), plan needs %s",
 		sizing.HumanBytes(haveBytes), gpus, sizing.HumanBytes(rig.Plan.RequiredVRAMBytes))
 	return nil
@@ -870,9 +888,15 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 		logBytes   int64
 		lastGrowth = time.Now()
 		fetch      fetchProgress
-		everLogged bool
-		prevCount  = readCounters(ctx, sess)
-		attempts   int
+
+		// deadSession counts consecutive polls where the host answered
+		// nothing at all. The log read and the counters ride the same SSH
+		// connection, so both going silent together says the connection is
+		// gone, not that the runtime is quiet.
+		deadSession int
+		everLogged  bool
+		prevCount   = readCounters(ctx, sess)
+		attempts    int
 	)
 	for time.Now().Before(deadline) {
 		attempts++
@@ -888,6 +912,26 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 		cur := readCounters(ctx, sess)
 		act := cur.since(prevCount)
 		prevCount = cur
+
+		// Both reads ride the same SSH connection, so both answering nothing
+		// says the connection is gone rather than that the runtime is quiet.
+		//
+		// A live run spent twelve minutes here reporting "runtime stalled"
+		// while the log size sat frozen at 1 KB, every counter read failed,
+		// and the watchdog logged three missed heartbeats — three consumers
+		// of one connection failing together, which is a transport failure
+		// wearing a runtime failure's error message. Four polls is enough to
+		// tell that from a slow answer.
+		if !cur.ok && size == 0 && tail == "" {
+			deadSession++
+		} else {
+			deadSession = 0
+		}
+		if deadSession >= 4 {
+			return errs.Newf(errs.ClassHostFailure, "daemon.waitReady",
+				"lost the connection to the host: %d polls with no answer from the log or the counters",
+				deadSession)
+		}
 
 		grew := size > logBytes
 		if grew {

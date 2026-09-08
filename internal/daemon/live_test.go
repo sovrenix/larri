@@ -604,3 +604,38 @@ func TestProgressGoesQuietRatherThanExtrapolating(t *testing.T) {
 		t.Error("an ETA must never grow while nothing is happening")
 	}
 }
+
+// The log read and the counters ride the same SSH connection. A live run
+// spent twelve minutes reporting "runtime stalled: no log growth or activity"
+// while the log size sat frozen at 1 KB, every counter read failed, and the
+// watchdog logged three missed heartbeats — three consumers of one connection
+// failing together. That is a transport failure wearing a runtime failure's
+// error message, and it cost a rental to say the wrong thing slowly.
+func TestASilentSessionIsNotAStalledRuntime(t *testing.T) {
+	// What the loop sees when the connection is gone: no counters, no size,
+	// no tail. Distinct from a quiet runtime, which still answers.
+	dead := hostCounters{}
+	if dead.ok {
+		t.Fatal("precondition: a failed counters read is not ok")
+	}
+	live := hostCounters{ok: true}
+	if !live.ok {
+		t.Fatal("precondition: a successful read is ok")
+	}
+
+	// The distinction the loop draws, stated as the condition it uses.
+	silent := func(c hostCounters, size int64, tail string) bool {
+		return !c.ok && size == 0 && tail == ""
+	}
+	if !silent(dead, 0, "") {
+		t.Error("nothing back from either read must count as silence")
+	}
+	// A quiet but reachable host is not silence: the counters answered.
+	if silent(live, 0, "") {
+		t.Error("a host that answers its counters is not a dead session")
+	}
+	// Nor is a host whose log is being read fine but is simply not growing.
+	if silent(dead, 4096, "") {
+		t.Error("a readable log means the connection is alive")
+	}
+}

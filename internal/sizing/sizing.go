@@ -140,7 +140,7 @@ func Plan(req Request) (core.SizingPlan, error) {
 		plan.FitsInVRAM = required <= req.AvailableVRAMBytes
 		if plan.FitsInVRAM {
 			plan.GPUMemUtilization = clamp(
-				float64(required)/float64(req.AvailableVRAMBytes), 0.10, 0.95)
+				float64(required)/float64(req.AvailableVRAMBytes), 0.10, MaxGPUUtilisation)
 		}
 	} else {
 		plan.FitsInVRAM = true // nothing to fit against
@@ -220,6 +220,24 @@ func HumanBytes(b uint64) string {
 }
 
 // PlanFor resolves facts and sizes in one call.
+// MaxGPUUtilisation is the largest fraction of a card vLLM is asked to take.
+//
+// It is not 1.0 and cannot be: the driver, the CUDA context and the engine's
+// own allocator live in the same memory, so a fraction above this fails at
+// init rather than merely running tight.
+//
+// It has to be shared with the offer filter, which is the mistake that made
+// it worth naming. Selection compared the requirement against a card's *total*
+// VRAM while the launch handed vLLM 0.90 of it, so an 11.2 GB model "fitted" a
+// 12 GB card and was then given 10.8 GB. The arithmetic was lost before the
+// rig was rented.
+const MaxGPUUtilisation = 0.95
+
+// UsableVRAM is how much of a card a runtime can actually allocate.
+func UsableVRAM(totalBytes uint64) uint64 {
+	return uint64(float64(totalBytes) * MaxGPUUtilisation)
+}
+
 func PlanFor(ctx context.Context, r Resolver, req Request) (core.SizingPlan, error) {
 	f, err := r.Resolve(ctx, req.Spec.Ref, req.Spec.Revision)
 	if err != nil {
