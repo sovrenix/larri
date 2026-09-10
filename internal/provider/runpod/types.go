@@ -124,7 +124,7 @@ func inStock(status *string) bool {
 		return false
 	}
 	switch strings.ToLower(*status) {
-	case "high", "medium":
+	case "high", "medium", "low":
 		return true
 	}
 	return false
