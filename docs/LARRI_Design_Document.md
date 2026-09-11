@@ -628,9 +628,11 @@ A disk nobody named becomes `(image + weights) × 1.15`, never below the 60 GB e
 used to get; one the operator named that is too small is refused with the figure that would
 work, never quietly raised. The disk also has to be where the weights land: on RunPod the
 operator's figure sizes the volume at `/workspace`, while the container disk holding `/root`
-is a fixed 20 GB, so the start script links `/root/.larri` onto the volume. The runtime keeps
-writing to the one path it knows, and the provider boundary decides where that path lives.
-vLLM's Hugging Face cache sits under `/root/.cache` and is not yet covered.
+is a fixed 20 GB, so the start script links `/root/.larri` and `/root/.cache/huggingface` onto
+the volume. The runtimes keep writing to the paths they know, and the provider boundary decides
+where those paths live. Every step of the linking is allowed to fail: it runs before sshd, and a
+script that exits there leaves a pod billing that nothing can reach. What catches a link that
+did not happen is a free-space check on the weights directory before the download starts.
 
 ### 7.3 Output
 

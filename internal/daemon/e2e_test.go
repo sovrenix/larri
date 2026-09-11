@@ -540,7 +540,7 @@ func e2eRuntime(t *testing.T, model string) (runtime.Runtime, string) {
 			t.Fatalf("resolve gguf: %v", err)
 		}
 		t.Logf("weights: %s", w.File)
-		r.SetGGUF(w.File)
+		r.SetWeights(w)
 		return r, "llamacpp"
 	case "ollama":
 		// The tag carries its own quantisation and architecture; nothing

@@ -192,6 +192,7 @@ func (d Deps) status(ctx context.Context, raw json.RawMessage) (any, error) {
 			"gpu_count": sm.GPUCount,
 			"vram_gb":   sm.VRAMGB,
 			"model":     sm.Model,
+			"quant":     sm.Quantization,
 			"served":    sm.Served,
 			"runtime":   string(sm.Runtime),
 			"price_hr":  round4(sm.PriceHr),

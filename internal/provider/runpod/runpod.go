@@ -317,9 +317,8 @@ func ports(want []int) []string {
 //
 // Saying so here did not make it true. llama.cpp wrote to /root/.larri, which
 // is the container disk, so the volume sat empty while the download filled
-// the 20 GB allowance. startScript now links that directory onto the volume.
-// vLLM still writes its Hugging Face cache under /root/.cache and has the same
-// 20 GB ceiling on this provider.
+// the 20 GB allowance. startScript now links that directory, and vLLM's
+// Hugging Face cache, onto the volume — see volumeLink.
 const containerDiskGB = 20
 
 func containerDisk(total int) int { return containerDiskGB }
@@ -394,6 +393,34 @@ func shortest(err error) string {
 	return s
 }
 
+// volumeLink places a directory on the RunPod volume, and can never fail.
+//
+// LARRI downloads under /root/.larri and vLLM's Hugging Face cache defaults to
+// /root/.cache/huggingface. On RunPod both sit on the container disk, fixed at
+// 20 GB, while the disk the operator sized is the volume at /workspace — so a
+// 111 GB model died at 20 GB whatever --disk said. Linking them onto the
+// volume here, at the boundary that knows where the volume is, means no
+// runtime has to learn which provider it is on.
+//
+// It runs before sshd, which is why every step is allowed to fail. A pod that
+// could not be linked still serves any model that fits in 20 GB; a script
+// that exits here never starts sshd, and leaves a pod billing that nothing can
+// reach until the stall limit notices. An existing directory is linked only
+// if it is empty — rmdir refuses anything else — and otherwise left alone:
+// the download's free-space check is what notices a link that did not happen,
+// in seconds rather than twenty gigabytes in.
+//
+// Environment variables are not the mechanism: the runtimes are launched over
+// SSH sessions of their own, which inherit nothing this script exports.
+const volumeLink = `larri_link() {
+  mkdir -p "$1" 2>/dev/null || return 0
+  mkdir -p "$(dirname "$2")" 2>/dev/null || return 0
+  if [ -d "$2" ] && [ ! -L "$2" ]; then rmdir "$2" 2>/dev/null || return 0; fi
+  if [ -L "$2" ] || [ ! -e "$2" ]; then ln -sfn "$1" "$2" 2>/dev/null || true; fi
+  return 0
+}
+`
+
 // startCommand builds the container start command.
 //
 // This is where the adapter pays for something its provider does not supply.
@@ -418,24 +445,8 @@ func shortest(err error) string {
 func startScript(onStart string) string {
 	script := `set -e
 
-# LARRI keeps state under /root/.larri and vLLM downloads weights under
-# /root/.cache/huggingface. On RunPod both are on the fixed 20 GB container
-# disk unless moved onto the sized volume at /workspace.
-mkdir -p /workspace/.larri /workspace/.cache/huggingface
-if [ -L /root/.larri ] || [ ! -e /root/.larri ]; then
-  ln -sfn /workspace/.larri /root/.larri
-else
-  echo "runpod.Create: /root/.larri exists and is not a symlink" >&2
-  exit 1
-fi
-mkdir -p /root/.cache
-if [ -L /root/.cache/huggingface ] || [ ! -e /root/.cache/huggingface ]; then
-  ln -sfn /workspace/.cache/huggingface /root/.cache/huggingface
-else
-  echo "runpod.Create: /root/.cache/huggingface exists and is not a symlink" >&2
-  exit 1
-fi
-export HF_HOME=/root/.cache/huggingface
+` + volumeLink + `larri_link /workspace/.larri /root/.larri
+larri_link /workspace/.cache/huggingface /root/.cache/huggingface
 
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server

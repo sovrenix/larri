@@ -8,6 +8,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -663,32 +666,100 @@ func TestStartCommandHardensSSHBecauseItIsInternetFacing(t *testing.T) {
 
 // The disk the operator sizes is the volume at /workspace, while LARRI's data
 // directory was on the 20 GB container disk — so a 111 GB download died at
-// 20 GB whatever --disk said. The start script links the directories onto the
-// volume and points HF cache there too.
+// 20 GB whatever --disk said. The start script links LARRI's directory and
+// vLLM's Hugging Face cache onto the volume, first, and without any way to
+// stop the script before sshd starts.
 func TestStartScriptPutsLarriDataOnTheVolume(t *testing.T) {
 	s := startScript("")
-	link := strings.Index(s, "ln -sfn /workspace/.larri /root/.larri")
-	if link < 0 {
-		t.Fatal("the start script does not place /root/.larri on the volume")
+	sshd := strings.Index(s, "service ssh start")
+	if sshd < 0 {
+		t.Fatal("the start script no longer starts sshd")
 	}
-	hf := strings.Index(s, "ln -sfn /workspace/.cache/huggingface /root/.cache/huggingface")
-	if hf < 0 {
-		t.Fatal("the start script does not place huggingface cache on the volume")
+	for _, link := range []string{
+		"larri_link /workspace/.larri /root/.larri",
+		"larri_link /workspace/.cache/huggingface /root/.cache/huggingface",
+	} {
+		i := strings.Index(s, link)
+		if i < 0 {
+			t.Fatalf("the start script does not run %q", link)
+		}
+		if apt := strings.Index(s, "apt-get"); i > apt {
+			t.Errorf("%q runs after other setup; it must come first", link)
+		}
 	}
-	// Before anything that might create /root/.larri, or the link lands
-	// inside a directory instead of replacing it.
-	if sshd := strings.Index(s, "apt-get"); sshd >= 0 && link > sshd {
-		t.Error("the link comes after other setup; it must come first")
+	// Nothing before sshd may end the script. A pod whose start script exits
+	// here bills with nothing listening, until the stall limit notices.
+	if strings.Contains(s[:sshd], "exit") {
+		t.Error("the start script can exit before sshd starts")
 	}
-	if !strings.Contains(s, "[ -L /root/.larri ] || [ ! -e /root/.larri ]") {
-		t.Error("the /root/.larri link is not guarded")
+}
+
+// The link function run for real, against every state the target can be in.
+// It runs under set -e before sshd, so the property that matters is that it
+// never fails — a pod that cannot be linked still serves anything that fits in
+// 20 GB, and one whose script died here serves nothing and still bills.
+func TestVolumeLinkNeverStopsTheScript(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
 	}
-	if !strings.Contains(s, "[ -L /root/.cache/huggingface ] || [ ! -e /root/.cache/huggingface ]") {
-		t.Error("the huggingface cache link is not guarded")
+	run := func(t *testing.T, root string, setup func(target string)) (reached bool, target string) {
+		t.Helper()
+		vol, target := filepath.Join(root, "vol", "d"), filepath.Join(root, "home", "d")
+		if setup != nil {
+			setup(target)
+		}
+		script := "set -e\n" + volumeLink + "larri_link " + vol + " " + target + "\necho reached\n"
+		out, _ := exec.Command("bash", "-c", script).CombinedOutput()
+		return strings.Contains(string(out), "reached"), target
 	}
-	if !strings.Contains(s, "export HF_HOME=/root/.cache/huggingface") {
-		t.Error("HF_HOME is not set to the volume-backed cache")
+	linksToVolume := func(t *testing.T, target string) bool {
+		t.Helper()
+		dest, err := os.Readlink(target)
+		return err == nil && strings.HasSuffix(dest, filepath.Join("vol", "d"))
 	}
+
+	t.Run("absent: linked", func(t *testing.T) {
+		reached, target := run(t, t.TempDir(), nil)
+		if !reached || !linksToVolume(t, target) {
+			t.Errorf("reached=%v linked=%v", reached, linksToVolume(t, target))
+		}
+	})
+	t.Run("existing link: re-pointed", func(t *testing.T) {
+		reached, target := run(t, t.TempDir(), func(target string) {
+			os.MkdirAll(filepath.Dir(target), 0o755)
+			os.Symlink("/nonexistent", target)
+		})
+		if !reached || !linksToVolume(t, target) {
+			t.Errorf("reached=%v linked=%v", reached, linksToVolume(t, target))
+		}
+	})
+	t.Run("empty directory: replaced", func(t *testing.T) {
+		reached, target := run(t, t.TempDir(), func(target string) { os.MkdirAll(target, 0o755) })
+		if !reached || !linksToVolume(t, target) {
+			t.Errorf("reached=%v linked=%v", reached, linksToVolume(t, target))
+		}
+	})
+	t.Run("directory with contents: left alone, script continues", func(t *testing.T) {
+		reached, target := run(t, t.TempDir(), func(target string) {
+			os.MkdirAll(target, 0o755)
+			os.WriteFile(filepath.Join(target, "keep"), []byte("x"), 0o644)
+		})
+		if !reached {
+			t.Fatal("an existing directory stopped the script before sshd")
+		}
+		if _, err := os.Stat(filepath.Join(target, "keep")); err != nil {
+			t.Error("the existing directory's contents were disturbed")
+		}
+	})
+	t.Run("volume cannot be created: script continues", func(t *testing.T) {
+		root := t.TempDir()
+		// A file where the volume's parent should be makes mkdir fail.
+		os.WriteFile(filepath.Join(root, "vol"), []byte("x"), 0o644)
+		reached, _ := run(t, root, nil)
+		if !reached {
+			t.Fatal("an unwritable volume stopped the script before sshd")
+		}
+	})
 }
 
 // Create rents Secure Cloud, so the catalogue must price Secure Cloud. Without

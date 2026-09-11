@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"go.sovrenix.com/larri/internal/core"
+	"go.sovrenix.com/larri/internal/errs"
 	"go.sovrenix.com/larri/internal/runtime"
 	"go.sovrenix.com/larri/internal/secret"
 )
@@ -254,5 +255,83 @@ func TestLaunchPointsAtTheFlattenedFile(t *testing.T) {
 	}
 	if !strings.Contains(cmd, ModelDir+"/model-00001-of-00003.gguf") {
 		t.Errorf("launch points somewhere nothing was downloaded: %s", cmd)
+	}
+}
+
+// scriptedSession answers each command by what it contains, so a test can
+// give the free-space probe one answer and the runtime probe another.
+type scriptedSession struct {
+	recSession
+	answers map[string]string
+}
+
+func (s *scriptedSession) Run(ctx context.Context, cmd string) ([]byte, error) {
+	s.recSession.Run(ctx, cmd)
+	for marker, out := range s.answers {
+		if strings.Contains(cmd, marker) {
+			return []byte(out), nil
+		}
+	}
+	return []byte(s.out), nil
+}
+
+// A disk that cannot hold the weights is found before the download, not
+// twenty gigabytes into it. On RunPod this is what catches a volume link the
+// start script was allowed not to make.
+func TestBootstrapRefusesADiskThatCannotHoldTheWeights(t *testing.T) {
+	r := New()
+	r.SetWeights(Weights{File: "m-00001-of-00002.gguf", Bytes: 100 << 30})
+	sess := &scriptedSession{
+		recSession: recSession{out: "llama-server"},
+		// 20 GiB free, nothing there yet: the container disk, not the volume.
+		answers: map[string]string{"df -Pk": "20971520\n0\n"},
+	}
+	err := r.Bootstrap(context.Background(), sess, spec(), core.SizingPlan{}, nil)
+	if err == nil {
+		t.Fatal("a 20 GB disk was accepted for 100 GB of weights")
+	}
+	if !errs.Is(err, errs.ClassHostFailure) {
+		t.Errorf("class = %s; the next host may have the space", errs.ClassOf(err))
+	}
+	for _, c := range sess.cmds {
+		if strings.Contains(c, "curl") {
+			t.Fatal("a download started on a disk that could not hold it")
+		}
+	}
+}
+
+// Space already used by the same weights counts as space: a retried
+// bootstrap pays only for what is missing.
+func TestBootstrapCountsWhatIsAlreadyDownloaded(t *testing.T) {
+	r := New()
+	r.SetWeights(Weights{File: "m.gguf", Bytes: 30 << 30})
+	sess := &scriptedSession{
+		recSession: recSession{out: "llama-server"},
+		// 10 GiB free, 25 GiB already down.
+		answers: map[string]string{"df -Pk": "10485760\n26214400\n"},
+	}
+	if err := r.Bootstrap(context.Background(), sess, spec(), core.SizingPlan{}, nil); err != nil {
+		t.Fatalf("refused a download that fits once what is already there counts: %v", err)
+	}
+}
+
+// A probe that cannot run proves nothing, and an unmeasured size gives it
+// nothing to compare against. Both pass (§4a).
+func TestFreeSpaceCheckPassesWhenItCannotMeasure(t *testing.T) {
+	for name, c := range map[string]struct {
+		bytes uint64
+		out   string
+	}{
+		"no df output":     {100 << 30, ""},
+		"garbage":          {100 << 30, "Filesystem\n"},
+		"no measured size": {0, "1\n0\n"},
+	} {
+		r := New()
+		r.SetWeights(Weights{File: "m.gguf", Bytes: c.bytes})
+		sess := &scriptedSession{recSession: recSession{out: "llama-server"},
+			answers: map[string]string{"df -Pk": c.out}}
+		if err := r.checkFreeSpace(context.Background(), sess); err != nil {
+			t.Errorf("%s: refused on no evidence: %v", name, err)
+		}
 	}
 }

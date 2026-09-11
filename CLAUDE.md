@@ -129,6 +129,11 @@ hold in code:
   provisioned meanwhile, that is two billing instances — detect and surface both.
 - **Unreachable is not absent.** A failed provider query resolves nothing. Hold the state,
   keep supervising, conclude nothing.
+- **Nothing before sshd may fail.** A start script that exits before sshd leaves a pod that
+  bills and cannot be reached, until the stall limit notices. Setup that runs first — the
+  RunPod volume links are the case — is written so every step can fail harmlessly, and
+  whatever it failed to do is caught later by a check that can fail the rig cleanly. A
+  review once "hardened" those links with `exit 1` and weakened the test to match.
 - Supervision classifies by evidence across six cases (absent / stopped / ssh-down /
   runtime-down / wedged / provider-unreachable), not by a preempted-vs-unhealthy binary, and
   must never silently re-provision at a higher price without the user's consent.

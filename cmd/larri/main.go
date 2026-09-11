@@ -493,8 +493,11 @@ func cmdUp(ctx context.Context, args []string) error {
 	if *gpu != "" {
 		crit.GPUModel = splitList(*gpu)
 	}
-	if *gpus > 0 && *maxGPUs > 0 && *gpus > *maxGPUs {
-		return fmt.Errorf("gpus %d above max-gpus %d", *gpus, *maxGPUs)
+	// Checked here as well as in the daemon, so a contradiction is refused
+	// before the model is resolved rather than after — one definition, two
+	// call sites.
+	if err := crit.Validate(); err != nil {
+		return err
 	}
 	req := daemon.UpRequest{
 		Criteria:  crit,

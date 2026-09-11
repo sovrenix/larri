@@ -39,7 +39,7 @@ and "shown to work" are different claims and are recorded as such.
 | Observability | 10 | 0 | 1 | 0 | 9 | 10% |
 | **Total** | **174** | **74** | **44** | **17** | **39** | **68%** |
 
-Sixty-seven per cent of requirements are implemented, and **the lifecycle is the part
+Sixty-eight per cent of requirements are implemented, and **the lifecycle is the part
 that is done.** Criteria, provisioning and state are at 100%; search, selection and the
 runtimes are near it. What is missing clusters into the same three areas as before —
 client wiring, the browser surfaces, and observability — none of which a rig needs in

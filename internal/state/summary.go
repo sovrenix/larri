@@ -62,7 +62,7 @@ func Summarise(r *core.Rig, entries []Entry, now time.Time) Summary {
 		Provider: r.Offer.Provider, Hardware: r.Offer.Hardware(),
 		GPUModel: r.Offer.GPUModel, GPUCount: r.Offer.GPUCount,
 		VRAMGB: r.Offer.VRAMTotalGB(), Region: r.Offer.Region,
-		PriceHr: r.Offer.PriceHr, QuotedHr: r.Offer.PriceHr,
+		PriceHr: r.BilledPriceHr(), QuotedHr: r.Offer.PriceHr,
 		Model: r.Model.Ref, Quantization: r.Model.Quantization,
 		Served: r.Model.ServedName, Runtime: r.Runtime,
 		CreatedAt: r.CreatedAt, End: r.End,
@@ -72,9 +72,6 @@ func Summarise(r *core.Rig, entries []Entry, now time.Time) Summary {
 		s.Instance = r.Instance.InstanceID
 		if s.Provider == "" {
 			s.Provider = r.Instance.Provider
-		}
-		if r.Instance.PriceHr > 0 {
-			s.PriceHr = r.Instance.PriceHr
 		}
 	}
 	if serving(r.State) && r.LocalPort > 0 {

@@ -340,6 +340,9 @@ type Survey struct {
 
 // survey sizes the model and ranks the market. It never spends.
 func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, error) {
+	if err := req.Criteria.Validate(); err != nil {
+		return nil, errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.survey", "%v", err)
+	}
 	// ---- size before spending -------------------------------------------
 	o.emit("sizing", "resolving %s", req.Model.Ref)
 	facts, err := o.Resolver.Resolve(ctx, req.Model.Ref, req.Model.Revision)

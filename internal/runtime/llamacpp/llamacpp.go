@@ -21,6 +21,7 @@ import (
 	"go.sovrenix.com/larri/internal/errs"
 	"go.sovrenix.com/larri/internal/runtime"
 	"go.sovrenix.com/larri/internal/secret"
+	"go.sovrenix.com/larri/internal/sizing"
 )
 
 const (
@@ -128,6 +129,9 @@ func (r *Runtime) Bootstrap(ctx context.Context, sess runtime.Session,
 	if err != nil {
 		return err
 	}
+	if err := r.checkFreeSpace(ctx, sess); err != nil {
+		return err
+	}
 	// A large model is published in parts, and every part has to arrive. The
 	// engine finds the rest for itself once it holds the first, but it cannot
 	// find what was never fetched.
@@ -144,6 +148,50 @@ func (r *Runtime) Bootstrap(ctx context.Context, sess runtime.Session,
 		}
 	}
 	return nil
+}
+
+// freeSpaceCmd reports, in KiB, what is free where the weights land and what
+// is already there. One round trip, and `df -P` so the column layout is fixed.
+var freeSpaceCmd = "mkdir -p " + shellQuote(ModelDir) + " && " +
+	"df -Pk " + shellQuote(ModelDir) + " | awk 'NR==2{print $4}' && " +
+	"du -sk " + shellQuote(ModelDir) + " 2>/dev/null | cut -f1"
+
+// checkFreeSpace refuses to start a download the disk cannot hold.
+//
+// The disk was sized to the weights before renting, but sizing it and the
+// weights landing on it are two claims. On RunPod the second depends on a
+// link the start script makes to the volume, and that link is allowed to fail
+// so a pod is never stranded before sshd. This is what catches it: without
+// the check, a missing link was discovered twenty gigabytes into a download,
+// every one of them billed.
+//
+// Host-attributable, so the next offer is tried. A check that cannot run
+// proves nothing, and neither does an unmeasured weight size (§4a).
+func (r *Runtime) checkFreeSpace(ctx context.Context, sess runtime.Session) error {
+	need := r.weights.Bytes
+	if need == 0 {
+		return nil
+	}
+	out, err := sess.Run(ctx, freeSpaceCmd)
+	if err != nil {
+		return nil
+	}
+	f := strings.Fields(string(out))
+	if len(f) < 2 {
+		return nil
+	}
+	freeKiB, err1 := strconv.ParseUint(f[0], 10, 64)
+	haveKiB, err2 := strconv.ParseUint(f[1], 10, 64)
+	if err1 != nil || err2 != nil {
+		return nil
+	}
+	// What is already there counts: a resumed download pays only for the rest.
+	if (freeKiB+haveKiB)*1024 >= need {
+		return nil
+	}
+	return errs.Newf(errs.ClassHostFailure, "llamacpp.Bootstrap",
+		"disk %s free under %s cannot hold %s of weights",
+		sizing.HumanBytes(freeKiB*1024), ModelDir, sizing.HumanBytes(need))
 }
 
 // downloadCmd fetches one GGUF file.

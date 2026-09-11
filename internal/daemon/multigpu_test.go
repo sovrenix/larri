@@ -5,6 +5,8 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -390,5 +392,110 @@ func TestVRAMShortfallIsReportedBeforeADiskShortfall(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "needs ~") {
 		t.Errorf("the VRAM shortfall was not reported first: %v", err)
+	}
+}
+
+// gpuSession answers the placed-hardware probes as a host with n cards of
+// mib MiB each.
+type gpuSession struct {
+	n   int
+	mib int
+}
+
+func (s gpuSession) Run(_ context.Context, cmd string) ([]byte, error) {
+	if strings.Contains(cmd, "memory.total") {
+		return []byte(strings.Repeat(fmt.Sprintf("%d\n", s.mib), s.n)), nil
+	}
+	return nil, nil
+}
+func (gpuSession) Dial(context.Context, int) (io.ReadWriteCloser, error) { return nil, nil }
+func (gpuSession) Close() error                                          { return nil }
+
+// A six-card host serving a 40-head model on vLLM: the engine shards four
+// ways, so two cards hold nothing and their memory is not available.
+func sixCardRig(weightsGiB uint64) (*Orchestrator, *core.Rig) {
+	facts := sizing.Facts{Ref: "test/m", Params: 70, Layers: 32, AttentionHeads: 40,
+		KVHeads: 8, HeadDim: 128, HiddenSize: 5120, MaxContextLen: 32768}
+	o := &Orchestrator{
+		Runtime:  rfake.New(rfake.Behaviour{TensorParallel: true}),
+		Resolver: sizing.StaticResolver{"test/m": facts},
+	}
+	rig := &core.Rig{
+		Model: core.ModelSpec{Ref: "test/m", Quantization: "q4_K_M", ContextLen: 4096},
+		Plan: core.SizingPlan{TensorParallelSize: 6, WeightsBytes: weightsGiB << 30,
+			RequiredVRAMBytes: weightsGiB << 30, GPUMemUtilization: 0.10},
+	}
+	return o, rig
+}
+
+// vLLM reads the memory fraction per card. Computed over every card on the
+// host, a model needing ~72 GB on the four cards vLLM uses was told to take
+// half of each — ~48 GB in all — and would have run out at engine init.
+func TestPlacedHardwareAsksForEnoughOfEachCardTheEngineUses(t *testing.T) {
+	o, rig := sixCardRig(60)
+	if err := o.verifyPlacedHardware(context.Background(), gpuSession{n: 6, mib: 24576}, rig); err != nil {
+		t.Fatal(err)
+	}
+	if rig.Plan.TensorParallelSize != 4 {
+		t.Fatalf("degree %d, want 4: 40 heads do not split six ways", rig.Plan.TensorParallelSize)
+	}
+	perCard := float64(rig.Plan.RequiredVRAMBytes) / 4 / float64(24576<<20)
+	if rig.Plan.GPUMemUtilization+0.001 < perCard {
+		t.Errorf("asked for %.2f of each card; the model needs %.2f of each of the four it uses",
+			rig.Plan.GPUMemUtilization, perCard)
+	}
+}
+
+// Fits on the host's six cards together, not on the four the engine can use:
+// that is a host that cannot serve the model, and saying so before the weights
+// download is the whole point of checking placed hardware.
+func TestPlacedHardwareIsJudgedOnTheCardsTheEngineUses(t *testing.T) {
+	o, rig := sixCardRig(100) // ~119 GB needed: under 144 total, over 91 on four cards
+	err := o.verifyPlacedHardware(context.Background(), gpuSession{n: 6, mib: 24576}, rig)
+	if err == nil {
+		t.Fatal("accepted a host whose usable cards cannot hold the model")
+	}
+	if !errs.Is(err, errs.ClassHostFailure) {
+		t.Errorf("class = %s, want host-failure", errs.ClassOf(err))
+	}
+	if !strings.Contains(err.Error(), "4 of 6") {
+		t.Errorf("the refusal does not say which cards were counted: %v", err)
+	}
+}
+
+// A resolver that cannot answer at boot keeps the degree selection chose. It
+// is never replaced by a guess, and never exceeds the cards actually present.
+func TestPlacedHardwareKeepsTheDegreeWhenFactsAreUnavailable(t *testing.T) {
+	o, rig := sixCardRig(60)
+	o.Resolver = sizing.StaticResolver{} // resolves nothing
+	rig.Plan.TensorParallelSize = 4
+	if err := o.verifyPlacedHardware(context.Background(), gpuSession{n: 6, mib: 24576}, rig); err != nil {
+		t.Fatal(err)
+	}
+	if rig.Plan.TensorParallelSize != 4 {
+		t.Errorf("degree %d, want the 4 selection chose", rig.Plan.TensorParallelSize)
+	}
+	rig.Plan.TensorParallelSize = 8 // listing said eight, host has six
+	if err := o.verifyPlacedHardware(context.Background(), gpuSession{n: 6, mib: 24576}, rig); err != nil {
+		t.Fatal(err)
+	}
+	if rig.Plan.TensorParallelSize > 6 {
+		t.Errorf("degree %d on a six-card host", rig.Plan.TensorParallelSize)
+	}
+}
+
+// Every surface reaches the daemon through survey, so a contradiction the CLI
+// refuses is refused for an MCP agent too — before anything is searched.
+func TestContradictoryCriteriaAreRefusedForEverySurface(t *testing.T) {
+	o, p := multiGPUOrch(t, multiGPUMarket(), bigModel)
+	req := bigModelReq()
+	req.Criteria = core.Criteria{GPUCount: 4, MaxGPUCount: 2}
+	if _, err := o.Offers(context.Background(), req); err == nil {
+		t.Fatal("gpus 4 with max 2 reached the market")
+	}
+	for _, c := range p.Calls {
+		if c == "Search" {
+			t.Fatal("searched before refusing criteria that can match nothing")
+		}
 	}
 }

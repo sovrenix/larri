@@ -118,7 +118,7 @@ const (
 	ReasonDeverified    Reason = "verification-withdrawn"
 	ReasonInterruptible Reason = "interruptible-not-permitted"
 	ReasonMaxPrice      Reason = "above-max-price"
-	ReasonGPUCount      Reason = "gpu-count-outside-criteria"
+	ReasonHardware      Reason = "hardware-outside-criteria"
 	ReasonRegion        Reason = "region-blocked"
 	ReasonCostlier      Reason = "costlier-than-selection"
 )
@@ -236,15 +236,21 @@ func classify(o core.Offer, c core.Criteria, fits FitFunc, p Policy,
 	// the other cannot, and a bound that holds only where it happens to be
 	// implemented is not a bound.
 	if c.GPUCount > 0 && o.GPUCount < c.GPUCount {
-		return ReasonGPUCount, fmt.Sprintf("%d gpu(s), fewer than the %d asked for",
+		return ReasonHardware, fmt.Sprintf("%d gpu(s), fewer than the %d asked for",
 			o.GPUCount, c.GPUCount)
 	}
 	if c.MaxGPUCount > 0 && o.GPUCount > c.MaxGPUCount {
-		return ReasonGPUCount, fmt.Sprintf("%d gpu(s), above the ceiling of %d",
+		return ReasonHardware, fmt.Sprintf("%d gpu(s), above the ceiling of %d",
 			o.GPUCount, c.MaxGPUCount)
 	}
+	// Per card before the aggregate: eight 12 GB cards clear a 96 GB floor
+	// and still fail an operator who asked for 24 GB on each.
+	if c.VRAMPerGPUGB > 0 && o.VRAMPerGPUGB < c.VRAMPerGPUGB {
+		return ReasonHardware, fmt.Sprintf("%dGB per card, below the %dGB asked for",
+			o.VRAMPerGPUGB, c.VRAMPerGPUGB)
+	}
 	if c.VRAMTotalGB > 0 && o.VRAMTotalGB() < c.VRAMTotalGB {
-		return ReasonGPUCount, fmt.Sprintf("%dGB aggregate, below the %dGB asked for",
+		return ReasonHardware, fmt.Sprintf("%dGB aggregate, below the %dGB asked for",
 			o.VRAMTotalGB(), c.VRAMTotalGB)
 	}
 	if fits != nil {

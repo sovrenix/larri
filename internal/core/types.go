@@ -318,6 +318,29 @@ type Rig struct {
 // Billable reports whether this rig currently costs money.
 func (r *Rig) Billable() bool { return r.State.Billable() }
 
+// BilledPriceHr is what the rig costs by the hour: the provider's own rate
+// once an instance reports one, and the quote from selection until then.
+//
+// One definition, because the two disagree and every surface has to pick the
+// same one. A RunPod pod quoted at $2.78/hr billed $3.18/hr; the TUI kept
+// showing the quote after the status command had moved to the bill.
+func (r *Rig) BilledPriceHr() float64 {
+	if r.Instance != nil && r.Instance.PriceHr > 0 {
+		return r.Instance.PriceHr
+	}
+	return r.Offer.PriceHr
+}
+
+// Validate reports criteria that contradict themselves, before anything is
+// searched. Every surface reaches the daemon through this, so the CLI, the
+// TUI and the MCP tools refuse the same things.
+func (c Criteria) Validate() error {
+	if c.GPUCount > 0 && c.MaxGPUCount > 0 && c.GPUCount > c.MaxGPUCount {
+		return fmt.Errorf("criteria: gpu count floor %d above ceiling %d", c.GPUCount, c.MaxGPUCount)
+	}
+	return nil
+}
+
 // HasReliability reports whether the provider supplied a reliability score.
 //
 // Named rather than left as a comparison against zero, so the convention lives
