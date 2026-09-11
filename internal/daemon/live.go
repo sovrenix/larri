@@ -789,18 +789,17 @@ func weightsHost(spec core.ModelSpec) string {
 //
 // It comes from the cache in every ordinary case — the same revision was
 // already resolved before the search — so this costs nothing on the happy
-// path. A miss is not a failure: zero-valued facts make Shards fall back to
-// its power-of-two reading, which is the same answer it gives any model whose
-// head count the repository does not publish.
-func (o *Orchestrator) placedFacts(ctx context.Context, rig *core.Rig) sizing.Facts {
+// path. A miss is not fatal: the caller keeps the existing shard degree rather
+// than replacing it from unknown facts.
+func (o *Orchestrator) placedFacts(ctx context.Context, rig *core.Rig) (sizing.Facts, bool) {
 	if o.Resolver == nil {
-		return sizing.Facts{}
+		return sizing.Facts{}, false
 	}
 	f, err := o.Resolver.Resolve(ctx, rig.Model.Ref, rig.Model.Revision)
 	if err != nil {
-		return sizing.Facts{}
+		return sizing.Facts{}, false
 	}
-	return f
+	return f, true
 }
 
 // verifyPlacedHardware re-runs the fit check against the machine that was
@@ -838,12 +837,40 @@ func (o *Orchestrator) verifyPlacedHardware(ctx context.Context, sess runtime.Se
 	// the model's attention heads, so handing it "six, because the box has
 	// six" fails at engine init on a machine that is already billing.
 	if gpus > 0 {
-		facts := o.placedFacts(ctx, rig)
-		want := sizing.Shards(facts, gpus, o.Runtime.Requires().TensorParallel)
+		want := rig.Plan.TensorParallelSize
+		facts, ok := o.placedFacts(ctx, rig)
+		if ok {
+			want = sizing.Shards(facts, gpus, o.Runtime.Requires().TensorParallel)
+		}
+		if want < 1 {
+			want = 1
+		}
+		if want > gpus {
+			want = gpus
+		}
 		if want != rig.Plan.TensorParallelSize {
 			o.warn("boot", "listing promised %d gpu(s), host has %d — sharding across %d",
 				rig.Plan.TensorParallelSize, gpus, want)
 			rig.Plan.TensorParallelSize = want
+		}
+		if ok {
+			placed, err := sizing.Plan(sizing.Request{
+				Spec:               rig.Model,
+				Facts:              facts,
+				AvailableVRAMBytes: haveBytes,
+				GPUCount:           want,
+				WeightBytes:        rig.Plan.WeightsBytes,
+			})
+			if err != nil {
+				return err
+			}
+			rig.Plan.RequiredVRAMBytes = placed.RequiredVRAMBytes
+			rig.Plan.WeightsBytes = placed.WeightsBytes
+			rig.Plan.KVCacheBytes = placed.KVCacheBytes
+			rig.Plan.FitsInVRAM = placed.FitsInVRAM
+			rig.Plan.ContextLen = placed.ContextLen
+			rig.Plan.Warnings = placed.Warnings
+			rig.Plan.GPUMemUtilization = placed.GPUMemUtilization
 		}
 	}
 	// The plan was sized before a card was known, so its memory fraction is a

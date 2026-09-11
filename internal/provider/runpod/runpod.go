@@ -59,7 +59,6 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 			"catalogue returned nothing")
 	}
 
-	wantSpot := c.Interruptible == core.Allow || c.Interruptible == core.Require
 	out := make([]core.Offer, 0, len(data.GPUTypes)*len(offerCounts))
 	dropped := map[dropReason]int{}
 	for _, g := range data.GPUTypes {
@@ -76,7 +75,7 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 		var offered bool
 		var why dropReason
 		for _, n := range offerCounts {
-			o, reason, ok := g.normalise(n, wantSpot)
+			o, reason, ok := g.normalise(n, c.Interruptible)
 			if !ok {
 				if why == "" {
 					why = reason
@@ -419,17 +418,24 @@ func shortest(err error) string {
 func startScript(onStart string) string {
 	script := `set -e
 
-# LARRI keeps what it downloads under /root/.larri. On RunPod that path sits
-# on the container disk, fixed at 20 GB, while the disk the operator sized is
-# the volume at /workspace — so a 111 GB model died at 20 GB whatever --disk
-# said. The directory is placed on the volume here, at the boundary that
-# knows where the volume is, and no runtime has to learn which provider it is
-# on. First, before anything else can create the directory and turn the link
-# into a link inside it; and never fatal, because a pod that fails this still
-# serves any model that fits in 20 GB.
-if mkdir -p /workspace/.larri 2>/dev/null && [ ! -e /root/.larri ]; then
-  ln -s /workspace/.larri /root/.larri || true
+# LARRI keeps state under /root/.larri and vLLM downloads weights under
+# /root/.cache/huggingface. On RunPod both are on the fixed 20 GB container
+# disk unless moved onto the sized volume at /workspace.
+mkdir -p /workspace/.larri /workspace/.cache/huggingface
+if [ -L /root/.larri ] || [ ! -e /root/.larri ]; then
+  ln -sfn /workspace/.larri /root/.larri
+else
+  echo "runpod.Create: /root/.larri exists and is not a symlink" >&2
+  exit 1
 fi
+mkdir -p /root/.cache
+if [ -L /root/.cache/huggingface ] || [ ! -e /root/.cache/huggingface ]; then
+  ln -sfn /workspace/.cache/huggingface /root/.cache/huggingface
+else
+  echo "runpod.Create: /root/.cache/huggingface exists and is not a symlink" >&2
+  exit 1
+fi
+export HF_HOME=/root/.cache/huggingface
 
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server

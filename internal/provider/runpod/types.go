@@ -151,7 +151,7 @@ func gpuTypeID(offer string) string {
 //     reality rather than a permanent exclusion — a type that comes back into
 //     stock comes back into the list.
 //   - **Not purchasable.** The catalogue advertises types POST /pods rejects.
-func (g gpuType) normalise(count int, interruptible bool) (core.Offer, dropReason, bool) {
+func (g gpuType) normalise(count int, mode core.Tristate) (core.Offer, dropReason, bool) {
 	if count > 1 && g.MaxGPUCount > 0 && count > g.MaxGPUCount {
 		return core.Offer{}, dropTooManyGPUs, false
 	}
@@ -159,14 +159,31 @@ func (g gpuType) normalise(count int, interruptible bool) (core.Offer, dropReaso
 	if lowest == nil {
 		return core.Offer{}, dropUnpriced, false
 	}
-	var price float64
-	switch {
-	case interruptible && lowest.MinimumBidPrice != nil:
+	var (
+		price         float64
+		interruptible bool
+	)
+	switch mode {
+	case core.Require:
+		if lowest.MinimumBidPrice == nil {
+			return core.Offer{}, dropUnpriced, false
+		}
 		price = *lowest.MinimumBidPrice
-	case lowest.UninterruptablePrice != nil:
+		interruptible = true
+	case core.Allow:
+		if lowest.MinimumBidPrice != nil {
+			price = *lowest.MinimumBidPrice
+			interruptible = true
+		} else if lowest.UninterruptablePrice != nil {
+			price = *lowest.UninterruptablePrice
+		} else {
+			return core.Offer{}, dropUnpriced, false
+		}
+	default: // Forbid
+		if lowest.UninterruptablePrice == nil {
+			return core.Offer{}, dropUnpriced, false
+		}
 		price = *lowest.UninterruptablePrice
-	default:
-		return core.Offer{}, dropUnpriced, false
 	}
 	if price <= 0 || g.MemoryInGb <= 0 || g.ID == "" {
 		return core.Offer{}, dropUnpriced, false

@@ -26,6 +26,7 @@ type Shortfall struct {
 	RequiredB   uint64
 	Best        *core.Offer // best offer among those considered, may be nil
 	BestVRAMB   uint64      // what the engine could have used on Best
+	BestNeedB   uint64      // what the model would need on Best
 	BestShards  int         // how many of Best's cards it could have used
 	Considered  int         // how many offers were weighed
 	MultiGPU    bool        // whether any of them had more than one card
@@ -81,7 +82,7 @@ func Analyse(req Request, candidates []core.Offer) Shortfall {
 			need = p.RequiredVRAMBytes
 		}
 		if s.Best == nil || avail > bestAvail {
-			s.Best, s.BestVRAMB, s.BestShards, bestAvail = &sorted[i], avail, shards, avail
+			s.Best, s.BestVRAMB, s.BestNeedB, s.BestShards, bestAvail = &sorted[i], avail, need, shards, avail
 		}
 		if s.CheapestFit == nil && avail >= need {
 			s.CheapestFit = &sorted[i]
@@ -169,8 +170,8 @@ func (s Shortfall) String() string {
 	if s.Best != nil {
 		fmt.Fprintf(&b, "  Best matching offer: %s ($%.2f/hr)",
 			s.Best.Hardware(), s.Best.PriceHr)
-		if s.BestVRAMB < s.RequiredB {
-			fmt.Fprintf(&b, " — %s short", HumanBytes(s.RequiredB-s.BestVRAMB))
+		if s.BestVRAMB < s.BestNeedB {
+			fmt.Fprintf(&b, " — %s short", HumanBytes(s.BestNeedB-s.BestVRAMB))
 		}
 		// Without this the two figures on the line cannot be reconciled: a
 		// host advertising 144GB reported 67.3 GB short of a 158.5 GB

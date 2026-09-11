@@ -127,7 +127,14 @@ func (d Deps) up(ctx context.Context, raw json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("this surface cannot hold a rig")
 	}
 
-	crit := core.Criteria{MaxPriceHr: a.MaxPrice, MinReliability: 0.90}
+	crit := core.Criteria{
+		MaxPriceHr:     a.MaxPrice,
+		MinReliability: 0.90,
+		GPUCount:       a.GPUCount,
+		MaxGPUCount:    a.MaxGPU,
+		VRAMTotalGB:    a.VRAMTotal,
+		VRAMPerGPUGB:   a.VRAMPerGPU,
+	}
 	if a.GPU != "" {
 		crit.GPUModel = []string{a.GPU}
 	}

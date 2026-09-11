@@ -238,6 +238,15 @@ func TestSpotPricingIsOptIn(t *testing.T) {
 			t.Errorf("spot price = %v, want the bid 0.34", o.PriceHr)
 		}
 	}
+	requireSpot, err := p.Search(context.Background(), core.Criteria{Interruptible: core.Require})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range requireSpot {
+		if !o.Interruptible {
+			t.Errorf("offer %s is on-demand under interruptible=require", o.OfferID)
+		}
+	}
 }
 
 // The label is the only marker RunPod can carry — it has no tags — so a pod
@@ -654,25 +663,31 @@ func TestStartCommandHardensSSHBecauseItIsInternetFacing(t *testing.T) {
 
 // The disk the operator sizes is the volume at /workspace, while LARRI's data
 // directory was on the 20 GB container disk — so a 111 GB download died at
-// 20 GB whatever --disk said. The start script links the directory onto the
-// volume, first, and without being able to strand the pod.
+// 20 GB whatever --disk said. The start script links the directories onto the
+// volume and points HF cache there too.
 func TestStartScriptPutsLarriDataOnTheVolume(t *testing.T) {
 	s := startScript("")
-	link := strings.Index(s, "ln -s /workspace/.larri /root/.larri")
+	link := strings.Index(s, "ln -sfn /workspace/.larri /root/.larri")
 	if link < 0 {
 		t.Fatal("the start script does not place /root/.larri on the volume")
+	}
+	hf := strings.Index(s, "ln -sfn /workspace/.cache/huggingface /root/.cache/huggingface")
+	if hf < 0 {
+		t.Fatal("the start script does not place huggingface cache on the volume")
 	}
 	// Before anything that might create /root/.larri, or the link lands
 	// inside a directory instead of replacing it.
 	if sshd := strings.Index(s, "apt-get"); sshd >= 0 && link > sshd {
 		t.Error("the link comes after other setup; it must come first")
 	}
-	// Guarded, so a missing volume cannot fail `set -e` before sshd starts.
-	if !strings.Contains(s, "[ ! -e /root/.larri ]") {
-		t.Error("the link is not guarded against an existing /root/.larri")
+	if !strings.Contains(s, "[ -L /root/.larri ] || [ ! -e /root/.larri ]") {
+		t.Error("the /root/.larri link is not guarded")
 	}
-	if !strings.Contains(s, "|| true") {
-		t.Error("a failed link could abort the script before sshd starts")
+	if !strings.Contains(s, "[ -L /root/.cache/huggingface ] || [ ! -e /root/.cache/huggingface ]") {
+		t.Error("the huggingface cache link is not guarded")
+	}
+	if !strings.Contains(s, "export HF_HOME=/root/.cache/huggingface") {
+		t.Error("HF_HOME is not set to the volume-backed cache")
 	}
 }
 

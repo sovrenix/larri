@@ -81,6 +81,10 @@ func larriTools(d Deps) []Tool {
 				"quantization": {Type: "string"},
 				"context":      {Type: "integer"},
 				"gpu":          {Type: "string", Description: "GPU model filter, e.g. 'RTX 4090'"},
+				"gpus":         {Type: "integer", Description: "minimum GPUs per host"},
+				"max_gpus":     {Type: "integer", Description: "maximum GPUs per host"},
+				"vram":         {Type: "integer", Description: "minimum aggregate VRAM in GB"},
+				"vram_per_gpu": {Type: "integer", Description: "minimum VRAM per card in GB"},
 				"max_price":    {Type: "number", Description: "ceiling in $/hr"},
 				"top":          {Type: "integer", Description: "how many to return (default 10)"},
 			}, "model"),
@@ -115,6 +119,10 @@ func larriTools(d Deps) []Tool {
 				"quantization": {Type: "string"},
 				"context":      {Type: "integer"},
 				"gpu":          {Type: "string"},
+				"gpus":         {Type: "integer"},
+				"max_gpus":     {Type: "integer"},
+				"vram":         {Type: "integer"},
+				"vram_per_gpu": {Type: "integer"},
 				"max_price":    {Type: "number", Description: "ceiling in $/hr; refuses above it"},
 				"idle_timeout": {Type: "string", Description: "e.g. '30m'; destroys after this long unused"},
 				"budget":       {Type: "number", Description: "spend ceiling in $; destroys on breach"},
@@ -308,9 +316,13 @@ func (d Deps) plan(ctx context.Context, raw json.RawMessage) (any, error) {
 
 type offersArgs struct {
 	planArgs
-	GPU      string  `json:"gpu"`
-	MaxPrice float64 `json:"max_price"`
-	Top      int     `json:"top"`
+	GPU        string  `json:"gpu"`
+	GPUCount   int     `json:"gpus"`
+	MaxGPU     int     `json:"max_gpus"`
+	VRAMTotal  int     `json:"vram"`
+	VRAMPerGPU int     `json:"vram_per_gpu"`
+	MaxPrice   float64 `json:"max_price"`
+	Top        int     `json:"top"`
 }
 
 func (d Deps) searchOffers(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -328,7 +340,14 @@ func (d Deps) searchOffers(ctx context.Context, raw json.RawMessage) (any, error
 	if err != nil {
 		return nil, err
 	}
-	crit := core.Criteria{MaxPriceHr: a.MaxPrice, MinReliability: 0.90}
+	crit := core.Criteria{
+		MaxPriceHr:     a.MaxPrice,
+		MinReliability: 0.90,
+		GPUCount:       a.GPUCount,
+		MaxGPUCount:    a.MaxGPU,
+		VRAMTotalGB:    a.VRAMTotal,
+		VRAMPerGPUGB:   a.VRAMPerGPU,
+	}
 	if a.GPU != "" {
 		crit.GPUModel = []string{a.GPU}
 	}
