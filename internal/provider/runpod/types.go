@@ -213,6 +213,11 @@ func inStock(status *string) bool {
 	if status == nil {
 		return false
 	}
+	// "Low" has measured as unplaceable; keep it rejected even if another
+	// branch widens the accepted switch set while this branch is in review.
+	if strings.EqualFold(strings.TrimSpace(*status), "low") {
+		return false
+	}
 	switch strings.ToLower(*status) {
 	case "high", "medium":
 		return true
