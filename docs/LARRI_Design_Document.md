@@ -307,6 +307,15 @@ Normalization rules:
 - **Placement** → for providers that place rather than let you pick, `OfferID` identifies
   the *class* requested and `Instance` carries what was actually placed. Ranking operates
   on the class; the sizing check re-runs against the placed instance before bootstrap.
+- **Card count is part of the class.** RunPod sells one GPU type at several sizes, so the
+  adapter lists each type at 1, 2, 4 and 8 cards, and `OfferID` is `<gpuTypeId>#<count>`
+  so it stays unique; `Create` splits it back. Stock is read per size, because it differs
+  by size.
+- **Quote the tier that is rented.** `Create` rents Secure Cloud, so the catalogue is
+  priced with `secureCloud: true`. Unfiltered, `lowestPrice` answers across both tiers —
+  in practice the Community rate — and a pod quoted at $2.78/hr billed $3.18/hr, above the
+  figure ranking chose it on and above `--max-price`. `larri status` shows the billed rate
+  beside the quote whenever they differ, which is how this was caught.
 
 ### 5.3 The Ownership Marker Is Provider-Neutral
 
@@ -668,6 +677,16 @@ per-card figure. Where the engine reaches fewer cards than the host has, the lin
 named. Suggestions are measured against the largest VRAM the market actually offered — with
 no target every alternative counts as fitting and the first one wins, which is how a 121.7 GB
 shortfall was once answered with `--quantization q8_0 (~212.6 GB)`.
+
+When a `--max-gpus` ceiling is what ruled the fit out, the search never returned the hosts
+that would have worked, so the report searches once more without the ceiling — only after
+the request has failed — and names the cheapest one: *"With more cards: 2× A100 SXM 160GB
+($3.18/hr) would fit — raise --max-gpus to 2."* A successful multi-GPU placement is explained
+card by card (*"per card: about 62.1 GB of 76.0 GB usable, 51.8 GB of it weights"*), and for a
+layer-splitting engine the report says what the extra cards buy: memory, not speed, for a
+single request, since the cards take turns on each token. Tokens per second is not estimated;
+a live 2× A100 run decoded at 7.8 tok/s, far below any bandwidth figure, and a confident
+wrong number is worse than none.
 
 ---
 

@@ -209,8 +209,12 @@ func TestRunpodCatalogueLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("catalogue: %v", err)
 	}
-	if len(offers) < 10 {
-		t.Errorf("only %d offers; the catalogue normally lists dozens", len(offers))
+	// A floor that catches a normaliser dropping nearly everything, not one
+	// that measures the market. It was ten when stock was read across both
+	// clouds; priced on Secure Cloud alone — the only one Create rents — a
+	// live read had nine offers over five types, and that is a real market.
+	if len(offers) < 3 {
+		t.Errorf("only %d offers; secure cloud normally has several types in stock", len(offers))
 	}
 	for _, o := range offers {
 		// Every offered id must be one POST /pods accepts. The two APIs are

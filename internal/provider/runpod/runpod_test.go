@@ -675,3 +675,14 @@ func TestStartScriptPutsLarriDataOnTheVolume(t *testing.T) {
 		t.Error("a failed link could abort the script before sshd starts")
 	}
 }
+
+// Create rents Secure Cloud, so the catalogue must price Secure Cloud. Without
+// the filter lowestPrice answers across both clouds, and a pod quoted at
+// $2.78/hr billed $3.18/hr — above the figure it was ranked on and above the
+// --max-price meant to cap it.
+func TestCataloguePricesTheCloudCreateRentsFrom(t *testing.T) {
+	if got := strings.Count(catalogueQuery, "secureCloud: true"); got != len(offerCounts) {
+		t.Errorf("%d of %d price lookups filter on Secure Cloud; every one must, "+
+			"or that size is quoted at a rate it will not be billed at", got, len(offerCounts))
+	}
+}

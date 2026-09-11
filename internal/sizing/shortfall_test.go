@@ -206,3 +206,19 @@ func TestSuggestedQuantisationsDoNotInheritTheMeasurement(t *testing.T) {
 		t.Error("no quantisation was suggested at all")
 	}
 }
+
+// "single or multi-GPU" is a claim about what was weighed. Under a one-card
+// ceiling no multi-GPU host was, and the report must not say otherwise.
+func TestShortfallClaimsMultiGPUOnlyWhenItWeighedSome(t *testing.T) {
+	f := Facts{Params: 235, Layers: 94, KVHeads: 4, HeadDim: 128,
+		HiddenSize: 4096, MaxContextLen: 131072}
+	single := []core.Offer{{Provider: "p", OfferID: "a", GPUModel: "H100", GPUCount: 1,
+		VRAMPerGPUGB: 80, PriceHr: 2.69}}
+	out := Analyse(Request{Spec: spec("q4_K_M", 8192), Facts: f}, single).String()
+	if strings.Contains(out, "multi-GPU") {
+		t.Errorf("claimed multi-GPU hosts were weighed when none were:\n%s", out)
+	}
+	if strings.Contains(out, ", (") {
+		t.Errorf("dropping the phrase left its comma behind:\n%s", out)
+	}
+}

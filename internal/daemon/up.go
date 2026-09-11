@@ -485,7 +485,8 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 		shortReq := base
 		shortReq.Shards = shardsOn(facts, reqs.TensorParallel)
 		short := sizing.Analyse(shortReq, offers)
-		return nil, errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.survey", "%s", short.String())
+		msg := short.String() + o.moreCardsWouldFit(ctx, req.Criteria, fits, policy)
+		return nil, errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.survey", "%s", msg)
 	}
 	if diskErr != nil {
 		return nil, diskErr
@@ -506,14 +507,8 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 	if err != nil {
 		return nil, err
 	}
-	switch {
-	case shards > 1 && shards < chosen.GPUCount:
-		// The gap is the part worth saying: cards the engine will not place
-		// weights on are cards the operator is paying for and not using.
-		o.emit("sizing", "sharding across %d of the host's %d %s cards",
-			shards, chosen.GPUCount, chosen.GPUModel)
-	case shards > 1:
-		o.emit("sizing", "sharding across all %d cards", shards)
+	if shards > 1 {
+		o.explainShards(chosen, shards, placed, reqs.TensorParallel)
 	}
 	for _, w := range placed.Warnings {
 		if !slices.Contains(plan.Warnings, w) {
@@ -521,6 +516,72 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 		}
 	}
 	return &Survey{Plan: placed, Selection: sel, Offers: len(offers), DiskGB: disk}, nil
+}
+
+// explainShards says what a multi-GPU placement actually is, card by card.
+//
+// Three facts an operator cannot get from an aggregate figure. How many of the
+// host's cards the engine uses — a card it will not place weights on is one
+// being paid for and not used. How full each card is — "124 GB across 160"
+// hides whether one card is at its ceiling. And, for an engine that splits by
+// layer, what the extra cards buy: the cards take turns on each token, so they
+// add memory, not speed, for a single request. Tokens per second is left
+// unestimated on purpose: a live 2× A100 run decoded at 7.8 tok/s, far below
+// what a bandwidth figure predicts, and a confident wrong number is worse than
+// none.
+func (o *Orchestrator) explainShards(chosen core.Offer, shards int,
+	placed core.SizingPlan, tensorParallel bool) {
+
+	perCard := placed.RequiredVRAMBytes / uint64(shards)
+	usable := sizing.UsableVRAM(uint64(chosen.VRAMPerGPUGB) * sizing.GiB)
+	weights := placed.WeightsBytes / uint64(shards)
+	if shards < chosen.GPUCount {
+		o.emit("sizing", "sharding across %d of the host's %d %s cards",
+			shards, chosen.GPUCount, chosen.GPUModel)
+	} else {
+		o.emit("sizing", "sharding across all %d cards", shards)
+	}
+	o.emit("sizing", "per card: about %s of %s usable, %s of it weights",
+		sizing.HumanBytes(perCard), sizing.HumanBytes(usable), sizing.HumanBytes(weights))
+	if !tensorParallel {
+		o.emit("sizing", "split by layer: the cards take turns on each token, so %d cards "+
+			"give %d cards' memory at roughly one card's speed for a single request",
+			shards, shards)
+	}
+}
+
+// moreCardsWouldFit names a multi-GPU host the operator's own ceiling ruled
+// out, when nothing within it fits.
+//
+// The shortfall report can only weigh what the search returned, and a
+// --max-gpus ceiling means the search never returned the hosts that would
+// have worked — so "no offer has enough VRAM" is true of the question asked
+// and misleading about the market. One more search, without the ceiling and
+// only once the request has already failed, turns that into a choice: raise
+// the ceiling, or change the model.
+//
+// Silence on any failure of its own. It is advice on a path that has already
+// failed, and a check that cannot run proves nothing (§4a).
+func (o *Orchestrator) moreCardsWouldFit(ctx context.Context, c core.Criteria,
+	fits rank.FitFunc, policy rank.Policy) string {
+
+	if c.MaxGPUCount <= 0 {
+		return "" // nothing was ruled out on card count
+	}
+	ceiling := c.MaxGPUCount
+	c.MaxGPUCount = 0
+	o.emit("search", "nothing fits within %d gpu(s); checking hosts with more cards", ceiling)
+	offers, err := o.Provider.Search(ctx, c)
+	if err != nil || len(offers) == 0 {
+		return ""
+	}
+	sel := rank.Select(offers, c, fits, policy)
+	if sel.Selected == nil || sel.Selected.Offer.GPUCount <= ceiling {
+		return ""
+	}
+	alt := sel.Selected.Offer
+	return fmt.Sprintf("  With more cards: %s ($%.2f/hr) would fit — raise --max-gpus to %d.\n",
+		alt.Hardware(), alt.PriceHr, alt.GPUCount)
 }
 
 // weightBytes asks the runtime how large the weights it will fetch are.

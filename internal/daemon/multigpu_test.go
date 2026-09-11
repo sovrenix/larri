@@ -125,6 +125,92 @@ func TestMaxGPUsIsHonoured(t *testing.T) {
 	}
 }
 
+// Honouring the ceiling must not hide what it cost. The search never returned
+// the hosts that would have worked, so "no offer has enough VRAM" is true of
+// the question asked and misleading about the market. Issue #2 asked for the
+// multi-GPU alternative to be named before declaring the model unsatisfiable.
+func TestACeilingThatRuledOutTheFitNamesIt(t *testing.T) {
+	o, p := multiGPUOrch(t, multiGPUMarket(), bigModel)
+	req := bigModelReq()
+	req.Criteria = core.Criteria{MaxGPUCount: 1}
+	_, err := o.Offers(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	for _, want := range []string{"2× RTX PRO 6000 192GB", "raise --max-gpus to 2"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not name the multi-GPU fit (%q): %v", want, err)
+		}
+	}
+	if p.Count() != 0 {
+		t.Fatal("naming an alternative must not rent it")
+	}
+}
+
+// With no ceiling nothing was ruled out on card count, so there is nothing to
+// look for: a second search would cost a round trip and say nothing new.
+func TestNoCeilingMeansNoSecondSearch(t *testing.T) {
+	market := []core.Offer{
+		{Provider: "fake", OfferID: "small", GPUModel: "RTX 4090", GPUCount: 1,
+			VRAMPerGPUGB: 24, PriceHr: 0.40, Reliability: 0.99, MachineID: "m1"},
+	}
+	o, p := multiGPUOrch(t, market, bigModel)
+	if _, err := o.Offers(context.Background(), bigModelReq()); err == nil {
+		t.Fatal("expected a refusal")
+	}
+	searches := 0
+	for _, c := range p.Calls {
+		if c == "Search" {
+			searches++
+		}
+	}
+	if searches != 1 {
+		t.Errorf("searched %d times with no ceiling to lift", searches)
+	}
+}
+
+// A multi-GPU placement is explained card by card: an aggregate figure hides
+// whether one card is at its ceiling, and says nothing about what the extra
+// cards buy. For a layer-splitting engine that is memory, not speed.
+func TestShardedPlacementIsExplainedPerCard(t *testing.T) {
+	o, _ := multiGPUOrch(t, multiGPUMarket(), bigModel)
+	events := make(chan Event, 256)
+	o.Events = events
+	if _, err := o.Offers(context.Background(), bigModelReq()); err != nil {
+		t.Fatal(err)
+	}
+	close(events)
+	var lines []string
+	for e := range events {
+		lines = append(lines, e.Message)
+	}
+	all := strings.Join(lines, "\n")
+	for _, want := range []string{"sharding across all 2 cards", "per card: about", "usable",
+		"take turns on each token"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("placement not explained (%q missing):\n%s", want, all)
+		}
+	}
+}
+
+// A tensor-parallel engine runs every card on every token, so the layer-split
+// caveat would be false there and must not be said.
+func TestTensorParallelPlacementMakesNoLayerSplitClaim(t *testing.T) {
+	o, _ := multiGPUOrch(t, multiGPUMarket(), bigModel)
+	o.Runtime = rfake.New(rfake.Behaviour{TensorParallel: true})
+	events := make(chan Event, 256)
+	o.Events = events
+	if _, err := o.Offers(context.Background(), bigModelReq()); err != nil {
+		t.Fatal(err)
+	}
+	close(events)
+	for e := range events {
+		if strings.Contains(e.Message, "take turns") {
+			t.Errorf("layer-split caveat said of a tensor-parallel engine: %s", e.Message)
+		}
+	}
+}
+
 // vLLM refuses a tensor-parallel degree that does not divide the model's
 // attention heads, and it refuses it at engine init — on a machine that is
 // already billing. So the cards it cannot reach must not be counted as VRAM

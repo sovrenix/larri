@@ -165,7 +165,7 @@ func (p *Provider) Create(ctx context.Context, o core.Offer, spec provider.Creat
 		GPUTypeIDs:        []string{gpuTypeID(o.OfferID)},
 		GPUCount:          maxInt(o.GPUCount, 1),
 		GPUTypePriority:   "availability",
-		CloudType:         "SECURE",
+		CloudType:         "SECURE", // the cloud catalogueQuery prices; change both or neither
 		ComputeType:       "GPU",
 		Interruptible:     o.Interruptible,
 		SupportPublicIP:   true,

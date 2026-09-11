@@ -82,13 +82,21 @@ func (g gpuType) priceAt(count int) *gpuPrice {
 // Every GPU count is aliased into the same query rather than fetched in a
 // round trip each, so pricing the whole market at every size costs exactly
 // what pricing it at one size cost before.
+//
+// Priced on **Secure Cloud**, because that is the only cloud Create rents
+// from. Without the filter lowestPrice answers across both clouds, which in
+// practice means Community's rate — and a live pod quoted at $2.78/hr from the
+// catalogue billed $3.18/hr, 14% above the figure ranking chose it on and
+// above the --max-price it was meant to respect. Stock is read the same way,
+// and it disagrees too: 2× A100 SXM was Medium on Secure while Community had
+// none at all.
 const catalogueQuery = `query {
   gpuTypes {
     id displayName memoryInGb secureCloud communityCloud maxGpuCount
-    price1: lowestPrice(input: {gpuCount: 1}) { minimumBidPrice uninterruptablePrice stockStatus }
-    price2: lowestPrice(input: {gpuCount: 2}) { minimumBidPrice uninterruptablePrice stockStatus }
-    price4: lowestPrice(input: {gpuCount: 4}) { minimumBidPrice uninterruptablePrice stockStatus }
-    price8: lowestPrice(input: {gpuCount: 8}) { minimumBidPrice uninterruptablePrice stockStatus }
+    price1: lowestPrice(input: {gpuCount: 1, secureCloud: true}) { minimumBidPrice uninterruptablePrice stockStatus }
+    price2: lowestPrice(input: {gpuCount: 2, secureCloud: true}) { minimumBidPrice uninterruptablePrice stockStatus }
+    price4: lowestPrice(input: {gpuCount: 4, secureCloud: true}) { minimumBidPrice uninterruptablePrice stockStatus }
+    price8: lowestPrice(input: {gpuCount: 8, secureCloud: true}) { minimumBidPrice uninterruptablePrice stockStatus }
   }
 }`
 
@@ -96,7 +104,7 @@ const catalogueQuery = `query {
 type dropReason string
 
 const (
-	dropUnpriced      dropReason = "no price"
+	dropUnpriced      dropReason = "no secure-cloud price"
 	dropOutOfStock    dropReason = "out of stock"
 	dropUnpurchasable dropReason = "not a rentable type"
 	dropTooManyGPUs   dropReason = "more gpus than the type allows"

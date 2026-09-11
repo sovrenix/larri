@@ -27,7 +27,8 @@ type Shortfall struct {
 	Best        *core.Offer // best offer among those considered, may be nil
 	BestVRAMB   uint64      // what the engine could have used on Best
 	BestShards  int         // how many of Best's cards it could have used
-	Considered  int         // how many offers were weighed, single- and multi-GPU
+	Considered  int         // how many offers were weighed
+	MultiGPU    bool        // whether any of them had more than one card
 	CheapestFit *core.Offer // cheapest offer that would fit, may be nil
 	Suggestions []Suggestion
 }
@@ -67,6 +68,9 @@ func Analyse(req Request, candidates []core.Offer) Shortfall {
 	var bestAvail uint64
 	for i := range sorted {
 		o := sorted[i]
+		if o.GPUCount > 1 {
+			s.MultiGPU = true
+		}
 		shards := req.shards(o.GPUCount)
 		avail := ShardVRAM(o.VRAMPerGPUGB, shards)
 		need := s.RequiredB
@@ -191,9 +195,16 @@ func (s Shortfall) String() string {
 		// The count is named because multi-GPU hosts are in the list and were
 		// considered: "no offer has enough VRAM" otherwise invites the reply
 		// that two of them obviously would.
-		fmt.Fprintf(&b, "  No offer on the table has enough VRAM at this size, "+
-			"single or multi-GPU (%d considered, up to %s usable).\n",
-			s.Considered, HumanBytes(s.BestVRAMB))
+		// "single or multi-GPU" only when multi-GPU hosts were in fact
+		// weighed. Under a --max-gpus 1 ceiling they were not, and saying so
+		// would claim a search that never happened.
+		kind := ""
+		if s.MultiGPU {
+			kind = ", single or multi-GPU"
+		}
+		fmt.Fprintf(&b, "  No offer on the table has enough VRAM at this size%s "+
+			"(%d considered, up to %s usable).\n",
+			kind, s.Considered, HumanBytes(s.BestVRAMB))
 	}
 
 	var tries []string
