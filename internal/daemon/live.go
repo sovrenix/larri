@@ -785,6 +785,24 @@ func weightsHost(spec core.ModelSpec) string {
 	}
 }
 
+// placedFacts re-resolves the model's architecture for the shard correction.
+//
+// It comes from the cache in every ordinary case — the same revision was
+// already resolved before the search — so this costs nothing on the happy
+// path. A miss is not a failure: zero-valued facts make Shards fall back to
+// its power-of-two reading, which is the same answer it gives any model whose
+// head count the repository does not publish.
+func (o *Orchestrator) placedFacts(ctx context.Context, rig *core.Rig) sizing.Facts {
+	if o.Resolver == nil {
+		return sizing.Facts{}
+	}
+	f, err := o.Resolver.Resolve(ctx, rig.Model.Ref, rig.Model.Revision)
+	if err != nil {
+		return sizing.Facts{}
+	}
+	return f
+}
+
 // verifyPlacedHardware re-runs the fit check against the machine that was
 // actually provisioned.
 func (o *Orchestrator) verifyPlacedHardware(ctx context.Context, sess runtime.Session, rig *core.Rig) error {
@@ -814,10 +832,19 @@ func (o *Orchestrator) verifyPlacedHardware(ctx context.Context, sess runtime.Se
 	// A box with fewer cards than the listing promised still has to shard the
 	// model across what is actually there, so the launch plan is corrected to
 	// the hardware rather than to the advertisement.
-	if gpus > 0 && gpus != rig.Plan.TensorParallelSize {
-		o.warn("boot", "listing promised %d gpu(s), host has %d — sharding across %d",
-			rig.Plan.TensorParallelSize, gpus, gpus)
-		rig.Plan.TensorParallelSize = gpus
+	//
+	// Corrected through the same shard rule selection used, never to the raw
+	// card count: vLLM refuses a tensor-parallel degree that does not divide
+	// the model's attention heads, so handing it "six, because the box has
+	// six" fails at engine init on a machine that is already billing.
+	if gpus > 0 {
+		facts := o.placedFacts(ctx, rig)
+		want := sizing.Shards(facts, gpus, o.Runtime.Requires().TensorParallel)
+		if want != rig.Plan.TensorParallelSize {
+			o.warn("boot", "listing promised %d gpu(s), host has %d — sharding across %d",
+				rig.Plan.TensorParallelSize, gpus, want)
+			rig.Plan.TensorParallelSize = want
+		}
 	}
 	// The plan was sized before a card was known, so its memory fraction is a
 	// placeholder. Now that the hardware has answered, ask the runtime for as

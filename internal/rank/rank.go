@@ -118,6 +118,7 @@ const (
 	ReasonDeverified    Reason = "verification-withdrawn"
 	ReasonInterruptible Reason = "interruptible-not-permitted"
 	ReasonMaxPrice      Reason = "above-max-price"
+	ReasonGPUCount      Reason = "gpu-count-outside-criteria"
 	ReasonRegion        Reason = "region-blocked"
 	ReasonCostlier      Reason = "costlier-than-selection"
 )
@@ -229,6 +230,22 @@ func classify(o core.Offer, c core.Criteria, fits FitFunc, p Policy,
 	if c.MaxPriceHr > 0 && o.PriceHr > c.MaxPriceHr {
 		return ReasonMaxPrice, fmt.Sprintf("$%.3f/hr above the $%.2f/hr ceiling",
 			o.PriceHr, c.MaxPriceHr)
+	}
+	// Enforced here as well as in the provider's own query, for the same
+	// reason the reliability floor is: one provider filters server-side and
+	// the other cannot, and a bound that holds only where it happens to be
+	// implemented is not a bound.
+	if c.GPUCount > 0 && o.GPUCount < c.GPUCount {
+		return ReasonGPUCount, fmt.Sprintf("%d gpu(s), fewer than the %d asked for",
+			o.GPUCount, c.GPUCount)
+	}
+	if c.MaxGPUCount > 0 && o.GPUCount > c.MaxGPUCount {
+		return ReasonGPUCount, fmt.Sprintf("%d gpu(s), above the ceiling of %d",
+			o.GPUCount, c.MaxGPUCount)
+	}
+	if c.VRAMTotalGB > 0 && o.VRAMTotalGB() < c.VRAMTotalGB {
+		return ReasonGPUCount, fmt.Sprintf("%dGB aggregate, below the %dGB asked for",
+			o.VRAMTotalGB(), c.VRAMTotalGB)
 	}
 	if fits != nil {
 		if ok, detail := fits(o); !ok {

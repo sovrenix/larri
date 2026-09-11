@@ -52,7 +52,40 @@ var quantBits = map[string]float64{
 	"q4_k_m": 4.85, "q4_k_s": 4.58, "q4_0": 4.55, "q4_1": 5.00,
 	"q3_k_m": 3.91, "q3_k_s": 3.50, "q3_k_l": 4.27,
 	"q2_k":   3.35,
-	"iq4_xs": 4.25, "iq3_xxs": 3.06, "iq2_xxs": 2.06,
+	"iq4_nl": 4.50, "iq4_xs": 4.25,
+	"iq3_m": 3.66, "iq3_s": 3.44, "iq3_xs": 3.30, "iq3_xxs": 3.06,
+	"iq2_m": 2.70, "iq2_s": 2.50, "iq2_xs": 2.31, "iq2_xxs": 2.06,
+	"iq1_m": 1.75, "iq1_s": 1.56,
+
+	// Unsloth's dynamic quantisations, published as UD-* directories and
+	// tagged *_XL inside the filenames. They are not the k-quant their name
+	// resembles: the method keeps attention and shared-expert tensors at
+	// higher precision, so the average lands well above the nominal figure —
+	// and furthest above it on the MoE models these are mostly published for,
+	// where those tensors are a large share of a small active set.
+	//
+	// Measured rather than derived, from unsloth/Qwen3.8-Flash-Next-GGUF
+	// against the 180B base: UD-IQ1_S is 72.5 GB, which is 3.22 bits per
+	// weight and not the 1.56 its name suggests. Sizing those by the nominal
+	// figure would have under-committed by a factor of two, and an
+	// under-committed plan is one that OOMs after the rig is paid for.
+	// Dense models carry less of that uplift, so these err high there — the
+	// direction §7.2 requires.
+	//
+	// The UD prefix has to be typed for the IQ figures to apply, because
+	// nothing else distinguishes them: the tag inside a UD file's name is
+	// plain "IQ1_M", so a bare --quantization IQ1_M against one of these
+	// repositories sizes at the nominal 1.75 and under-commits. The k-quants
+	// do not have that problem — their *_XL suffix appears in the filename —
+	// and the durable fix for the rest is to size a GGUF from the file sizes
+	// the repository publishes rather than from any table.
+	"q2_k_xl": 3.51, "ud-q2_k_xl": 3.51,
+	"q3_k_xl": 4.00, "ud-q3_k_xl": 4.00,
+	"q4_k_xl": 4.95, "ud-q4_k_xl": 4.95,
+	"q5_k_xl": 7.03, "ud-q5_k_xl": 7.03,
+	"q6_k_xl": 7.52, "ud-q6_k_xl": 7.52,
+	"ud-iq1_s": 3.22, "ud-iq1_m": 3.31,
+	"ud-iq3_xxs": 3.64, "ud-iq4_xs": 4.16,
 }
 
 // CommonQuantizations are the schemes worth naming in an error message. The

@@ -217,13 +217,26 @@ func TestRunpodCatalogueLive(t *testing.T) {
 		// not kept in sync — the catalogue advertises a literal "unknown" and
 		// MIG partitions the create enum lacks — and an offer that cannot be
 		// bought is one selection will choose and then fail on.
-		if !purchasable(o.OfferID) {
+		if !purchasable(gpuTypeID(o.OfferID)) {
 			t.Errorf("offer id %q is not purchasable", o.OfferID)
+		}
+		if o.GPUCount < 1 {
+			t.Errorf("offer %s carries no card count; the aggregate VRAM the fit "+
+				"test reads is per-card times this", o.OfferID)
 		}
 		if o.MachineID != "" || o.HasReliability() {
 			t.Errorf("offer %s invented host detail runpod does not publish", o.OfferID)
 		}
 	}
-	t.Logf("catalogue: %d rentable gpu types, cheapest $%.3f/hr (%s)",
-		len(offers), offers[0].PriceHr, offers[0].GPUModel)
+	types := map[string]bool{}
+	var multi int
+	for _, o := range offers {
+		types[gpuTypeID(o.OfferID)] = true
+		if o.GPUCount > 1 {
+			multi++
+		}
+	}
+	t.Logf("catalogue: %d offers over %d rentable gpu types (%d multi-GPU), "+
+		"cheapest $%.3f/hr (%s)",
+		len(offers), len(types), multi, offers[0].PriceHr, offers[0].Hardware())
 }

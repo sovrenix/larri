@@ -92,7 +92,7 @@ func (m Model) serving() string {
 	if m.Rig != nil {
 		row("model", value.Render(m.Rig.Model.ServedName)+dim.Render("  ("+m.Rig.Model.Ref+")"))
 		row("hardware", fmt.Sprintf("%s %s  %s",
-			value.Render(m.Rig.Offer.GPUModel),
+			value.Render(m.Rig.Offer.GPULabel()),
 			dim.Render(fmt.Sprintf("%dGB", m.Rig.Offer.VRAMTotalGB())),
 			money.Render(fmt.Sprintf("$%.3f/hr", m.Rig.Offer.PriceHr))))
 		row("runtime", string(m.Rig.Runtime))

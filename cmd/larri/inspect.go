@@ -120,7 +120,7 @@ func cmdOffers(ctx context.Context, args []string) error {
 			rel = fmt.Sprintf("%.2f", c.Offer.Reliability)
 		}
 		fmt.Printf("  %s%-2d %-18s %-6s $%-9.3f %-6s %s\n",
-			mark, i+1, c.Offer.GPUModel,
+			mark, i+1, c.Offer.GPULabel(),
 			fmt.Sprintf("%dGB", c.Offer.VRAMTotalGB()),
 			c.Offer.PriceHr, rel, c.Offer.Provider)
 	}

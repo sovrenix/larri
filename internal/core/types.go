@@ -18,15 +18,26 @@ package core
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
 // Criteria is what the operator asks for.
 type Criteria struct {
-	GPUModel       []string `json:"gpu_model,omitempty"` // ["A100","H100"]; empty means any
-	GPUCount       int      `json:"gpu_count,omitempty"`
-	VRAMPerGPUGB   int      `json:"vram_per_gpu_gb,omitempty"`
-	VRAMTotalGB    int      `json:"vram_total_gb,omitempty"`
+	GPUModel     []string `json:"gpu_model,omitempty"` // ["A100","H100"]; empty means any
+	GPUCount     int      `json:"gpu_count,omitempty"` // floor, not an exact count
+	VRAMPerGPUGB int      `json:"vram_per_gpu_gb,omitempty"`
+	VRAMTotalGB  int      `json:"vram_total_gb,omitempty"`
+
+	// MaxGPUCount caps how many cards an offer may carry. Zero means no cap.
+	//
+	// It is a ceiling rather than a preference because the cost of a card
+	// that holds no part of the model is the same as one that does. A host
+	// with sixteen small cards can aggregate to a large number and still be
+	// the wrong buy — interconnect, one CUDA context per card, and a shard
+	// degree the engine may refuse — so an operator who wants at most two
+	// says so and is not talked out of it by the ranking.
+	MaxGPUCount    int      `json:"max_gpu_count,omitempty"`
 	CPUCores       int      `json:"cpu_cores,omitempty"`
 	RAMGB          int      `json:"ram_gb,omitempty"`
 	DiskGB         int      `json:"disk_gb,omitempty"`
@@ -136,6 +147,27 @@ type Offer struct {
 
 // VRAMTotalGB is the aggregate VRAM an offer provides.
 func (o Offer) VRAMTotalGB() int { return o.VRAMPerGPUGB * o.GPUCount }
+
+// Hardware names an offer the way an operator has to read it.
+//
+// The count is part of the identity once multi-GPU hosts are in the list.
+// "RTX PRO 6000 96GB" is one card or four depending on the listing, and a
+// message that omits which leaves the reader unable to tell an aggregate from
+// a per-card figure — the exact ambiguity that makes a shortfall report
+// unreadable.
+func (o Offer) Hardware() string {
+	return fmt.Sprintf("%s %dGB", o.GPULabel(), o.VRAMTotalGB())
+}
+
+// GPULabel is the card, with its count when there is more than one. It exists
+// for the surfaces that already show VRAM in a column of their own, so they
+// can gain the count without printing the capacity twice.
+func (o Offer) GPULabel() string {
+	if o.GPUCount > 1 {
+		return fmt.Sprintf("%d× %s", o.GPUCount, o.GPUModel)
+	}
+	return o.GPUModel
+}
 
 // Instance is a live provider resource.
 type Instance struct {

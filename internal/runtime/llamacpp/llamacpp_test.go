@@ -5,6 +5,7 @@ package llamacpp
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -195,5 +196,63 @@ func TestLaunchLeavesThePathAloneForAPathBinary(t *testing.T) {
 	}
 	if strings.Contains(cmd, "LD_LIBRARY_PATH") {
 		t.Errorf("needlessly rewrote the library path:\n%s", cmd)
+	}
+}
+
+// Every part has to arrive. A model large enough to need more than one card
+// is published in parts, so for this engine that is the case rather than an
+// edge case — and fetching only the first left the engine failing on a
+// missing tensor, which reads exactly like a corrupt download.
+func TestBootstrapFetchesEveryShard(t *testing.T) {
+	r := New()
+	r.SetGGUF("UD-Q4_K_XL/model-00001-of-00003.gguf")
+	sess := &recSession{out: "llama-server"}
+	if err := r.Bootstrap(context.Background(), sess, spec(), core.SizingPlan{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		part := fmt.Sprintf("model-%05d-of-00003.gguf", i)
+		var seen bool
+		for _, c := range sess.cmds {
+			if strings.Contains(c, part) {
+				seen = true
+			}
+		}
+		if !seen {
+			t.Errorf("part %d (%s) was never fetched", i, part)
+		}
+	}
+}
+
+// The URL keeps the repository's path and the destination does not: the
+// download created the model directory but never the quantisation directory
+// inside it, so curl failed to open its destination before a byte moved.
+func TestDownloadWritesBesideTheModelDirNotUnderIt(t *testing.T) {
+	r := New()
+	cmd := r.downloadCmd(spec(), "UD-Q4_K_XL/model-00001-of-00003.gguf")
+	if !strings.Contains(cmd, "resolve/main/UD-Q4_K_XL/model-00001-of-00003.gguf") {
+		t.Errorf("the URL lost the repository path: %s", cmd)
+	}
+	if strings.Contains(cmd, ModelDir+"/UD-Q4_K_XL/") {
+		t.Errorf("the destination is a directory nothing creates: %s", cmd)
+	}
+	if !strings.Contains(cmd, ModelDir+"/model-00001-of-00003.gguf") {
+		t.Errorf("the destination is not flattened into the model dir: %s", cmd)
+	}
+}
+
+// And the launch has to be pointed at the file that was actually written.
+func TestLaunchPointsAtTheFlattenedFile(t *testing.T) {
+	r := New()
+	r.launcher = "llama-server"
+	r.SetGGUF("UD-Q4_K_XL/model-00001-of-00003.gguf")
+	cmd, err := r.launchCommand(spec(), core.SizingPlan{ContextLen: 4096},
+		runtime.Endpoint{Host: runtime.Loopback, Port: RemotePort, Model: "m",
+			Key: secret.New("k")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cmd, ModelDir+"/model-00001-of-00003.gguf") {
+		t.Errorf("launch points somewhere nothing was downloaded: %s", cmd)
 	}
 }

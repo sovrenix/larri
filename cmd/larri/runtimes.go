@@ -62,13 +62,20 @@ func newLlamaCpp(spec core.ModelSpec) (runtime.Runtime, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	file, err := llamacpp.ResolveGGUF(ctx, spec.Ref, spec.Quantization,
+	w, err := llamacpp.ResolveGGUF(ctx, spec.Ref, spec.Quantization,
 		secret.New(os.Getenv("HF_TOKEN")))
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("  weights     %s\n", file)
-	r.SetGGUF(file)
+	if w.Bytes > 0 {
+		// Said, because it is the number the rest of the run turns on: the
+		// VRAM to rent, the download to wait for, and the bill for both. A
+		// measured figure and an estimated one deserve to look different.
+		fmt.Printf("  weights     %s (%s)\n", w.File, sizing.HumanBytes(w.Bytes))
+	} else {
+		fmt.Printf("  weights     %s\n", w.File)
+	}
+	r.SetWeights(w)
 	return r, nil
 }
 

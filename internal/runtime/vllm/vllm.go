@@ -383,6 +383,7 @@ func (r *Runtime) Requires() runtime.Requirements {
 	return runtime.Requirements{
 		MinComputeCapability: lowestArch(ImageArchList),
 		MinCUDA:              cudaTimesTen(ImageCUDA),
+		TensorParallel:       true,
 		Why:                  "vLLM",
 	}
 }

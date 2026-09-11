@@ -31,7 +31,11 @@ type Behaviour struct {
 	// NeverReady starts the server but never completes a request — the case
 	// a TCP-connect readiness check would wrongly call healthy.
 	NeverReady bool
-	// WeightBytes is the simulated download size, reported through Progress.
+	// WeightBytes is the simulated download size, reported through Progress
+	// and answered to WeightSizer — the same number in both, because a
+	// runtime that knows what it is about to fetch knows what it will load.
+	// Zero means it cannot say, which is the case that falls back to the
+	// estimate.
 	WeightBytes int64
 	// BindHost overrides the bind address, to prove a non-loopback bind is
 	// rejected rather than merely warned about.
@@ -40,6 +44,10 @@ type Behaviour struct {
 	// dies — the case where waiting out a stall timeout bills for an outcome
 	// that has already been decided.
 	ExitsAfterLaunch bool
+	// TensorParallel makes this engine split a model the way vLLM does, so
+	// selection has to ask whether a degree divides the model's heads rather
+	// than assuming every card on the host is usable.
+	TensorParallel bool
 }
 
 // Runtime is a fake inference engine.
@@ -53,11 +61,24 @@ type Runtime struct {
 var _ runtime.Runtime = (*Runtime)(nil)
 
 // New builds a fake runtime.
-func New(b Behaviour) *Runtime {
-	if b.WeightBytes == 0 {
-		b.WeightBytes = 19_100_000_000 // ~19.1 GB, a realistic q4 30B
+func New(b Behaviour) *Runtime { return &Runtime{behaviour: b} }
+
+// defaultDownloadBytes is what an unconfigured fake pretends to download:
+// ~19.1 GB, a realistic q4 30B.
+const defaultDownloadBytes = 19_100_000_000
+
+// downloadBytes is the size Progress reports.
+//
+// The default is applied here rather than stored in Behaviour, so that an
+// unset field stays unset for everything else. It did not, once: filling it in
+// at construction made every fake runtime answer WeightSizer with 19.1 GB, and
+// a 400B model that no card can hold sized as a 19 GB one and passed the fit
+// check on a single 24 GB card.
+func (r *Runtime) downloadBytes() int64 {
+	if r.behaviour.WeightBytes <= 0 {
+		return defaultDownloadBytes
 	}
-	return &Runtime{behaviour: b}
+	return r.behaviour.WeightBytes
 }
 
 func (r *Runtime) Kind() core.RuntimeKind { return "fake" }
@@ -91,8 +112,8 @@ func (r *Runtime) Bootstrap(ctx context.Context, _ runtime.Session, spec core.Mo
 		send(runtime.Progress{
 			Phase:      runtime.PhaseWeightsDownload,
 			Percent:    pct,
-			BytesDone:  int64(float64(r.behaviour.WeightBytes) * pct / 100),
-			BytesTotal: r.behaviour.WeightBytes,
+			BytesDone:  int64(float64(r.downloadBytes()) * pct / 100),
+			BytesTotal: r.downloadBytes(),
 		})
 	}
 	return nil
@@ -180,7 +201,17 @@ func (s *Session) Dial(context.Context, int) (io.ReadWriteCloser, error) { retur
 func (s *Session) Close() error                                          { return nil }
 
 // Requires reports no hardware floor by default.
-func (r *Runtime) Requires() runtime.Requirements { return runtime.Requirements{} }
+// WeightBytes implements runtime.WeightSizer.
+func (r *Runtime) WeightBytes() uint64 {
+	if r.behaviour.WeightBytes <= 0 {
+		return 0
+	}
+	return uint64(r.behaviour.WeightBytes)
+}
+
+func (r *Runtime) Requires() runtime.Requirements {
+	return runtime.Requirements{TensorParallel: r.behaviour.TensorParallel, Why: "the engine"}
+}
 
 // Alive reports whether the fake server process would still exist.
 func (r *Runtime) Alive(context.Context, runtime.Session) (bool, error) {

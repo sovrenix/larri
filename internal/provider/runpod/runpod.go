@@ -60,18 +60,38 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 	}
 
 	wantSpot := c.Interruptible == core.Allow || c.Interruptible == core.Require
-	out := make([]core.Offer, 0, len(data.GPUTypes))
+	out := make([]core.Offer, 0, len(data.GPUTypes)*len(offerCounts))
 	dropped := map[dropReason]int{}
 	for _, g := range data.GPUTypes {
-		o, why, ok := g.normalise(wantSpot)
-		if !ok {
+		// One catalogue entry is several purchases. A model too large for the
+		// biggest single card is routinely well within reach of two of them,
+		// and pricing only the single-card size is what reported those models
+		// unsatisfiable on a provider that sells eight-card pods.
+		//
+		// A type is reported skipped only when *no* size of it could be
+		// offered, and under the first reason that stopped it. Counting per
+		// size instead would report one out-of-stock type four times, and a
+		// type that is short at eight cards but rentable at two is not
+		// skipped at all.
+		var offered bool
+		var why dropReason
+		for _, n := range offerCounts {
+			o, reason, ok := g.normalise(n, wantSpot)
+			if !ok {
+				if why == "" {
+					why = reason
+				}
+				continue
+			}
+			offered = true
+			if !matches(o, c) {
+				continue
+			}
+			out = append(out, o)
+		}
+		if !offered && why != "" {
 			dropped[why]++
-			continue
 		}
-		if !matches(o, c) {
-			continue
-		}
-		out = append(out, o)
 	}
 	// Said out loud, and by reason. An operator looking for an RTX 3070 that
 	// RunPod lists at $0.13 should hear that it is out of stock, rather than
@@ -96,6 +116,15 @@ func matches(o core.Offer, c core.Criteria) bool {
 		return false
 	}
 	if c.VRAMPerGPUGB > 0 && o.VRAMPerGPUGB < c.VRAMPerGPUGB {
+		return false
+	}
+	if c.VRAMTotalGB > 0 && o.VRAMTotalGB() < c.VRAMTotalGB {
+		return false
+	}
+	if c.GPUCount > 0 && o.GPUCount < c.GPUCount {
+		return false
+	}
+	if c.MaxGPUCount > 0 && o.GPUCount > c.MaxGPUCount {
 		return false
 	}
 	if len(c.GPUModel) > 0 {
@@ -133,7 +162,7 @@ func (p *Provider) Create(ctx context.Context, o core.Offer, spec provider.Creat
 	req := createRequest{
 		Name:              spec.Label,
 		ImageName:         spec.Image,
-		GPUTypeIDs:        []string{o.OfferID},
+		GPUTypeIDs:        []string{gpuTypeID(o.OfferID)},
 		GPUCount:          maxInt(o.GPUCount, 1),
 		GPUTypePriority:   "availability",
 		CloudType:         "SECURE",
@@ -286,6 +315,12 @@ func ports(want []int) []string {
 // §12.4 says to expect and recover from — re-downloading tens of gigabytes
 // after an interruption costs more than the storage does. The container disk
 // gets a fixed working allowance for the image and its scratch.
+//
+// Saying so here did not make it true. llama.cpp wrote to /root/.larri, which
+// is the container disk, so the volume sat empty while the download filled
+// the 20 GB allowance. startScript now links that directory onto the volume.
+// vLLM still writes its Hugging Face cache under /root/.cache and has the same
+// 20 GB ceiling on this provider.
 const containerDiskGB = 20
 
 func containerDisk(total int) int { return containerDiskGB }
@@ -383,6 +418,19 @@ func shortest(err error) string {
 //     one that never started.
 func startScript(onStart string) string {
 	script := `set -e
+
+# LARRI keeps what it downloads under /root/.larri. On RunPod that path sits
+# on the container disk, fixed at 20 GB, while the disk the operator sized is
+# the volume at /workspace — so a 111 GB model died at 20 GB whatever --disk
+# said. The directory is placed on the volume here, at the boundary that
+# knows where the volume is, and no runtime has to learn which provider it is
+# on. First, before anything else can create the directory and turn the link
+# into a link inside it; and never fatal, because a pod that fails this still
+# serves any model that fits in 20 GB.
+if mkdir -p /workspace/.larri 2>/dev/null && [ ! -e /root/.larri ]; then
+  ln -s /workspace/.larri /root/.larri || true
+fi
+
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server
 mkdir -p /root/.ssh && chmod 700 /root/.ssh

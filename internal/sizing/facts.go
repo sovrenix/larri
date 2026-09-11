@@ -21,6 +21,13 @@ type Facts struct {
 	HiddenSize    int
 	MaxContextLen int
 
+	// AttentionHeads is what decides whether a model can shard across a
+	// given number of cards. Tensor parallelism splits the heads, so a
+	// degree that does not divide them is rejected by the engine at init —
+	// after the box is rented. It is zero when the repository does not say,
+	// and zero means unknown rather than unshardable (§4a).
+	AttentionHeads int
+
 	// Ref and Revision identify what these facts describe. Revision is a
 	// resolved commit rather than a branch name, so a cache hit is a fact
 	// about an immutable object.

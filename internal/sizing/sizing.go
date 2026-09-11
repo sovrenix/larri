@@ -42,7 +42,9 @@ const (
 	activationFactor = 2.0
 
 	// minOverheadBytes is the floor for CUDA context, allocator arenas, and
-	// fragmentation.
+	// fragmentation. It is charged **per card**: each GPU in a shard set
+	// carries its own context and its own allocator, so an eight-way split
+	// pays this eight times over even though the weights are divided.
 	minOverheadBytes = 1.0 * GiB
 
 	// overheadFraction is the proportional term above that floor.
@@ -60,7 +62,49 @@ type Request struct {
 	// AvailableVRAMBytes is the VRAM of the candidate hardware. Zero means
 	// "size it, do not judge fit".
 	AvailableVRAMBytes uint64
-	GPUCount           int
+
+	// GPUCount is how many cards the model will actually be placed on, which
+	// is Shards(...) rather than the number the host advertises. It raises
+	// the overhead floor — one CUDA context per card — and is carried into
+	// the plan as the tensor-parallel degree.
+	GPUCount int
+
+	// Shards answers, for a host with that many cards, how many the engine
+	// can reach. Only the shortfall report needs it, because that report
+	// reasons about offers rather than about one chosen machine. Nil means
+	// every card counts, which is what a layer-splitting engine does anyway.
+	Shards func(gpus int) int
+
+	// WeightBytes is the measured size of the weights this rig will load,
+	// when the repository published it. Zero means it did not, and the
+	// estimate from Params and the quantisation stands in.
+	//
+	// A measurement beats that estimate outright, because the estimate is
+	// two approximations multiplied: a parameter count rounded to a
+	// marketing figure, and a table of average bits per weight that no
+	// publisher is obliged to agree with. Unsloth's UD-IQ1_S is 3.22 bits
+	// per weight where the name says 1.56 — sizing it from the table
+	// under-commits by half, and an under-committed plan OOMs after the rig
+	// is paid for. It also means a quantisation the table has never heard of
+	// still sizes, which matters because the naming schemes keep arriving.
+	//
+	// It belongs here rather than on Facts because it is a fact about a
+	// *file*, not about a model: one repository at one revision publishes a
+	// dozen quantisations, and the facts cache is keyed by revision alone.
+	// Caching this there would hand the next quantisation the last one's
+	// size.
+	WeightBytes uint64
+}
+
+// shards is Request.Shards with the nil case filled in.
+func (r Request) shards(gpus int) int {
+	if gpus < 1 {
+		return 1
+	}
+	if r.Shards == nil {
+		return gpus
+	}
+	return r.Shards(gpus)
 }
 
 // Plan estimates VRAM for a request.
@@ -73,9 +117,15 @@ func Plan(req Request) (core.SizingPlan, error) {
 	if err := req.Facts.Validate(); err != nil {
 		return core.SizingPlan{}, err
 	}
-	bits, err := BitsPerWeight(req.Spec.Quantization)
-	if err != nil {
-		return core.SizingPlan{}, err
+	// A measured size skips the estimate entirely, including its demand that
+	// the quantisation be one the table knows. Nothing downstream needs the
+	// bits figure once the bytes are known.
+	var bits float64
+	if req.WeightBytes == 0 {
+		var err error
+		if bits, err = BitsPerWeight(req.Spec.Quantization); err != nil {
+			return core.SizingPlan{}, err
+		}
 	}
 	conc := req.Concurrency
 	if conc <= 0 {
@@ -108,13 +158,16 @@ func Plan(req Request) (core.SizingPlan, error) {
 	}
 
 	// Weights do not depend on context, so they are computed once.
-	weights := uint64(req.Facts.Params * 1e9 * bits / 8)
+	weights := req.WeightBytes
+	if weights == 0 {
+		weights = uint64(req.Facts.Params * 1e9 * bits / 8)
+	}
 	plan.WeightsBytes = weights
 
 	fit := func(c int) (total, kv uint64) {
 		kv = kvBytes(req.Facts, c, conc, kvElem)
 		act := activationBytes(req.Facts, c, conc)
-		over := overheadBytes(weights, kv)
+		over := overheadBytes(weights, kv, gpus)
 		return uint64(float64(weights+kv+act+over) * safety), kv
 	}
 
@@ -172,10 +225,14 @@ func activationBytes(f Facts, ctxLen, batch int) uint64 {
 		DefaultKVElemBytes * activationFactor)
 }
 
-func overheadBytes(weights, kv uint64) uint64 {
+func overheadBytes(weights, kv uint64, gpus int) uint64 {
+	if gpus < 1 {
+		gpus = 1
+	}
+	floor := minOverheadBytes * float64(gpus)
 	proportional := float64(weights+kv) * overheadFraction
-	if proportional < minOverheadBytes {
-		return uint64(minOverheadBytes)
+	if proportional < floor {
+		return uint64(floor)
 	}
 	return uint64(proportional)
 }
@@ -187,7 +244,7 @@ func reduceContext(req Request, weights uint64, conc, kvElem int, safety float64
 	for c := from / 2; c >= 512; c /= 2 {
 		kv := kvBytes(req.Facts, c, conc, kvElem)
 		act := activationBytes(req.Facts, c, conc)
-		over := overheadBytes(weights, kv)
+		over := overheadBytes(weights, kv, req.GPUCount)
 		if uint64(float64(weights+kv+act+over)*safety) <= req.AvailableVRAMBytes {
 			return c, true
 		}

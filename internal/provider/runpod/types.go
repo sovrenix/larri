@@ -5,10 +5,38 @@ package runpod
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"go.sovrenix.com/larri/internal/core"
 )
+
+// offerCounts are the GPU counts LARRI asks the catalogue to price.
+//
+// Powers of two, and not every count up to maxGpuCount, for two reasons that
+// point the same way. RunPod prices linearly — 2× H100 SXM is exactly twice
+// 1× — so an odd count buys nothing a smaller power of two does not, while
+// vLLM's tensor parallelism only accepts degrees that divide the head count,
+// and published head counts are powers of two or their multiples. Listing 3
+// and 5 would pad the ranked list with sizes the engine then declines.
+var offerCounts = []int{1, 2, 4, 8}
+
+// gpuPrice is what a GPU type costs at one particular count.
+//
+// Stock is per count as well as per type, and the two disagree routinely: a
+// live catalogue read had H100 SXM at High for one card, Medium for two and
+// Low for four. Reading the single-card status and applying it to an
+// eight-card offer is how selection recommends a pod RunPod will refuse to
+// place.
+type gpuPrice struct {
+	MinimumBidPrice      *float64 `json:"minimumBidPrice"`
+	UninterruptablePrice *float64 `json:"uninterruptablePrice"`
+	// StockStatus is High, Medium, Low or absent, and it predicts whether
+	// a create succeeds. Measured, not assumed: an A40 (High) and an RTX
+	// 4090 (Medium) both created on request, while an RTX 3070 (Low) was
+	// refused with "there are no instances currently available".
+	StockStatus *string `json:"stockStatus"`
+}
 
 // gpuType is one entry in the GraphQL catalogue.
 type gpuType struct {
@@ -17,16 +45,32 @@ type gpuType struct {
 	MemoryInGb     int    `json:"memoryInGb"`
 	SecureCloud    bool   `json:"secureCloud"`
 	CommunityCloud bool   `json:"communityCloud"`
-	MaxGPUCount    int    `json:"maxGpuCount"`
-	LowestPrice    *struct {
-		MinimumBidPrice      *float64 `json:"minimumBidPrice"`
-		UninterruptablePrice *float64 `json:"uninterruptablePrice"`
-		// StockStatus is High, Medium, Low or absent, and it predicts whether
-		// a create succeeds. Measured, not assumed: an A40 (High) and an RTX
-		// 4090 (Medium) both created on request, while an RTX 3070 (Low) was
-		// refused with "there are no instances currently available".
-		StockStatus *string `json:"stockStatus"`
-	} `json:"lowestPrice"`
+
+	// MaxGPUCount is how many of this type RunPod will put in one pod. It
+	// was read and discarded until multi-GPU offers existed, which is why a
+	// model needing more VRAM than the largest single card was reported
+	// unsatisfiable on a provider that sells eight-card pods.
+	MaxGPUCount int `json:"maxGpuCount"`
+
+	Price1 *gpuPrice `json:"price1"`
+	Price2 *gpuPrice `json:"price2"`
+	Price4 *gpuPrice `json:"price4"`
+	Price8 *gpuPrice `json:"price8"`
+}
+
+// priceAt returns the catalogue's entry for a GPU count, or nil.
+func (g gpuType) priceAt(count int) *gpuPrice {
+	switch count {
+	case 1:
+		return g.Price1
+	case 2:
+		return g.Price2
+	case 4:
+		return g.Price4
+	case 8:
+		return g.Price8
+	}
+	return nil
 }
 
 // catalogueQuery asks for everything an Offer needs.
@@ -34,10 +78,17 @@ type gpuType struct {
 // The id is requested as well as the display name because the id is what
 // POST /pods accepts — normalising to the pretty name would produce offers
 // that cannot be purchased.
+//
+// Every GPU count is aliased into the same query rather than fetched in a
+// round trip each, so pricing the whole market at every size costs exactly
+// what pricing it at one size cost before.
 const catalogueQuery = `query {
   gpuTypes {
     id displayName memoryInGb secureCloud communityCloud maxGpuCount
-    lowestPrice(input: {gpuCount: 1}) { minimumBidPrice uninterruptablePrice stockStatus }
+    price1: lowestPrice(input: {gpuCount: 1}) { minimumBidPrice uninterruptablePrice stockStatus }
+    price2: lowestPrice(input: {gpuCount: 2}) { minimumBidPrice uninterruptablePrice stockStatus }
+    price4: lowestPrice(input: {gpuCount: 4}) { minimumBidPrice uninterruptablePrice stockStatus }
+    price8: lowestPrice(input: {gpuCount: 8}) { minimumBidPrice uninterruptablePrice stockStatus }
   }
 }`
 
@@ -48,7 +99,34 @@ const (
 	dropUnpriced      dropReason = "no price"
 	dropOutOfStock    dropReason = "out of stock"
 	dropUnpurchasable dropReason = "not a rentable type"
+	dropTooManyGPUs   dropReason = "more gpus than the type allows"
 )
+
+// countSep joins a GPU type id to the number of cards in an offer.
+//
+// RunPod sells one catalogue entry at several sizes, so the type id alone
+// stopped being a unique offer id the moment multi-GPU offers existed —
+// and the provider conformance suite requires uniqueness, because two
+// listings sharing an id would have selection ranking one against itself.
+// The character is one RunPod type ids do not contain, and Create decodes it
+// back to the id the REST API accepts.
+const countSep = "#"
+
+// offerID encodes a purchase: which GPU type, and how many of them.
+func offerID(typeID string, count int) string {
+	return typeID + countSep + strconv.Itoa(count)
+}
+
+// gpuTypeID recovers the id POST /pods accepts from an offer id.
+//
+// Tolerant of a bare type id, because a rig created before offers carried a
+// count is still in state and still has to be destroyable.
+func gpuTypeID(offer string) string {
+	if i := strings.LastIndex(offer, countSep); i >= 0 {
+		return offer[:i]
+	}
+	return offer
+}
 
 // normalise turns a catalogue entry into an offer LARRI can rank.
 //
@@ -65,16 +143,20 @@ const (
 //     reality rather than a permanent exclusion — a type that comes back into
 //     stock comes back into the list.
 //   - **Not purchasable.** The catalogue advertises types POST /pods rejects.
-func (g gpuType) normalise(interruptible bool) (core.Offer, dropReason, bool) {
-	if g.LowestPrice == nil {
+func (g gpuType) normalise(count int, interruptible bool) (core.Offer, dropReason, bool) {
+	if count > 1 && g.MaxGPUCount > 0 && count > g.MaxGPUCount {
+		return core.Offer{}, dropTooManyGPUs, false
+	}
+	lowest := g.priceAt(count)
+	if lowest == nil {
 		return core.Offer{}, dropUnpriced, false
 	}
 	var price float64
 	switch {
-	case interruptible && g.LowestPrice.MinimumBidPrice != nil:
-		price = *g.LowestPrice.MinimumBidPrice
-	case g.LowestPrice.UninterruptablePrice != nil:
-		price = *g.LowestPrice.UninterruptablePrice
+	case interruptible && lowest.MinimumBidPrice != nil:
+		price = *lowest.MinimumBidPrice
+	case lowest.UninterruptablePrice != nil:
+		price = *lowest.UninterruptablePrice
 	default:
 		return core.Offer{}, dropUnpriced, false
 	}
@@ -84,7 +166,7 @@ func (g gpuType) normalise(interruptible bool) (core.Offer, dropReason, bool) {
 	if !purchasable(g.ID) {
 		return core.Offer{}, dropUnpurchasable, false
 	}
-	if !inStock(g.LowestPrice.StockStatus) {
+	if !inStock(lowest.StockStatus) {
 		return core.Offer{}, dropOutOfStock, false
 	}
 	name := g.DisplayName
@@ -93,11 +175,11 @@ func (g gpuType) normalise(interruptible bool) (core.Offer, dropReason, bool) {
 	}
 	return core.Offer{
 		Provider: "runpod",
-		// The GPU type id, because that is what a create call takes. It is
-		// not a machine: see MachineID below.
-		OfferID:       g.ID,
+		// The GPU type id and the number of cards, because a create call
+		// takes both. It is not a machine: see MachineID below.
+		OfferID:       offerID(g.ID, count),
 		GPUModel:      name,
-		GPUCount:      1,
+		GPUCount:      count,
 		VRAMPerGPUGB:  g.MemoryInGb,
 		PriceHr:       price,
 		Interruptible: interruptible,

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -298,9 +299,16 @@ func (o *Orchestrator) warn(phase, format string, args ...any) {
 type UpRequest struct {
 	Criteria core.Criteria
 	Model    core.ModelSpec
-	DiskGB   int
-	HFToken  secret.Secret
-	Confirm  func(offer core.Offer, plan core.SizingPlan) bool
+
+	// DiskGB is the disk to rent. Zero sizes it to the model — the weights
+	// and the image, never below DefaultDiskGB — which is what every surface
+	// should pass unless an operator has named a figure. A figure too small
+	// to hold the weights is refused before the search, not discovered when
+	// the download fills the disk on a host that is already billing.
+	DiskGB int
+
+	HFToken secret.Secret
+	Confirm func(offer core.Offer, plan core.SizingPlan) bool
 
 	// LocalPort is the fixed loopback port clients are wired against. Zero
 	// lets the kernel choose, which is only useful in tests: P3 depends on
@@ -323,6 +331,11 @@ type Survey struct {
 	Plan      core.SizingPlan
 	Selection rank.Result
 	Offers    int
+
+	// DiskGB is the disk the rental asks for: the operator's figure when they
+	// named one, the model's own requirement when they did not. The search
+	// filtered on it, so the create call must request the same number.
+	DiskGB int
 }
 
 // survey sizes the model and ranks the market. It never spends.
@@ -333,7 +346,12 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 	if err != nil {
 		return nil, err
 	}
-	plan, err := sizing.Plan(sizing.Request{Spec: req.Model, Facts: facts})
+	// A runtime that already knows how large its weights are beats the
+	// estimate, and every Plan below is built from this one so the filter,
+	// the launch plan and the shortfall cannot disagree about the model's
+	// size (invariant 5).
+	base := sizing.Request{Spec: req.Model, Facts: facts, WeightBytes: o.weightBytes()}
+	plan, err := sizing.Plan(base)
 	if err != nil {
 		return nil, err
 	}
@@ -342,6 +360,29 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 	}
 	o.emit("sizing", "%s needs ~%s VRAM",
 		req.Model.Ref, sizing.HumanBytes(plan.RequiredVRAMBytes))
+
+	// ---- disk, before the search filters on it --------------------------
+	// Nothing used to ask whether the disk could hold the weights. The
+	// default was 60 GB for every model, so a 111 GB download filled it
+	// about nine minutes in on a host billing by the second — a failure
+	// fully knowable before renting, which is the class §4a exists for.
+	// Either field may carry the operator's figure — surfaces fill one or
+	// both — so a number in either is theirs, and the larger wins.
+	asked := req.DiskGB
+	if req.Criteria.DiskGB > asked {
+		asked = req.Criteria.DiskGB
+	}
+	disk, diskErr := o.sizeDisk(asked, plan)
+	if diskErr != nil {
+		// Held rather than returned, so a model no card can hold is told
+		// that first. A disk is one flag to change; a VRAM shortfall is the
+		// answer to whether the model can be served at all, and reporting
+		// the flag first sends the operator to fix it only to learn the
+		// larger problem on the next run. The market is searched at the disk
+		// the model actually needs, since a host with less could not hold it.
+		disk = DiskNeedGB(plan)
+	}
+	req.Criteria.DiskGB = disk
 
 	// ---- search and select ----------------------------------------------
 	o.emit("search", "querying %s", o.Provider.Name())
@@ -373,16 +414,36 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 				fetchETA(coldStartBytes(plan), of.NetDownMbps).Round(time.Minute),
 				sizing.HumanBytes(coldStartBytes(plan)))
 		}
-		// Usable, not total. A runtime is given a fraction of the card —
-		// the rest belongs to the driver, the CUDA context and the
-		// allocator — so measuring fit against the full figure selects
-		// hardware the engine will then refuse to start on.
-		avail := sizing.UsableVRAM(uint64(of.VRAMTotalGB()) * sizing.GiB)
-		if avail >= plan.RequiredVRAMBytes {
+		// Multi-GPU fit is two numbers, and neither is the one in the
+		// listing. How many cards the engine can place the model on is not
+		// always how many the host has — tensor parallelism only accepts a
+		// degree that divides the head count — and what it may allocate on
+		// each is a fraction of the card, since the driver, the CUDA context
+		// and the allocator live in the same memory. Measuring against the
+		// advertised total gets both wrong in the direction that spends: it
+		// selects hardware the engine then refuses to start on.
+		shards := sizing.Shards(facts, of.GPUCount, reqs.TensorParallel)
+		avail := sizing.ShardVRAM(of.VRAMPerGPUGB, shards)
+		perOffer := base
+		perOffer.GPUCount = shards
+		need, err := sizing.Plan(perOffer)
+		if err != nil {
+			return false, err.Error()
+		}
+		if avail >= need.RequiredVRAMBytes {
 			return true, ""
 		}
-		return false, fmt.Sprintf("%s short of usable VRAM",
-			sizing.HumanBytes(plan.RequiredVRAMBytes-avail))
+		short := fmt.Sprintf("%s short of usable VRAM",
+			sizing.HumanBytes(need.RequiredVRAMBytes-avail))
+		// A card the engine will not shard onto holds no part of the model,
+		// so say so rather than leaving the arithmetic looking wrong: eight
+		// cards short of VRAM that four of them could have held reads as a
+		// bug until the shard degree is named.
+		if shards < of.GPUCount {
+			short += fmt.Sprintf(" (%s shards across %d of %d cards)",
+				reqs.Why, shards, of.GPUCount)
+		}
+		return false, short
 	}
 	if len(o.excludedMachines) > 0 {
 		before := len(offers)
@@ -421,10 +482,63 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 	}
 	sel := rank.Select(offers, req.Criteria, fits, policy)
 	if sel.Selected == nil {
-		short := sizing.Analyse(sizing.Request{Spec: req.Model, Facts: facts}, offers)
+		shortReq := base
+		shortReq.Shards = shardsOn(facts, reqs.TensorParallel)
+		short := sizing.Analyse(shortReq, offers)
 		return nil, errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.survey", "%s", short.String())
 	}
-	return &Survey{Plan: plan, Selection: sel, Offers: len(offers)}, nil
+	if diskErr != nil {
+		return nil, diskErr
+	}
+
+	// Re-size against the hardware actually chosen. Until here the plan is a
+	// market-wide baseline sized for one card, and shipping that to the
+	// launch is how a rig on a four-card host is told to shard across one —
+	// the plan carries the tensor-parallel degree and the memory fraction,
+	// and both are wrong until a card is known. A dry run printing the
+	// baseline is the same lie told earlier and more cheaply.
+	chosen := sel.Selected.Offer
+	shards := sizing.Shards(facts, chosen.GPUCount, reqs.TensorParallel)
+	placedReq := base
+	placedReq.GPUCount = shards
+	placedReq.AvailableVRAMBytes = sizing.ShardVRAM(chosen.VRAMPerGPUGB, shards)
+	placed, err := sizing.Plan(placedReq)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case shards > 1 && shards < chosen.GPUCount:
+		// The gap is the part worth saying: cards the engine will not place
+		// weights on are cards the operator is paying for and not using.
+		o.emit("sizing", "sharding across %d of the host's %d %s cards",
+			shards, chosen.GPUCount, chosen.GPUModel)
+	case shards > 1:
+		o.emit("sizing", "sharding across all %d cards", shards)
+	}
+	for _, w := range placed.Warnings {
+		if !slices.Contains(plan.Warnings, w) {
+			o.warn("sizing", "%s", w)
+		}
+	}
+	return &Survey{Plan: placed, Selection: sel, Offers: len(offers), DiskGB: disk}, nil
+}
+
+// weightBytes asks the runtime how large the weights it will fetch are.
+//
+// Zero from a runtime that cannot say, and zero from one that could not find
+// out — the same answer either way, because both mean the estimate stands.
+func (o *Orchestrator) weightBytes() uint64 {
+	if ws, ok := o.Runtime.(runtime.WeightSizer); ok {
+		return ws.WeightBytes()
+	}
+	return 0
+}
+
+// shardsOn reports the shard count an engine could reach on a host, for the
+// shortfall report. It is a function value rather than a number because the
+// answer depends on the host being described.
+func shardsOn(facts sizing.Facts, tensorParallel bool) func(gpus int) int {
+	return func(gpus int) int { return sizing.Shards(facts, gpus, tensorParallel) }
 }
 
 // Offers ranks the market for a model without spending (FR-CLI-04).
@@ -440,8 +554,8 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 	plan, sel := sv.Plan, sv.Selection
 	chosen := sel.Selected.Offer
 	o.reportExclusions(sel)
-	o.emit("select", "%s %s %dGB $%.3f/hr (reliability %.2f)",
-		chosen.Provider, chosen.GPUModel, chosen.VRAMTotalGB(), chosen.PriceHr, chosen.Reliability)
+	o.emit("select", "%s %s $%.3f/hr (reliability %.2f)",
+		chosen.Provider, chosen.Hardware(), chosen.PriceHr, chosen.Reliability)
 
 	// Say what the cold start will cost before asking for the money. Nothing
 	// is cached between rentals — the image and the weights are fetched every
@@ -513,7 +627,7 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 	o.emit("create", "renting %s at $%.3f/hr", chosen.OfferID, chosen.PriceHr)
 	inst, err := o.Provider.Create(ctx, chosen, provider.CreateSpec{
 		Image:  o.Runtime.Image(req.Model, plan),
-		DiskGB: req.DiskGB,
+		DiskGB: sv.DiskGB,
 		// Everything a recovering LARRI would need if local state were gone:
 		// what was being served, on what runtime, since when, at what price,
 		// behind which local port. Sealed when a key is configured; the rig
@@ -851,6 +965,57 @@ func (o *Orchestrator) sessionHours() float64 {
 // like a hang and is not one.
 const runtimeImageBytes = 8_600_000_000
 
+// DefaultDiskGB is the least disk a rental asks for, whatever the model.
+//
+// It is what every rental asked for before disk was sized to the weights, so
+// a model that fitted then gets the same disk now. The floor also covers what
+// is not the model — the OS, logs, the engine's own scratch — which does not
+// shrink for a small model.
+const DefaultDiskGB = 60
+
+// diskHeadroom pads the figure the disk has to hold. The weights are measured
+// or estimated and the image size is a registry figure for one engine, so the
+// total is an approximation — and the two ways of being wrong are not equal:
+// a few gigabytes of unused storage cost cents, while a disk that fills mid-
+// download costs the rental.
+const diskHeadroom = 1.15
+
+// DiskNeedGB is how much disk a rental needs to hold this plan's weights and
+// the runtime image. It is the requirement, not the default: DefaultDiskGB is
+// a floor for a disk nobody named, and must not refuse a named one that fits.
+func DiskNeedGB(plan core.SizingPlan) int {
+	need := float64(runtimeImageBytes+plan.WeightsBytes) * diskHeadroom / 1e9
+	gb := int(need)
+	if float64(gb) < need {
+		gb++
+	}
+	return gb
+}
+
+// sizeDisk settles the disk to rent.
+//
+// A figure the operator named is honoured or refused, never quietly raised:
+// it spends money, and a setting that spends is the operator's to change.
+// A zero is not a figure anyone named, so it becomes the model's own need,
+// no smaller than the disk every rental used to get.
+func (o *Orchestrator) sizeDisk(asked int, plan core.SizingPlan) (int, error) {
+	need := DiskNeedGB(plan)
+	switch {
+	case asked <= 0:
+		if need <= DefaultDiskGB {
+			return DefaultDiskGB, nil
+		}
+		o.emit("sizing", "disk %d GB to hold %s of weights and the image",
+			need, sizing.HumanBytes(plan.WeightsBytes))
+		return need, nil
+	case asked < need:
+		return 0, errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.sizeDisk",
+			"disk %d GB cannot hold %s of weights and the runtime image: --disk %d or more",
+			asked, sizing.HumanBytes(plan.WeightsBytes), need)
+	}
+	return asked, nil
+}
+
 // coldStartBytes is everything a fresh rental downloads before it can serve:
 // the runtime image, then the weights.
 func coldStartBytes(plan core.SizingPlan) uint64 {
@@ -1019,8 +1184,8 @@ func (o *Orchestrator) reportExclusions(sel rank.Result) {
 		}
 		g.count++
 		if len(g.examples) < 2 {
-			g.examples = append(g.examples, fmt.Sprintf("%s %dGB $%.3f/hr — %s",
-				ex.Offer.GPUModel, ex.Offer.VRAMTotalGB(), ex.Offer.PriceHr, ex.Detail))
+			g.examples = append(g.examples, fmt.Sprintf("%s $%.3f/hr — %s",
+				ex.Offer.Hardware(), ex.Offer.PriceHr, ex.Detail))
 		}
 	}
 	for _, reason := range order {

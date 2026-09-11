@@ -196,10 +196,9 @@ func previewFunc(ctx context.Context) func(config.Profile) term.Cmd {
 				Provider: prov, Runtime: eng,
 				Resolver: resolver, Policy: rank.DefaultPolicy(),
 			}
+			// A profile without disk_gb leaves it zero, and zero is sized to
+			// the model by the daemon rather than defaulted here.
 			crit := p.Criteria()
-			if crit.DiskGB == 0 {
-				crit.DiskGB = 60
-			}
 			sv, err := o.Offers(pctx, daemon.UpRequest{
 				Criteria: crit, Model: spec, DiskGB: crit.DiskGB,
 			})

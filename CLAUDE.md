@@ -155,9 +155,27 @@ enough to be an invariant rather than a habit:
   matrix says compute capability 7.0; `vllm/vllm-openai` ships no Volta kernels and
   requires CUDA 13.0. The gap rented three V100 boxes that could never have loaded one.
   `make refresh-image` re-reads the digest and both floors together.
-- **VRAM is summed across every card.** `nvidia-smi --query-gpu=memory.total` prints one
-  line per GPU; reading the first rejects exactly the multi-GPU hosts that are the only
-  affordable way to hold a large model.
+- **VRAM is summed across every card the engine can reach — which is not always every
+  card.** `nvidia-smi --query-gpu=memory.total` prints one line per GPU; reading the first
+  rejects exactly the multi-GPU hosts that are the only affordable way to hold a large
+  model. But summing all of them overshoots in the other direction for a tensor-parallel
+  engine: vLLM takes only a degree that divides the model's attention heads and refuses one
+  that does not at engine init, on a machine already billing. `sizing.Shards` is the single
+  answer to "how many cards", used by the offer filter, the launch plan, and the
+  placed-hardware correction alike, and a host whose cards the engine cannot all reach says
+  so in the shortfall rather than leaving 144GB advertised and 67GB short looking like an
+  arithmetic bug.
+- **Every part of a multi-part weight file has to arrive.** llama.cpp finds the remaining
+  shards itself once it holds the first and cannot find what was never fetched — and every
+  model large enough to need more than one card is published in parts.
+- **Measure the weights; do not estimate them.** `Params × bits-per-weight` is two
+  approximations multiplied — a rounded parameter count and a table no publisher is obliged
+  to agree with — and it errs in the direction that OOMs. Unsloth's `UD-IQ1_M` is 3.31 bits
+  per weight where the name says 1.75: 69 GB against an estimated 39 GB, which is a
+  four-card host against one card that dies on load. The GGUF listing is already fetched to
+  pick the file, so the size comes free; a runtime that has it answers
+  `runtime.WeightSizer`. It is a fact about a *file*, not a model, so it never enters the
+  revision-keyed facts cache and never transfers to a different quantisation.
 - **The local port is checked before the create call**, not after the weights download.
 - **The host is asked whether it can reach the weight source**, with a control host
   alongside it. Both failing means no route anywhere — a bad rental. Only the source
