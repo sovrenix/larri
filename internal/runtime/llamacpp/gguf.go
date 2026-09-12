@@ -7,12 +7,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"go.sovrenix.com/larri/internal/sizing"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"go.sovrenix.com/larri/internal/sizing"
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/errs"
@@ -70,26 +73,44 @@ type hfModelInfo struct {
 	} `json:"siblings"`
 }
 
+// Weights is a resolved GGUF: which file to fetch first, and how large the
+// whole set is.
+//
+// The size is carried because sizing should measure rather than estimate. The
+// listing already returns it — the request asks for blobs — so the figure that
+// decides how much VRAM to rent costs nothing extra to obtain, and it is the
+// weights themselves rather than a parameter count multiplied by a table of
+// averages. Zero means the repository did not publish sizes.
+type Weights struct {
+	File  string // first shard; what -m is pointed at and what the rest derive from
+	Bytes uint64 // every shard of this quantisation, summed
+}
+
 // ResolveGGUF picks the file matching the requested quantisation.
 //
 // It runs locally, before anything is rented, so a repository that does not
 // carry the requested quantisation is a line of output rather than a bill. The
 // error lists what the repo *does* carry, because "not found" without the
 // alternatives leaves the operator to go and look it up themselves.
-func ResolveGGUF(ctx context.Context, ref, quant string, token secret.Secret) (string, error) {
+func ResolveGGUF(ctx context.Context, ref, quant string, token secret.Secret) (Weights, error) {
+	// A ref naming a file outright is taken at its word, and there is no
+	// listing to take a size from. Sizing falls back to its estimate, which
+	// is what it did for every model before this.
 	if f := explicitFile(ref); f != "" {
-		return f, nil
+		return Weights{File: f}, nil
 	}
 	repo := RepoOf(ref)
 	info, err := fetchGGUFListing(ctx, repo, token)
 	if err != nil {
-		return "", err
+		return Weights{}, err
 	}
 
 	var ggufs []string
+	sizes := map[string]uint64{}
 	for _, s := range info.Siblings {
 		if strings.HasSuffix(strings.ToLower(s.RFilename), ".gguf") {
 			ggufs = append(ggufs, s.RFilename)
+			sizes[s.RFilename] = s.Size
 		}
 	}
 	if len(ggufs) == 0 {
@@ -98,13 +119,35 @@ func ResolveGGUF(ctx context.Context, ref, quant string, token secret.Secret) (s
 		// model is known by. A GGUF conversion almost always exists under a
 		// different account, and naming it turns a dead end into one edit.
 		if alt := suggestGGUFRepo(ctx, repo, token); alt != "" {
-			return "", errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
+			return Weights{}, errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
 				"%s holds no gguf files: try %s", repo, alt)
 		}
-		return "", errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
+		return Weights{}, errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
 			"%s holds no gguf files", repo)
 	}
-	return pickQuant(repo, ggufs, quant)
+	file, err := pickQuant(repo, ggufs, quant)
+	if err != nil {
+		return Weights{}, err
+	}
+	return Weights{File: file, Bytes: shardBytes(file, sizes)}, nil
+}
+
+// shardBytes totals a quantisation across its shards.
+//
+// All of them or none of them: a partial total is worse than no total,
+// because it would be believed. A repository that publishes sizes for some
+// files and not others is not one to size a rental against, so the estimate
+// takes over instead.
+func shardBytes(first string, sizes map[string]uint64) uint64 {
+	var total uint64
+	for _, sh := range ShardFiles(first) {
+		b, ok := sizes[sh]
+		if !ok || b == 0 {
+			return 0
+		}
+		total += b
+	}
+	return total
 }
 
 // auxiliaryGGUF reports whether a .gguf file is something other than the
@@ -119,8 +162,58 @@ func ResolveGGUF(ctx context.Context, ref, quant string, token secret.Secret) (s
 // model. Adapters and vocabulary-only files are the same class of mistake.
 func auxiliaryGGUF(file string) bool {
 	l := strings.ToLower(file[strings.LastIndex(file, "/")+1:])
-	for _, marker := range []string{"mmproj", "lora", "adapter", "vocab", "projector"} {
-		if strings.Contains(l, marker) {
+	// "mtp" is the multi-token-prediction draft head, and it is the same
+	// mistake as mmproj with a worse disguise: it carries the quantisation
+	// tag in its own name, so a repository publishing both matched it on
+	// exactly the string the operator asked for. A live dry run against
+	// unsloth/Qwen3.8-Flash-Next-GGUF resolved --quantization Q4_K_M to a
+	// one-gigabyte draft head and planned to rent a 192 GB box to serve it,
+	// because shortest-name preference then ranked it above the real weights.
+	return auxiliaryKind(l) != ""
+}
+
+// auxiliaryKind names what a non-model GGUF actually is, or "" for weights.
+//
+// Named rather than merely detected, because the operator can see the file:
+// the Hugging Face page for unsloth/Qwen3.8-Flash-Next-GGUF offers a download
+// called mtp-…-Q4_K_M.gguf, so "this repository has no Q4_K_M" reads as a bug
+// in LARRI. It carries the quantisation in its name and is 2.6 GB against
+// 103.7 GB of real Q4-class weights.
+func auxiliaryKind(file string) string {
+	l := strings.ToLower(file[strings.LastIndex(file, "/")+1:])
+	for _, m := range []struct{ marker, kind string }{
+		{"mmproj", "a multimodal projector"},
+		{"projector", "a multimodal projector"},
+		{"mtp", "a multi-token-prediction draft head"},
+		{"lora", "a LoRA adapter"},
+		{"adapter", "an adapter"},
+		{"vocab", "a vocabulary-only file"},
+	} {
+		if strings.Contains(l, m.marker) {
+			return m.kind
+		}
+	}
+	return ""
+}
+
+// matchesQuant reports whether a file carries one of the spellings asked for.
+//
+// The file's own quantisation tag is compared first. Substring matching alone
+// conflates neighbours — "f16" is inside "bf16", so a request for fp16 would
+// take a BF16 file from a repository carrying both, and which one it got
+// would depend on filename length.
+func matchesQuant(file string, wanted []string) bool {
+	if tag := strings.ToLower(quantTag(file)); tag != "" {
+		for _, w := range wanted {
+			if tag == w {
+				return true
+			}
+		}
+		return false
+	}
+	lf := strings.ToLower(file)
+	for _, w := range wanted {
+		if strings.Contains(lf, w) {
 			return true
 		}
 	}
@@ -147,33 +240,22 @@ func pickQuant(repo string, files []string, quant string) (string, error) {
 	q := strings.ToLower(strings.TrimSpace(quant))
 	wanted := quantAliases(q)
 	var candidates []string
+	// Files that match what was asked for but are not the model. Kept so a
+	// refusal can name the file the operator is looking at rather than deny
+	// it exists.
+	var aux []string
 	for _, f := range files {
-		if isLaterShard(f) || auxiliaryGGUF(f) {
+		if isLaterShard(f) {
 			continue
 		}
-		if q == "" {
+		if auxiliaryGGUF(f) {
+			if q != "" && matchesQuant(f, wanted) {
+				aux = append(aux, f)
+			}
+			continue
+		}
+		if q == "" || matchesQuant(f, wanted) {
 			candidates = append(candidates, f)
-			continue
-		}
-		// Compare the file's own quantisation tag first. Substring matching
-		// alone conflates neighbours — "f16" is inside "bf16", so a request
-		// for fp16 would take a BF16 file from a repository carrying both,
-		// and which one it got would depend on filename length.
-		if tag := strings.ToLower(quantTag(f)); tag != "" {
-			for _, w := range wanted {
-				if tag == w {
-					candidates = append(candidates, f)
-					break
-				}
-			}
-			continue
-		}
-		lf := strings.ToLower(f)
-		for _, w := range wanted {
-			if strings.Contains(lf, w) {
-				candidates = append(candidates, f)
-				break
-			}
 		}
 	}
 	if len(candidates) == 1 {
@@ -186,6 +268,11 @@ func pickQuant(repo string, files []string, quant string) (string, error) {
 			return len(candidates[i]) < len(candidates[j])
 		})
 		return candidates[0], nil
+	}
+	if len(aux) > 0 {
+		return "", errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
+			"%s has no %s weights: %s is %s, not the model; it carries: %s",
+			repo, quant, aux[0], auxiliaryKind(aux[0]), strings.Join(quantsIn(files), ", "))
 	}
 	return "", errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
 		"%s has no %s quantisation; it carries: %s",
@@ -201,6 +288,11 @@ func pickQuant(repo string, files []string, quant string) (string, error) {
 // about a repository whose file listing plainly shows F16 — a refusal the
 // operator cannot act on because there is nothing wrong with what they asked.
 func quantAliases(q string) []string {
+	// A repository's own directory name is a spelling an operator will type.
+	// Unsloth publishes its dynamic quantisations under "UD-Q4_K_XL/", and
+	// the tag inside the filename is "Q4_K_XL" — so the name on the folder
+	// the operator was reading matched nothing at all.
+	q = strings.TrimPrefix(q, "ud-")
 	switch q {
 	case "fp16", "f16", "float16", "half":
 		return []string{"f16"}
@@ -417,4 +509,50 @@ func (r *Runtime) AdviseModel(ctx context.Context, spec core.ModelSpec) []string
 		return nil
 	}
 	return adviseSmallerQuant(repo, quantTag(chosen), ggufSizes(info))
+}
+
+// shardPattern matches llama.cpp's split-file naming: a 1-based index, the
+// literal "-of-", and the total, both zero-padded to five digits.
+var shardPattern = regexp.MustCompile(`^(.*)-(\d{5})-of-(\d{5})\.gguf$`)
+
+// ShardFiles lists every part of a multi-part GGUF, in order.
+//
+// A single-file model returns itself, so callers need no special case.
+//
+// llama.cpp loads the remaining shards itself once it is pointed at the
+// first, which is why resolution returns only that one — but *finding* them
+// is the engine's job and *fetching* them is LARRI's, and for a while nothing
+// did the second. Only shard one was downloaded, and the engine then failed
+// on a missing tensor in a way that reads exactly like a corrupt transfer.
+// Every model large enough to need more than one card is published in parts,
+// so this is not an edge case for this engine; it is the case.
+//
+// The names are derived from the first shard rather than re-listed from the
+// repository, because a ref that names a file outright never had a listing to
+// derive them from and must work the same way.
+func ShardFiles(first string) []string {
+	m := shardPattern.FindStringSubmatch(first)
+	if m == nil {
+		return []string{first}
+	}
+	total, err := strconv.Atoi(m[3])
+	if err != nil || total < 1 {
+		return []string{first}
+	}
+	out := make([]string, 0, total)
+	for i := 1; i <= total; i++ {
+		out = append(out, fmt.Sprintf("%s-%05d-of-%s.gguf", m[1], i, m[3]))
+	}
+	return out
+}
+
+// localName is where a repository file lands on the host.
+//
+// Flattened to its base name, because GGUF repositories publish quantisations
+// in directories — "UD-Q4_K_XL/model-00001-of-00004.gguf" — and the download
+// created the model directory but never the one inside it, so curl failed to
+// open the destination before a byte moved. Flattening also keeps a model's
+// shards beside each other, which is where llama.cpp looks for them.
+func localName(file string) string {
+	return file[strings.LastIndex(file, "/")+1:]
 }

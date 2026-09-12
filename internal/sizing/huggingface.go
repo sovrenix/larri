@@ -107,12 +107,13 @@ type modelConfig struct {
 		QuantMethod *string `json:"quant_method"`
 	} `json:"quantization_config"`
 	TextConfig *struct {
-		NumParameters    *float64 `json:"num_parameters"`
-		NumHiddenLayers  *int     `json:"num_hidden_layers"`
-		NumKeyValueHeads *int     `json:"num_key_value_heads"`
-		HiddenSize       *int     `json:"hidden_size"`
-		HeadDim          *int     `json:"head_dim"`
-		MaxPositionEmbed *int     `json:"max_position_embeddings"`
+		NumParameters     *float64 `json:"num_parameters"`
+		NumHiddenLayers   *int     `json:"num_hidden_layers"`
+		NumAttentionHeads *int     `json:"num_attention_heads"`
+		NumKeyValueHeads  *int     `json:"num_key_value_heads"`
+		HiddenSize        *int     `json:"hidden_size"`
+		HeadDim           *int     `json:"head_dim"`
+		MaxPositionEmbed  *int     `json:"max_position_embeddings"`
 	} `json:"text_config"`
 }
 
@@ -173,6 +174,16 @@ func (h *HFResolver) Resolve(ctx context.Context, ref, revision string) (Facts, 
 		}
 		baseFacts.Ref = ref
 		return baseFacts, nil
+	}
+	// The parameter count alone no longer fails factsFrom — a repository that
+	// publishes file sizes is sized exactly without it — but the base model
+	// is still worth asking, because a repository that publishes neither has
+	// to be estimated from something. Only the missing field is taken: the
+	// architecture comes from the repository the operator named.
+	if f.Params <= 0 && base != "" && base != ref {
+		if bf, berr := h.Resolve(ctx, base, ""); berr == nil && bf.Params > 0 {
+			f.Params = bf.Params
+		}
 	}
 	h.toCache(f)
 	return f, nil
@@ -283,8 +294,10 @@ func factsFrom(ref string, info *modelInfo, cfg *modelConfig) (Facts, error) {
 	// text_config; using the outer object would size the vision tower.
 	layers, kvHeads, hidden, headDim, maxCtx :=
 		cfg.NumHiddenLayers, cfg.NumKeyValueHeads, cfg.HiddenSize, cfg.HeadDim, cfg.MaxPositionEmbed
+	heads := cfg.NumAttentionHeads
 	if t := cfg.TextConfig; t != nil {
 		layers = firstInt(t.NumHiddenLayers, layers)
+		heads = firstInt(t.NumAttentionHeads, heads)
 		kvHeads = firstInt(t.NumKeyValueHeads, kvHeads)
 		hidden = firstInt(t.HiddenSize, hidden)
 		headDim = firstInt(t.HeadDim, headDim)
@@ -295,7 +308,7 @@ func factsFrom(ref string, info *modelInfo, cfg *modelConfig) (Facts, error) {
 	// absent is correct for older multi-head models, and getting it backwards
 	// would inflate the KV estimate eightfold on a modern one.
 	if kvHeads == nil {
-		kvHeads = cfg.NumAttentionHeads
+		kvHeads = heads
 	}
 	f := Facts{Ref: ref, Revision: info.SHA}
 	if q := cfg.QuantizationConfig; q != nil && q.QuantMethod != nil {
@@ -314,14 +327,17 @@ func factsFrom(ref string, info *modelInfo, cfg *modelConfig) (Facts, error) {
 	if kvHeads != nil {
 		f.KVHeads = *kvHeads
 	}
+	if heads != nil {
+		f.AttentionHeads = *heads
+	}
 	if hidden != nil {
 		f.HiddenSize = *hidden
 	}
 	switch {
 	case headDim != nil:
 		f.HeadDim = *headDim
-	case hidden != nil && cfg.NumAttentionHeads != nil && *cfg.NumAttentionHeads > 0:
-		f.HeadDim = *hidden / *cfg.NumAttentionHeads
+	case hidden != nil && heads != nil && *heads > 0:
+		f.HeadDim = *hidden / *heads
 	}
 	if maxCtx != nil {
 		f.MaxContextLen = *maxCtx
@@ -358,7 +374,7 @@ func (h *HFResolver) cachePath(ref, sha string) string {
 //
 // Every future field carries the same trap, so the version is checked rather
 // than the fields.
-const factsSchema = 2
+const factsSchema = 3
 
 // cachedFacts is Facts plus the version it was written under.
 type cachedFacts struct {

@@ -103,6 +103,18 @@ type Requirements struct {
 	// Zero means no constraint.
 	MinCUDA int
 
+	// TensorParallel says the engine spreads a model across cards by
+	// splitting each layer's attention heads rather than by handing whole
+	// layers to whole cards.
+	//
+	// It changes which multi-GPU hosts are worth renting. A layer split takes
+	// any number of cards; tensor parallelism takes only degrees that divide
+	// the head count, and vLLM discovers a degree that does not at engine
+	// init — on a machine that is already billing. Selection therefore asks
+	// sizing.Shards how many of a host's cards this engine can actually reach
+	// and sizes against those, not against the number in the listing.
+	TensorParallel bool
+
 	// Why explains the constraint in the exclusion message, so an operator
 	// seeing a cheap card rejected knows it was not arbitrary.
 	Why string
@@ -140,6 +152,21 @@ func (r Requirements) Satisfies(computeCapability int) (bool, string) {
 	}
 	return false, fmt.Sprintf("compute capability %.1f below the %.1f %s requires",
 		float64(computeCapability)/100, float64(r.MinComputeCapability)/100, r.Why)
+}
+
+// WeightSizer is implemented by runtimes that know, before anything is
+// rented, exactly how many bytes of weights they are going to load.
+//
+// Optional like the other capabilities: a runtime that cannot say simply does
+// not implement it, and sizing falls back to estimating from the parameter
+// count and the quantisation. The measurement is worth reaching for because
+// that estimate is two approximations multiplied together, and a publisher
+// who packs a quantisation differently than its name implies makes it wrong
+// in the direction that OOMs.
+//
+// Zero means "I could not find out", never "no weights".
+type WeightSizer interface {
+	WeightBytes() uint64
 }
 
 // CredentialTaker is implemented by runtimes that need a credential to fetch

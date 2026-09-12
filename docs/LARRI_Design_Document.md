@@ -307,6 +307,32 @@ Normalization rules:
 - **Placement** → for providers that place rather than let you pick, `OfferID` identifies
   the *class* requested and `Instance` carries what was actually placed. Ranking operates
   on the class; the sizing check re-runs against the placed instance before bootstrap.
+- **A failed create excludes the listing, not a machine.** There is no machine to exclude
+  when the provider does the placing, and the fallback that excluded only machines therefore
+  excluded nothing here: it re-ranked the same market and chose the same offer on all three
+  attempts. Stock is reported per size, so the size that failed goes rather than the whole
+  type, and a second failure on the model retires the model.
+- **The catalogue advertises types `POST /pods` will not accept.** A probe that could not
+  create anything — an invalid `cloudType` guarantees rejection — showed `NVIDIA A40`
+  failing only on that field while a MIG id failed on `gpuTypeIds/items/enum`, so the
+  refusal is the enum and not stock. Comparing that enum against the catalogue found four
+  such types, one of them a priced 32 GB card that ranking would pick. `purchasable` drops
+  what is unmistakably not a card; the rest fail at create and fall back.
+- **Card count is part of the class.** RunPod sells one GPU type at several sizes, so the
+  adapter lists each type at every count it will place, and `OfferID` is `<gpuTypeId>#<count>`
+  so it stays unique; `Create` splits it back. Stock is read per size, because it differs
+  by size. Not powers of two: RunPod prices linearly, so three cards buy half again what two
+  do for half again the price, and pricing only 1/2/4/8 rented four to hold what three would.
+  How far the sizes run is asked of the catalogue rather than written down — a cheap first
+  query reads `maxGpuCount` (350 ms, against 2 s for the priced one) and the largest a
+  *purchasable* type advertises sets the range, so hardware RunPod adds is priced without an
+  edit here. A guard bounds the query rather than the market, and a live conformance check
+  fails if anything purchasable ever passes it.
+- **Quote the tier that is rented.** `Create` rents Secure Cloud, so the catalogue is
+  priced with `secureCloud: true`. Unfiltered, `lowestPrice` answers across both tiers —
+  in practice the Community rate — and a pod quoted at $2.78/hr billed $3.18/hr, above the
+  figure ranking chose it on and above `--max-price`. `larri status` shows the billed rate
+  beside the quote whenever they differ, which is how this was caught.
 
 ### 5.3 The Ownership Marker Is Provider-Neutral
 
@@ -412,11 +438,11 @@ and bytes so a 40-GB weight download does not look like a hang (FR-RT-06).
 | | llama.cpp | Ollama | vLLM |
 |---|---|---|---|
 | Weight format | GGUF | Ollama registry blobs | safetensors |
-| Acquisition | HF download of a single GGUF file | `ollama pull <tag>` | HF snapshot download of the repo |
+| Acquisition | HF download of every shard of the chosen GGUF, flattened into one directory | `ollama pull <tag>` | HF snapshot download of the repo |
 | Fit strategy | Layer offload — can spill to CPU, so it survives under-provisioned VRAM at a throughput cost | Same engine underneath, managed | Must fit in VRAM; `--gpu-memory-utilization` fraction |
 | Key launch flags | `-m <gguf> -c <ctx> -ngl <layers> --host 127.0.0.1 --port 8000` | `OLLAMA_HOST=127.0.0.1:8000` + pull | `vllm serve <ref> --host 127.0.0.1 --port 8000 --served-model-name <n> --max-model-len <ctx> --gpu-memory-utilization <f> --tensor-parallel-size <n> --api-key <key>` |
 | Bind address | **`127.0.0.1` on the remote host — never a routable interface**, and not configurable (§15.5) | same | same |
-| Multi-GPU | Limited | Limited | Tensor parallel across N GPUs |
+| Multi-GPU | Layer split across every card | Layer split across every card | Tensor parallel across a degree that divides the attention heads |
 | Tool calling | `--jinja` with the model's chat template; parser inferred from it | Template-driven; support varies by tag | `--enable-auto-tool-choice --tool-call-parser <id>`, where `<id>` is model-family-specific (`hermes`, `llama3_json`, `mistral`, …) |
 | Ready signal | `/v1/chat/completions` round-trip | same | same |
 
@@ -583,8 +609,8 @@ Three consequences of choosing live over bundled:
 ### 7.2 The Math
 
 ```
-bytesPerWeight  = quantBits / 8                    // fp16 → 2, q4_K_M → ~0.5625
-weightsBytes    = Params × 1e9 × bytesPerWeight
+weightsBytes    = measured file size, when the repository publishes one
+                  else Params × 1e9 × quantBits / 8   // fp16 → 2, q4_K_M → ~0.5625 bytes
 
 kvBytes         = 2 × Layers × KVHeads × HeadDim × ContextLen × concurrency × kvElemBytes
                   // the leading 2 is K and V
@@ -600,6 +626,30 @@ requiredVRAM    = (weightsBytes + kvBytes + activationBytes + overhead) × safet
 `safetyFactor` defaults to 1.10. `concurrency` defaults to 1 and is configurable — the KV
 cache scales linearly with it, and it is the single most common cause of an OOM that only
 appears under load rather than at boot.
+
+The first line of `weightsBytes` is preferred wherever it can be had, because the second is
+two approximations multiplied and fails in the direction that OOMs. A GGUF listing is already
+fetched with `?blobs=true` to resolve which file to download, so the size of every shard of
+the chosen quantisation is in hand before anything is rented; a runtime that has it answers
+`runtime.WeightSizer` and sizing uses it in place of the estimate. Measured, unsloth's
+`UD-IQ1_M` is 3.31 bits per weight against the 1.75 its name implies — a 180B model at 69 GB
+where the table says 39 GB, which is the difference between a four-card host and a single
+card that OOMs on load. The measurement also removes the requirement that a quantisation be
+in the table at all, which matters because the naming schemes keep arriving. It is a fact
+about a *file*, not a model: it never reaches the revision-keyed facts cache, and it is never
+carried into a suggested alternative quantisation.
+
+The same weight figure sizes the **disk**, and before the search rather than after it,
+because the search filters on disk and a host that cannot hold the model is not a candidate.
+A disk nobody named becomes `(image + weights) × 1.15`, never below the 60 GB every rental
+used to get; one the operator named that is too small is refused with the figure that would
+work, never quietly raised. The disk also has to be where the weights land: on RunPod the
+operator's figure sizes the volume at `/workspace`, while the container disk holding `/root`
+is a fixed 20 GB, so the start script links `/root/.larri` and `/root/.cache/huggingface` onto
+the volume. The runtimes keep writing to the paths they know, and the provider boundary decides
+where those paths live. Every step of the linking is allowed to fail: it runs before sshd, and a
+script that exits there leaves a pod billing that nothing can reach. What catches a link that
+did not happen is a free-space check on the weights directory before the download starts.
 
 ### 7.3 Output
 
@@ -617,6 +667,16 @@ type SizingPlan struct {
 }
 ```
 
+`TensorParallelSize` is `sizing.Shards(facts, offer.GPUCount, runtime.Requires().TensorParallel)`
+— the cards the engine can reach, not the cards the host has. A layer-splitting engine
+reaches all of them; a tensor-parallel one reaches only a degree that divides the model's
+attention heads, and vLLM refuses a degree that does not at engine init, on a machine that
+is already billing. The plan is therefore sized twice: once market-wide to filter offers,
+and again against the host that was selected, because the degree and the memory fraction are
+both meaningless until a card is known. The overhead floor is charged per card — each one
+carries its own CUDA context and allocator — so an eight-way split pays it eight times even
+though the weights are divided.
+
 When the requested context does not fit, the planner reduces `ContextLen` to what fits and
 records a warning — it does not silently accept the requested value. When even the weights
 do not fit, `FitsInVRAM` is false, and for vLLM that is a pre-spend rejection with the
@@ -625,9 +685,27 @@ shortfall named (FR-CRIT-06, NFR-11):
 ```
 ✗ Qwen3-Coder-30B @ fp16, 32k context needs ~68 GB VRAM.
   Best matching offer: RTX 4090 24GB ($0.34/hr) — 44 GB short.
-  Cheapest offer that would fit: A100 80GB ($1.29/hr).
+  Cheapest offer that would fit: 2× A100 80GB 160GB ($2.58/hr).
   Try: --quantization q4_K_M (~19 GB) or --context 8192 (~62 GB).
 ```
+
+Offers carry their card count wherever they are named, because "RTX PRO 6000 96GB" is one
+card or four depending on the listing and a reader cannot otherwise tell an aggregate from a
+per-card figure. Where the engine reaches fewer cards than the host has, the line says so:
+144GB advertised and 67GB short of a 158GB requirement reconcile only once the degree is
+named. Suggestions are measured against the largest VRAM the market actually offered — with
+no target every alternative counts as fitting and the first one wins, which is how a 121.7 GB
+shortfall was once answered with `--quantization q8_0 (~212.6 GB)`.
+
+When a `--max-gpus` ceiling is what ruled the fit out, the search never returned the hosts
+that would have worked, so the report searches once more without the ceiling — only after
+the request has failed — and names the cheapest one: *"With more cards: 2× A100 SXM 160GB
+($3.18/hr) would fit — raise --max-gpus to 2."* A successful multi-GPU placement is explained
+card by card (*"per card: about 62.1 GB of 76.0 GB usable, 51.8 GB of it weights"*), and for a
+layer-splitting engine the report says what the extra cards buy: memory, not speed, for a
+single request, since the cards take turns on each token. Tokens per second is not estimated;
+a live 2× A100 run decoded at 7.8 tok/s, far below any bandwidth figure, and a confident
+wrong number is worse than none.
 
 ---
 
@@ -1787,7 +1865,11 @@ suspicion that the timer misfired. The evidence is what closes that:
 
 ```console
 $ larri status 01J9Z…
-  rig 01J9Z…  DESTROYED   ran 2h14m · total $2.87
+  01J9Z…  DESTROYED     $2.8700  ran 2h14m0s
+      hardware  runpod · 2× A100 SXM 160GB · $3.180/hr (quoted $2.780)
+      instance  tgos1yi8whb9ug
+      model     unsloth/Qwen3.8-Flash-Next-GGUF @ UD-Q4_K_XL · llamacpp · served as qwen
+      created   2026-08-21 12:08 UTC
   ended       2026-08-21 14:22:07  ·  policy: idle-timeout
               no operator inference for 31m (window 30m)
               last request 13:51:04 · 1,204 requests over the rig's life

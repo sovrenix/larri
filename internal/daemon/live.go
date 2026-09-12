@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -785,6 +786,23 @@ func weightsHost(spec core.ModelSpec) string {
 	}
 }
 
+// placedFacts re-resolves the model's architecture for the shard correction.
+//
+// It comes from the cache in every ordinary case — the same revision was
+// already resolved before the search — so this costs nothing on the happy
+// path. A miss is not fatal: the caller keeps the existing shard degree rather
+// than replacing it from unknown facts.
+func (o *Orchestrator) placedFacts(ctx context.Context, rig *core.Rig) (sizing.Facts, bool) {
+	if o.Resolver == nil {
+		return sizing.Facts{}, false
+	}
+	f, err := o.Resolver.Resolve(ctx, rig.Model.Ref, rig.Model.Revision)
+	if err != nil {
+		return sizing.Facts{}, false
+	}
+	return f, true
+}
+
 // verifyPlacedHardware re-runs the fit check against the machine that was
 // actually provisioned.
 func (o *Orchestrator) verifyPlacedHardware(ctx context.Context, sess runtime.Session, rig *core.Rig) error {
@@ -814,25 +832,77 @@ func (o *Orchestrator) verifyPlacedHardware(ctx context.Context, sess runtime.Se
 	// A box with fewer cards than the listing promised still has to shard the
 	// model across what is actually there, so the launch plan is corrected to
 	// the hardware rather than to the advertisement.
-	if gpus > 0 && gpus != rig.Plan.TensorParallelSize {
+	//
+	// Corrected through the same shard rule selection used, never to the raw
+	// card count: vLLM refuses a tensor-parallel degree that does not divide
+	// the model's attention heads, so handing it "six, because the box has
+	// six" fails at engine init on a machine that is already billing.
+	shards := rig.Plan.TensorParallelSize
+	if shards < 1 {
+		shards = 1
+	}
+	facts, ok := o.placedFacts(ctx, rig)
+	if ok {
+		shards = sizing.Shards(facts, gpus, o.Runtime.Requires().TensorParallel)
+	}
+	if shards > gpus {
+		shards = gpus // a resolver miss keeps the old degree, never one above the cards present
+	}
+	if shards != rig.Plan.TensorParallelSize {
 		o.warn("boot", "listing promised %d gpu(s), host has %d — sharding across %d",
-			rig.Plan.TensorParallelSize, gpus, gpus)
-		rig.Plan.TensorParallelSize = gpus
+			rig.Plan.TensorParallelSize, gpus, shards)
+		rig.Plan.TensorParallelSize = shards
+	}
+
+	// Everything from here is measured on the cards the engine will use, never
+	// on the host's total. A card it does not shard onto holds no part of the
+	// model, so counting its memory overstates what is available — on a six-card
+	// host where vLLM reaches four, by half — and dividing the requirement by
+	// it tells vLLM to take too little of each card it does use.
+	cardBytes := haveBytes / uint64(gpus)
+	if ok {
+		placed, err := sizing.Plan(sizing.Request{
+			Spec: rig.Model, Facts: facts, GPUCount: shards,
+			AvailableVRAMBytes: sizing.UsableVRAM(cardBytes * uint64(shards)),
+			WeightBytes:        rig.Plan.WeightsBytes,
+		})
+		if err != nil {
+			return err
+		}
+		if !placed.FitsInVRAM {
+			return errs.Newf(errs.ClassHostFailure, "daemon.verifyPlacedHardware",
+				"placed hardware has %s usable on the %d of %d gpu(s) the engine can use but the plan needs %s",
+				sizing.HumanBytes(sizing.UsableVRAM(cardBytes*uint64(shards))), shards, gpus,
+				sizing.HumanBytes(placed.RequiredVRAMBytes))
+		}
+		for _, w := range placed.Warnings {
+			if !slices.Contains(rig.Plan.Warnings, w) {
+				o.warn("boot", "%s", w)
+			}
+		}
+		rig.Plan.RequiredVRAMBytes = placed.RequiredVRAMBytes
+		rig.Plan.WeightsBytes = placed.WeightsBytes
+		rig.Plan.KVCacheBytes = placed.KVCacheBytes
+		rig.Plan.FitsInVRAM = placed.FitsInVRAM
+		rig.Plan.ContextLen = placed.ContextLen
+		rig.Plan.Warnings = placed.Warnings
 	}
 	// The plan was sized before a card was known, so its memory fraction is a
 	// placeholder. Now that the hardware has answered, ask the runtime for as
-	// much of it as the model actually needs.
+	// much of each card as the model actually needs of it.
 	//
 	// Leaving the placeholder is what produced an OOM on a card the plan said
 	// fitted: 11.2 GB required, a 12 GB card, and vLLM handed 0.90 of it —
 	// 10.8 GB — which it spent on weights and then had 0.63 GiB left for a KV
-	// cache needing 0.74.
-	if want := float64(rig.Plan.RequiredVRAMBytes) / float64(haveBytes); want > 0 {
+	// cache needing 0.74. The fraction is per card because that is what the
+	// engine reads it as: the requirement split across the shards, over one
+	// card's memory.
+	if want := float64(rig.Plan.RequiredVRAMBytes) / float64(shards) / float64(cardBytes); want > 0 {
 		if want > sizing.MaxGPUUtilisation {
 			want = sizing.MaxGPUUtilisation
 		}
 		if want > rig.Plan.GPUMemUtilization {
-			o.emit("boot", "asking the runtime for %.0f%% of the card, not %.0f%%",
+			o.emit("boot", "asking the runtime for %.0f%% of each card, not %.0f%%",
 				want*100, rig.Plan.GPUMemUtilization*100)
 			rig.Plan.GPUMemUtilization = want
 		}

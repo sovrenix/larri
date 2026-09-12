@@ -21,6 +21,7 @@ import (
 	"go.sovrenix.com/larri/internal/errs"
 	"go.sovrenix.com/larri/internal/runtime"
 	"go.sovrenix.com/larri/internal/secret"
+	"go.sovrenix.com/larri/internal/sizing"
 )
 
 const (
@@ -39,17 +40,31 @@ const (
 // Runtime is the llama.cpp engine.
 type Runtime struct {
 	launcher   string        // discovered server command
-	gguf       string        // resolved weight file, from ResolveGGUF
+	weights    Weights       // resolved weight file and its size, from ResolveGGUF
 	hfToken    secret.Secret // weight-download credential, never persisted
 	hfEndpoint string        // a mirror, when the host cannot reach huggingface.co
 }
 
-// SetGGUF records the file ResolveGGUF chose.
+// SetWeights records what ResolveGGUF chose.
 //
 // Resolution happens locally, before anything is rented, so a repository that
 // lacks the requested quantisation costs a line of output rather than a paid
 // download that fails at the end of it.
-func (r *Runtime) SetGGUF(file string) { r.gguf = file }
+func (r *Runtime) SetWeights(w Weights) { r.weights = w }
+
+// SetGGUF records a weight file whose size is not known.
+func (r *Runtime) SetGGUF(file string) { r.weights = Weights{File: file} }
+
+// WeightBytes is the measured size of this model's weights, or zero when the
+// repository did not publish one.
+//
+// Sizing prefers it to its own estimate, which is a parameter count times a
+// table of average bits per weight — two approximations, and wrong in the
+// direction that OOMs whenever a publisher packs a quantisation differently
+// than its name implies.
+func (r *Runtime) WeightBytes() uint64 { return r.weights.Bytes }
+
+var _ runtime.WeightSizer = (*Runtime)(nil)
 
 func New() *Runtime { return &Runtime{} }
 
@@ -114,15 +129,72 @@ func (r *Runtime) Bootstrap(ctx context.Context, sess runtime.Session,
 	if err != nil {
 		return err
 	}
-	send(runtime.Progress{Phase: "weights.download", Message: "fetching " + file})
-	if _, err := sess.Run(ctx, r.downloadCmd(spec, file)); err != nil {
-		return errs.Newf(errs.ClassHostFailure, "llamacpp.Bootstrap",
-			"download weights: %v", err)
+	if err := r.checkFreeSpace(ctx, sess); err != nil {
+		return err
+	}
+	// A large model is published in parts, and every part has to arrive. The
+	// engine finds the rest for itself once it holds the first, but it cannot
+	// find what was never fetched.
+	shards := ShardFiles(file)
+	for i, sh := range shards {
+		msg := "fetching " + localName(sh)
+		if len(shards) > 1 {
+			msg = fmt.Sprintf("fetching %s (part %d of %d)", localName(sh), i+1, len(shards))
+		}
+		send(runtime.Progress{Phase: "weights.download", Message: msg})
+		if _, err := sess.Run(ctx, r.downloadCmd(spec, sh)); err != nil {
+			return errs.Newf(errs.ClassHostFailure, "llamacpp.Bootstrap",
+				"download weights: %v", err)
+		}
 	}
 	return nil
 }
 
-// downloadCmd fetches the single GGUF file.
+// freeSpaceCmd reports, in KiB, what is free where the weights land and what
+// is already there. One round trip, and `df -P` so the column layout is fixed.
+var freeSpaceCmd = "mkdir -p " + shellQuote(ModelDir) + " && " +
+	"df -Pk " + shellQuote(ModelDir) + " | awk 'NR==2{print $4}' && " +
+	"du -sk " + shellQuote(ModelDir) + " 2>/dev/null | cut -f1"
+
+// checkFreeSpace refuses to start a download the disk cannot hold.
+//
+// The disk was sized to the weights before renting, but sizing it and the
+// weights landing on it are two claims. On RunPod the second depends on a
+// link the start script makes to the volume, and that link is allowed to fail
+// so a pod is never stranded before sshd. This is what catches it: without
+// the check, a missing link was discovered twenty gigabytes into a download,
+// every one of them billed.
+//
+// Host-attributable, so the next offer is tried. A check that cannot run
+// proves nothing, and neither does an unmeasured weight size (§4a).
+func (r *Runtime) checkFreeSpace(ctx context.Context, sess runtime.Session) error {
+	need := r.weights.Bytes
+	if need == 0 {
+		return nil
+	}
+	out, err := sess.Run(ctx, freeSpaceCmd)
+	if err != nil {
+		return nil
+	}
+	f := strings.Fields(string(out))
+	if len(f) < 2 {
+		return nil
+	}
+	freeKiB, err1 := strconv.ParseUint(f[0], 10, 64)
+	haveKiB, err2 := strconv.ParseUint(f[1], 10, 64)
+	if err1 != nil || err2 != nil {
+		return nil
+	}
+	// What is already there counts: a resumed download pays only for the rest.
+	if (freeKiB+haveKiB)*1024 >= need {
+		return nil
+	}
+	return errs.Newf(errs.ClassHostFailure, "llamacpp.Bootstrap",
+		"disk %s free under %s cannot hold %s of weights",
+		sizing.HumanBytes(freeKiB*1024), ModelDir, sizing.HumanBytes(need))
+}
+
+// downloadCmd fetches one GGUF file.
 //
 // The token goes into the environment rather than the command line: argv is
 // world-readable through /proc on a machine whose operator is not you, and a
@@ -138,7 +210,10 @@ func (r *Runtime) downloadCmd(spec core.ModelSpec, file string) string {
 	if r.hfEndpoint != "" {
 		auth += fmt.Sprintf("export HF_ENDPOINT=%s; ", shellQuote(r.hfEndpoint))
 	}
-	dest := ModelDir + "/" + file
+	// The URL keeps the repository's path; the destination does not. See
+	// localName: a quantisation published in a directory would otherwise be
+	// written into a directory that was never created.
+	dest := ModelDir + "/" + localName(file)
 	return auth +
 		fmt.Sprintf("mkdir -p %s && ", shellQuote(ModelDir)) +
 		// -C - resumes a partial file, so a retried bootstrap does not pay
@@ -197,7 +272,7 @@ func (r *Runtime) launchCommand(spec core.ModelSpec, plan core.SizingPlan,
 	flags := []flag{
 		{"--host", runtime.Loopback},
 		{"--port", strconv.Itoa(RemotePort)},
-		{"-m", ModelDir + "/" + file},
+		{"-m", ModelDir + "/" + localName(file)},
 		{"--alias", spec.ServedName},
 		{"--api-key", ep.Key.Reveal()},
 	}
@@ -321,8 +396,8 @@ var (
 // weightFile returns the resolved GGUF, falling back to a ref that named one
 // outright.
 func (r *Runtime) weightFile(spec core.ModelSpec) (string, error) {
-	if r.gguf != "" {
-		return r.gguf, nil
+	if r.weights.File != "" {
+		return r.weights.File, nil
 	}
 	return GGUFFile(spec)
 }

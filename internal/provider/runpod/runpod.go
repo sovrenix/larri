@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/errs"
@@ -22,6 +23,9 @@ type Provider struct {
 
 	OnDrift  func(error)
 	OnNotice func(string)
+
+	mu     sync.Mutex
+	counts []int // pod sizes to price, read once from the catalogue
 }
 
 // New builds a provider.
@@ -48,10 +52,11 @@ func (p *Provider) notice(format string, a ...any) {
 // applies criteria again and is authoritative; this pass exists to keep the
 // obviously-unusable out of the ranked list an operator reads.
 func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, error) {
+	counts := p.priceCounts(ctx)
 	var data struct {
 		GPUTypes []gpuType `json:"gpuTypes"`
 	}
-	if err := p.c.graphql(ctx, catalogueQuery, &data); err != nil {
+	if err := p.c.graphql(ctx, buildCatalogueQuery(counts), &data); err != nil {
 		return nil, err
 	}
 	if len(data.GPUTypes) == 0 {
@@ -59,19 +64,38 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 			"catalogue returned nothing")
 	}
 
-	wantSpot := c.Interruptible == core.Allow || c.Interruptible == core.Require
-	out := make([]core.Offer, 0, len(data.GPUTypes))
+	out := make([]core.Offer, 0, len(data.GPUTypes)*len(counts))
 	dropped := map[dropReason]int{}
 	for _, g := range data.GPUTypes {
-		o, why, ok := g.normalise(wantSpot)
-		if !ok {
+		// One catalogue entry is several purchases. A model too large for the
+		// biggest single card is routinely well within reach of two of them,
+		// and pricing only the single-card size is what reported those models
+		// unsatisfiable on a provider that sells eight-card pods.
+		//
+		// A type is reported skipped only when *no* size of it could be
+		// offered, and under the first reason that stopped it. Counting per
+		// size instead would report one out-of-stock type four times, and a
+		// type that is short at eight cards but rentable at two is not
+		// skipped at all.
+		var offered bool
+		var why dropReason
+		for _, n := range counts {
+			o, reason, ok := g.normalise(n, c.Interruptible)
+			if !ok {
+				if why == "" {
+					why = reason
+				}
+				continue
+			}
+			offered = true
+			if !matches(o, c) {
+				continue
+			}
+			out = append(out, o)
+		}
+		if !offered && why != "" {
 			dropped[why]++
-			continue
 		}
-		if !matches(o, c) {
-			continue
-		}
-		out = append(out, o)
 	}
 	// Said out loud, and by reason. An operator looking for an RTX 3070 that
 	// RunPod lists at $0.13 should hear that it is out of stock, rather than
@@ -90,12 +114,47 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 	return out, nil
 }
 
+// priceCounts is the set of pod sizes to ask prices for, taken from the
+// catalogue rather than fixed here: RunPod adds hardware, and a list written
+// into the source goes stale the day it does.
+//
+// Cached for the process, because the sizes a provider will place do not
+// change inside one run, and a retry should not pay for the question twice.
+// A failure is not fatal — the known ladder stands in, and the next call asks
+// again — because a search that cannot list sizes is still better than a
+// search that cannot run (§4a).
+func (p *Provider) priceCounts(ctx context.Context) []int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.counts != nil {
+		return p.counts
+	}
+	var data struct {
+		GPUTypes []gpuSize `json:"gpuTypes"`
+	}
+	if err := p.c.graphql(ctx, sizesQuery, &data); err != nil || len(data.GPUTypes) == 0 {
+		p.notice("runpod: could not read pod sizes; pricing up to %d cards", defaultSizes)
+		return countsTo(defaultSizes)
+	}
+	p.counts = countsTo(sizeCeiling(data.GPUTypes))
+	return p.counts
+}
+
 // matches applies the criteria the catalogue cannot.
 func matches(o core.Offer, c core.Criteria) bool {
 	if c.MaxPriceHr > 0 && o.PriceHr > c.MaxPriceHr {
 		return false
 	}
 	if c.VRAMPerGPUGB > 0 && o.VRAMPerGPUGB < c.VRAMPerGPUGB {
+		return false
+	}
+	if c.VRAMTotalGB > 0 && o.VRAMTotalGB() < c.VRAMTotalGB {
+		return false
+	}
+	if c.GPUCount > 0 && o.GPUCount < c.GPUCount {
+		return false
+	}
+	if c.MaxGPUCount > 0 && o.GPUCount > c.MaxGPUCount {
 		return false
 	}
 	if len(c.GPUModel) > 0 {
@@ -133,10 +192,10 @@ func (p *Provider) Create(ctx context.Context, o core.Offer, spec provider.Creat
 	req := createRequest{
 		Name:              spec.Label,
 		ImageName:         spec.Image,
-		GPUTypeIDs:        []string{o.OfferID},
+		GPUTypeIDs:        []string{gpuTypeID(o.OfferID)},
 		GPUCount:          maxInt(o.GPUCount, 1),
 		GPUTypePriority:   "availability",
-		CloudType:         "SECURE",
+		CloudType:         "SECURE", // the cloud catalogueQuery prices; change both or neither
 		ComputeType:       "GPU",
 		Interruptible:     o.Interruptible,
 		SupportPublicIP:   true,
@@ -286,6 +345,11 @@ func ports(want []int) []string {
 // §12.4 says to expect and recover from — re-downloading tens of gigabytes
 // after an interruption costs more than the storage does. The container disk
 // gets a fixed working allowance for the image and its scratch.
+//
+// Saying so here did not make it true. llama.cpp wrote to /root/.larri, which
+// is the container disk, so the volume sat empty while the download filled
+// the 20 GB allowance. startScript now links that directory, and vLLM's
+// Hugging Face cache, onto the volume — see volumeLink.
 const containerDiskGB = 20
 
 func containerDisk(total int) int { return containerDiskGB }
@@ -360,6 +424,34 @@ func shortest(err error) string {
 	return s
 }
 
+// volumeLink places a directory on the RunPod volume, and can never fail.
+//
+// LARRI downloads under /root/.larri and vLLM's Hugging Face cache defaults to
+// /root/.cache/huggingface. On RunPod both sit on the container disk, fixed at
+// 20 GB, while the disk the operator sized is the volume at /workspace — so a
+// 111 GB model died at 20 GB whatever --disk said. Linking them onto the
+// volume here, at the boundary that knows where the volume is, means no
+// runtime has to learn which provider it is on.
+//
+// It runs before sshd, which is why every step is allowed to fail. A pod that
+// could not be linked still serves any model that fits in 20 GB; a script
+// that exits here never starts sshd, and leaves a pod billing that nothing can
+// reach until the stall limit notices. An existing directory is linked only
+// if it is empty — rmdir refuses anything else — and otherwise left alone:
+// the download's free-space check is what notices a link that did not happen,
+// in seconds rather than twenty gigabytes in.
+//
+// Environment variables are not the mechanism: the runtimes are launched over
+// SSH sessions of their own, which inherit nothing this script exports.
+const volumeLink = `larri_link() {
+  mkdir -p "$1" 2>/dev/null || return 0
+  mkdir -p "$(dirname "$2")" 2>/dev/null || return 0
+  if [ -d "$2" ] && [ ! -L "$2" ]; then rmdir "$2" 2>/dev/null || return 0; fi
+  if [ -L "$2" ] || [ ! -e "$2" ]; then ln -sfn "$1" "$2" 2>/dev/null || true; fi
+  return 0
+}
+`
+
 // startCommand builds the container start command.
 //
 // This is where the adapter pays for something its provider does not supply.
@@ -383,6 +475,10 @@ func shortest(err error) string {
 //     one that never started.
 func startScript(onStart string) string {
 	script := `set -e
+
+` + volumeLink + `larri_link /workspace/.larri /root/.larri
+larri_link /workspace/.cache/huggingface /root/.cache/huggingface
+
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server
 mkdir -p /root/.ssh && chmod 700 /root/.ssh

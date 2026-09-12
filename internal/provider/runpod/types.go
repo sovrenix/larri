@@ -4,11 +4,100 @@
 package runpod
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"go.sovrenix.com/larri/internal/core"
 )
+
+// sizeGuard bounds how many sizes one query may ask for.
+//
+// Not a limit on what RunPod sells — the ceiling comes from the catalogue, so
+// a provider that starts placing twelve-card pods is priced at twelve without
+// anyone editing this. It is a bound on the query: sizes cost latency (four
+// sizes take a second, thirty-two take four and a half), and a catalogue that
+// ever reported an absurd figure would otherwise build an absurd query. The
+// largest ever advertised is 32, by a MIG slice LARRI cannot buy, and a live
+// conformance check fails if a purchasable type passes this.
+const sizeGuard = 32
+
+// defaultSizes is the ladder used when the catalogue cannot be asked how large
+// a pod it will place. Ten was the ceiling across every purchasable type when
+// this was written; guessing low loses offers, so it is not lower.
+const defaultSizes = 10
+
+// sizesQuery asks only how many cards each type accepts.
+//
+// Its own round trip, and a cheap one: the priced query cannot be built until
+// the answer is known, because each size in it is a separate alias.
+const sizesQuery = `query { gpuTypes { id maxGpuCount } }`
+
+// countsTo is every size from one card up to n.
+//
+// Every count, not the powers of two this first shipped with. RunPod prices
+// linearly — 3× H100 SXM is $10.47 against $3.49 for one — so three cards buy
+// half again what two do, and pricing only 1/2/4/8 rented four cards to hold
+// what three would: a third more per hour for as long as the rig lives.
+//
+// The engines do not agree about which counts they can use, and that is not a
+// reason to hide any: llama.cpp splits by layer and takes any number, while
+// vLLM needs a degree that divides the attention heads — and sizing answers
+// that already, by sizing a three-card offer on the two cards vLLM can reach,
+// so it loses to the cheaper two-card offer on price rather than by being
+// absent from the market.
+func countsTo(n int) []int {
+	if n < 1 {
+		n = 1
+	}
+	if n > sizeGuard {
+		n = sizeGuard
+	}
+	out := make([]int, 0, n)
+	for i := 1; i <= n; i++ {
+		out = append(out, i)
+	}
+	return out
+}
+
+// sizeCeiling is the largest pod the catalogue will place from a type LARRI
+// can actually buy.
+func sizeCeiling(types []gpuSize) int {
+	max := 0
+	for _, g := range types {
+		if purchasable(g.ID) && g.MaxGPUCount > max {
+			max = g.MaxGPUCount
+		}
+	}
+	if max < 1 {
+		return defaultSizes
+	}
+	return max
+}
+
+// gpuSize is one catalogue entry in the sizes query.
+type gpuSize struct {
+	ID          string `json:"id"`
+	MaxGPUCount int    `json:"maxGpuCount"`
+}
+
+// gpuPrice is what a GPU type costs at one particular count.
+//
+// Stock is per count as well as per type, and the two disagree routinely: a
+// live catalogue read had H100 SXM at High for one card, Medium for two and
+// Low for four. Reading the single-card status and applying it to an
+// eight-card offer is how selection recommends a pod RunPod will refuse to
+// place.
+type gpuPrice struct {
+	MinimumBidPrice      *float64 `json:"minimumBidPrice"`
+	UninterruptablePrice *float64 `json:"uninterruptablePrice"`
+	// StockStatus is High, Medium, Low or absent, and it predicts whether
+	// a create succeeds. Measured, not assumed: an A40 (High) and an RTX
+	// 4090 (Medium) both created on request, while an RTX 3070 (Low) was
+	// refused with "there are no instances currently available".
+	StockStatus *string `json:"stockStatus"`
+}
 
 // gpuType is one entry in the GraphQL catalogue.
 type gpuType struct {
@@ -17,38 +106,124 @@ type gpuType struct {
 	MemoryInGb     int    `json:"memoryInGb"`
 	SecureCloud    bool   `json:"secureCloud"`
 	CommunityCloud bool   `json:"communityCloud"`
-	MaxGPUCount    int    `json:"maxGpuCount"`
-	LowestPrice    *struct {
-		MinimumBidPrice      *float64 `json:"minimumBidPrice"`
-		UninterruptablePrice *float64 `json:"uninterruptablePrice"`
-		// StockStatus is High, Medium, Low or absent, and it predicts whether
-		// a create succeeds. Measured, not assumed: an A40 (High) and an RTX
-		// 4090 (Medium) both created on request, while an RTX 3070 (Low) was
-		// refused with "there are no instances currently available".
-		StockStatus *string `json:"stockStatus"`
-	} `json:"lowestPrice"`
+
+	// MaxGPUCount is how many of this type RunPod will put in one pod. It
+	// was read and discarded until multi-GPU offers existed, which is why a
+	// model needing more VRAM than the largest single card was reported
+	// unsatisfiable on a provider that sells eight-card pods.
+	MaxGPUCount int `json:"maxGpuCount"`
+
+	// Prices is one entry per size the query asked for, keyed by card count
+	// and filled from the price<N> aliases. A map rather than a field each,
+	// so the set of sizes lives in one place: a fixed field list is how the
+	// query and the decoder drift apart.
+	Prices map[int]*gpuPrice `json:"-"`
 }
+
+// UnmarshalJSON reads the scalar fields and every price<N> alias.
+func (g *gpuType) UnmarshalJSON(b []byte) error {
+	type plain gpuType // no UnmarshalJSON, so this does not recurse
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(b, &all); err != nil {
+		return err
+	}
+	p.Prices = map[int]*gpuPrice{}
+	for k, raw := range all {
+		n, ok := strings.CutPrefix(k, "price")
+		if !ok {
+			continue
+		}
+		count, err := strconv.Atoi(n)
+		if err != nil {
+			continue
+		}
+		// A size the catalogue cannot price answers null, and unmarshalling
+		// null into a struct succeeds — leaving an entry that is present and
+		// empty, which reads as priced.
+		if string(raw) == "null" {
+			continue
+		}
+		var price gpuPrice
+		if err := json.Unmarshal(raw, &price); err != nil {
+			continue // a shape this version does not know
+		}
+		p.Prices[count] = &price
+	}
+	*g = gpuType(p)
+	return nil
+}
+
+// priceAt returns the catalogue's entry for a GPU count, or nil.
+func (g gpuType) priceAt(count int) *gpuPrice { return g.Prices[count] }
 
 // catalogueQuery asks for everything an Offer needs.
 //
 // The id is requested as well as the display name because the id is what
 // POST /pods accepts — normalising to the pretty name would produce offers
 // that cannot be purchased.
-const catalogueQuery = `query {
-  gpuTypes {
-    id displayName memoryInGb secureCloud communityCloud maxGpuCount
-    lowestPrice(input: {gpuCount: 1}) { minimumBidPrice uninterruptablePrice stockStatus }
-  }
-}`
+//
+// Every GPU count is aliased into the same query rather than fetched in a
+// round trip each, so pricing the whole market at every size costs exactly
+// what pricing it at one size cost before.
+//
+// Priced on **Secure Cloud**, because that is the only cloud Create rents
+// from. Without the filter lowestPrice answers across both clouds, which in
+// practice means Community's rate — and a live pod quoted at $2.78/hr from the
+// catalogue billed $3.18/hr, 14% above the figure ranking chose it on and
+// above the --max-price it was meant to respect. Stock is read the same way,
+// and it disagrees too: 2× A100 SXM was Medium on Secure while Community had
+// none at all.
+func buildCatalogueQuery(counts []int) string {
+	var b strings.Builder
+	b.WriteString("query {\n  gpuTypes {\n")
+	b.WriteString("    id displayName memoryInGb secureCloud communityCloud maxGpuCount\n")
+	for _, n := range counts {
+		fmt.Fprintf(&b, "    price%d: lowestPrice(input: {gpuCount: %d, secureCloud: true})"+
+			" { minimumBidPrice uninterruptablePrice stockStatus }\n", n, n)
+	}
+	b.WriteString("  }\n}")
+	return b.String()
+}
 
 // dropReason says why a catalogue entry cannot be offered, or "" if it can.
 type dropReason string
 
 const (
-	dropUnpriced      dropReason = "no price"
+	dropUnpriced      dropReason = "no secure-cloud price"
 	dropOutOfStock    dropReason = "out of stock"
 	dropUnpurchasable dropReason = "not a rentable type"
+	dropTooManyGPUs   dropReason = "more gpus than the type allows"
 )
+
+// countSep joins a GPU type id to the number of cards in an offer.
+//
+// RunPod sells one catalogue entry at several sizes, so the type id alone
+// stopped being a unique offer id the moment multi-GPU offers existed —
+// and the provider conformance suite requires uniqueness, because two
+// listings sharing an id would have selection ranking one against itself.
+// The character is one RunPod type ids do not contain, and Create decodes it
+// back to the id the REST API accepts.
+const countSep = "#"
+
+// offerID encodes a purchase: which GPU type, and how many of them.
+func offerID(typeID string, count int) string {
+	return typeID + countSep + strconv.Itoa(count)
+}
+
+// gpuTypeID recovers the id POST /pods accepts from an offer id.
+//
+// Tolerant of a bare type id, because a rig created before offers carried a
+// count is still in state and still has to be destroyable.
+func gpuTypeID(offer string) string {
+	if i := strings.LastIndex(offer, countSep); i >= 0 {
+		return offer[:i]
+	}
+	return offer
+}
 
 // normalise turns a catalogue entry into an offer LARRI can rank.
 //
@@ -65,18 +240,39 @@ const (
 //     reality rather than a permanent exclusion — a type that comes back into
 //     stock comes back into the list.
 //   - **Not purchasable.** The catalogue advertises types POST /pods rejects.
-func (g gpuType) normalise(interruptible bool) (core.Offer, dropReason, bool) {
-	if g.LowestPrice == nil {
+func (g gpuType) normalise(count int, mode core.Tristate) (core.Offer, dropReason, bool) {
+	if count > 1 && g.MaxGPUCount > 0 && count > g.MaxGPUCount {
+		return core.Offer{}, dropTooManyGPUs, false
+	}
+	lowest := g.priceAt(count)
+	if lowest == nil {
 		return core.Offer{}, dropUnpriced, false
 	}
-	var price float64
-	switch {
-	case interruptible && g.LowestPrice.MinimumBidPrice != nil:
-		price = *g.LowestPrice.MinimumBidPrice
-	case g.LowestPrice.UninterruptablePrice != nil:
-		price = *g.LowestPrice.UninterruptablePrice
-	default:
-		return core.Offer{}, dropUnpriced, false
+	var (
+		price         float64
+		interruptible bool
+	)
+	switch mode {
+	case core.Require:
+		if lowest.MinimumBidPrice == nil {
+			return core.Offer{}, dropUnpriced, false
+		}
+		price = *lowest.MinimumBidPrice
+		interruptible = true
+	case core.Allow:
+		if lowest.MinimumBidPrice != nil {
+			price = *lowest.MinimumBidPrice
+			interruptible = true
+		} else if lowest.UninterruptablePrice != nil {
+			price = *lowest.UninterruptablePrice
+		} else {
+			return core.Offer{}, dropUnpriced, false
+		}
+	default: // Forbid
+		if lowest.UninterruptablePrice == nil {
+			return core.Offer{}, dropUnpriced, false
+		}
+		price = *lowest.UninterruptablePrice
 	}
 	if price <= 0 || g.MemoryInGb <= 0 || g.ID == "" {
 		return core.Offer{}, dropUnpriced, false
@@ -84,7 +280,7 @@ func (g gpuType) normalise(interruptible bool) (core.Offer, dropReason, bool) {
 	if !purchasable(g.ID) {
 		return core.Offer{}, dropUnpurchasable, false
 	}
-	if !inStock(g.LowestPrice.StockStatus) {
+	if !inStock(lowest.StockStatus) {
 		return core.Offer{}, dropOutOfStock, false
 	}
 	name := g.DisplayName
@@ -93,11 +289,11 @@ func (g gpuType) normalise(interruptible bool) (core.Offer, dropReason, bool) {
 	}
 	return core.Offer{
 		Provider: "runpod",
-		// The GPU type id, because that is what a create call takes. It is
-		// not a machine: see MachineID below.
-		OfferID:       g.ID,
+		// The GPU type id and the number of cards, because a create call
+		// takes both. It is not a machine: see MachineID below.
+		OfferID:       offerID(g.ID, count),
 		GPUModel:      name,
-		GPUCount:      1,
+		GPUCount:      count,
 		VRAMPerGPUGB:  g.MemoryInGb,
 		PriceHr:       price,
 		Interruptible: interruptible,
@@ -106,7 +302,9 @@ func (g gpuType) normalise(interruptible bool) (core.Offer, dropReason, bool) {
 		//
 		// MachineID: RunPod places the pod, so there is no host to name — and
 		// naming the GPU type here would make one failed pod exclude every
-		// machine of that type for the rest of the run (§5.4).
+		// machine of that type for the rest of the run (§5.4). The fallback
+		// knows: with no machine to exclude it excludes the listing, and
+		// retires the model only on a second failure.
 		//
 		// Reliability: there is no host to score. Zero means unreported, and
 		// the floor skips offers that report none rather than rejecting the

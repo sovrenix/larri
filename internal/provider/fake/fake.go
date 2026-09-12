@@ -49,6 +49,13 @@ type Behaviour struct {
 	// TransientFailures is the number of times each mutating call fails with
 	// a retryable error before succeeding.
 	TransientFailures int
+
+	// CreateRefused reproduces a provider that places pods itself and has
+	// nothing to place: the create fails host-attributably and no instance
+	// exists afterwards. RunPod answers "there are no instances currently
+	// available", and it is the common failure there — the fallback has to
+	// move to another listing rather than re-pick the one that just failed.
+	CreateRefused bool
 }
 
 // Provider is a fake marketplace.
@@ -65,6 +72,8 @@ type Provider struct {
 	// Calls records every method invoked, so tests can assert on sequence —
 	// notably that a reconcile happened before a retry.
 	Calls []string
+
+	lastSearch core.Criteria
 }
 
 var _ provider.Provider = (*Provider)(nil)
@@ -93,6 +102,14 @@ func (p *Provider) Name() string { return p.name }
 
 func (p *Provider) record(op string) { p.Calls = append(p.Calls, op) }
 
+// LastSearch returns the criteria the most recent search was given, so a test
+// can check that what was searched for is what will be rented.
+func (p *Provider) LastSearch() core.Criteria {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastSearch
+}
+
 func (p *Provider) gate(op string) error {
 	if p.behaviour.Unreachable {
 		return errs.Newf(errs.ClassProviderTransient, p.name+"."+op,
@@ -111,6 +128,7 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.record("Search")
+	p.lastSearch = c
 	if err := p.gate("Search"); err != nil {
 		return nil, err
 	}
@@ -123,6 +141,15 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 			continue
 		}
 		if c.VRAMPerGPUGB > 0 && o.VRAMPerGPUGB < c.VRAMPerGPUGB {
+			continue
+		}
+		if c.VRAMTotalGB > 0 && o.VRAMTotalGB() < c.VRAMTotalGB {
+			continue
+		}
+		if c.GPUCount > 0 && o.GPUCount < c.GPUCount {
+			continue
+		}
+		if c.MaxGPUCount > 0 && o.GPUCount > c.MaxGPUCount {
 			continue
 		}
 		if c.MinReliability > 0 && o.Reliability < c.MinReliability {
@@ -143,6 +170,10 @@ func (p *Provider) Create(ctx context.Context, o core.Offer, spec provider.Creat
 	p.record("Create")
 	if err := p.gate("Create"); err != nil {
 		return nil, err
+	}
+	if p.behaviour.CreateRefused {
+		return nil, errs.Newf(errs.ClassHostFailure, p.name+".Create",
+			"this gpu type could not be placed: no instances currently available")
 	}
 	p.nextID++
 	id := fmt.Sprintf("%s-%d", p.name, p.nextID)

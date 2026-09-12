@@ -24,11 +24,11 @@ and "shown to work" are different claims and are recorded as such.
 
 | Area | Reqs | ✅ live | ☑️ done | 🟡 part | ⬜ plan | Complete |
 |---|---:|---:|---:|---:|---:|---:|
-| Criteria | 6 | 2 | 4 | 0 | 0 | **100%** |
-| Provisioning | 8 | 7 | 1 | 0 | 0 | **100%** |
+| Criteria | 6 | 3 | 3 | 0 | 0 | **100%** |
+| Provisioning | 9 | 8 | 1 | 0 | 0 | **100%** |
 | State | 5 | 4 | 1 | 0 | 0 | **100%** |
-| Search & selection | 13 | 9 | 3 | 0 | 1 | **92%** |
-| Runtimes | 18 | 14 | 2 | 2 | 0 | 89% |
+| Search & selection | 14 | 10 | 3 | 0 | 1 | **93%** |
+| Runtimes | 21 | 16 | 3 | 2 | 0 | 90% |
 | Non-functional | 12 | 6 | 4 | 1 | 1 | 83% |
 | Configuration | 10 | 0 | 8 | 1 | 1 | 80% |
 | Teardown & cost safety | 11 | 3 | 5 | 3 | 0 | 73% |
@@ -37,9 +37,9 @@ and "shown to work" are different claims and are recorded as such.
 | Surfaces | 13 | 1 | 2 | 3 | 7 | 23% |
 | Endpoint & client wiring | 14 | 3 | 0 | 1 | 10 | 21% |
 | Observability | 10 | 0 | 1 | 0 | 9 | 10% |
-| **Total** | **169** | **69** | **44** | **17** | **39** | **67%** |
+| **Total** | **174** | **74** | **44** | **17** | **39** | **68%** |
 
-Sixty-seven per cent of requirements are implemented, and **the lifecycle is the part
+Sixty-eight per cent of requirements are implemented, and **the lifecycle is the part
 that is done.** Criteria, provisioning and state are at 100%; search, selection and the
 runtimes are near it. What is missing clusters into the same three areas as before —
 client wiring, the browser surfaces, and observability — none of which a rig needs in

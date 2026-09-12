@@ -92,3 +92,33 @@ func TestRigIDFromLabel(t *testing.T) {
 		t.Error("an instance with no labels must not be attributed to LARRI")
 	}
 }
+
+// The rate a rig costs is the provider's bill once there is one, and the
+// quote until then — one rule, so every surface shows the same figure.
+func TestBilledPriceHrPrefersTheProvidersRate(t *testing.T) {
+	r := &Rig{Offer: Offer{PriceHr: 2.78}}
+	if got := r.BilledPriceHr(); got != 2.78 {
+		t.Errorf("no instance: %v, want the quote", got)
+	}
+	r.Instance = &Instance{PriceHr: 3.18}
+	if got := r.BilledPriceHr(); got != 3.18 {
+		t.Errorf("billed: %v, want the provider's 3.18", got)
+	}
+	r.Instance.PriceHr = 0
+	if got := r.BilledPriceHr(); got != 2.78 {
+		t.Errorf("unreported instance rate: %v, want the quote", got)
+	}
+}
+
+// A floor above the ceiling can match nothing; saying so beats a search that
+// returns an empty market and reads like one.
+func TestCriteriaRefuseAFloorAboveTheCeiling(t *testing.T) {
+	if err := (Criteria{GPUCount: 4, MaxGPUCount: 2}).Validate(); err == nil {
+		t.Error("gpus 4 with max 2 was accepted")
+	}
+	for _, c := range []Criteria{{}, {GPUCount: 2, MaxGPUCount: 2}, {GPUCount: 4}, {MaxGPUCount: 1}} {
+		if err := c.Validate(); err != nil {
+			t.Errorf("%+v refused: %v", c, err)
+		}
+	}
+}

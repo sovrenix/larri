@@ -45,6 +45,7 @@ type searchRequest struct {
 	GPUName     *stringsFilter `json:"gpu_name,omitempty"`
 	NumGPUs     *intFilter     `json:"num_gpus,omitempty"`
 	GPURAM      *intFilter     `json:"gpu_ram,omitempty"`
+	GPUTotalRAM *intFilter     `json:"gpu_total_ram,omitempty"`
 	DPHTotal    *floatFilter   `json:"dph_total,omitempty"`
 	Reliability *floatFilter   `json:"reliability,omitempty"`
 	DiskSpace   *floatFilter   `json:"disk_space,omitempty"`

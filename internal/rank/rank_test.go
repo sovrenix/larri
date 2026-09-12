@@ -439,3 +439,24 @@ func TestWithdrawnVerificationIsExcludedByDefault(t *testing.T) {
 		t.Errorf("with --allow-deverified, selected %v, want the cheapest", selectedID(got))
 	}
 }
+
+// Per-card VRAM is a bound, so ranking enforces it too — not only the
+// provider searches that happen to filter on it. And it is checked per card:
+// eight 12 GB cards clear a 96 GB aggregate floor and still fail an operator
+// who asked for 24 GB on each.
+func TestPerCardVRAMIsEnforcedInRanking(t *testing.T) {
+	small := offer("small", "RTX 3060", 0.30, 0.99, 12)
+	small.GPUCount = 8 // 96 GB aggregate
+	big := offer("big", "RTX 4090", 0.60, 0.99, 24)
+	big.GPUCount = 4
+	res := Select([]core.Offer{small, big},
+		core.Criteria{VRAMPerGPUGB: 24, VRAMTotalGB: 96}, nil, DefaultPolicy())
+	if res.Selected == nil || res.Selected.Offer.OfferID != "big" {
+		t.Fatalf("selected %+v; the 12 GB cards are below the per-card floor", res.Selected)
+	}
+	for _, c := range res.Candidates {
+		if c.Offer.OfferID == "small" && (c.Reason != ReasonHardware || !strings.Contains(c.Detail, "per card")) {
+			t.Errorf("excluded as %s (%s); the per-card floor should say so", c.Reason, c.Detail)
+		}
+	}
+}

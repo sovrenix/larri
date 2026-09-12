@@ -218,7 +218,7 @@ larri up --model Qwen/Qwen3-Coder-30B \
 | Command | Does |
 |---|---|
 | `larri up` | Search, rank, provision, bootstrap, serve, supervise |
-| `larri status` | State, price, elapsed time, accrued cost — and why a past rig ended |
+| `larri status` | State, provider, hardware and card count, instance, hourly rate (and the quote when the bill differs), model, elapsed time, accrued cost — and why a past rig ended |
 | `larri down` | Destroy, **confirm absence**, report total cost |
 | `larri resume` | Rebuild the tunnel to a rig that outlived the last process |
 | `larri offers` | Search and rank without spending anything |
@@ -254,6 +254,11 @@ it works at all.
 | `--session 8` | Optimise the choice for a long session: the download amortises and the hourly rate starts to dominate. |
 | `--max-price 0.50` | Hard ceiling per hour. |
 | `--gpu "RTX 3090"` | Restrict to hardware you trust. |
+| `--max-gpus 2` | Ceiling on cards per host. Multi-GPU hosts are considered by default — a model past the largest single card is the ordinary reason to want one — and this is how you decline to pay for eight. |
+| `--gpus 4` | Floor, when you know you want to shard. |
+| `--vram 160` | Minimum VRAM per host, summed across its cards. |
+| `--vram-per-gpu 80` | Minimum VRAM on each card. |
+| `--disk 200` | Disk in GB. Left unset, it is sized to the weights and the image (at least 60). A figure too small for the weights is refused before anything is rented. |
 | `--verified-only` | Only hosts the provider has verified. Costs more, fails less. |
 | `--allow-deverified` | Include hosts whose verification was **withdrawn**. Off by default. |
 | `--min-netspeed 200` | Floor the host's download link, in Mbps. The download is billed. |
