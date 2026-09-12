@@ -307,10 +307,27 @@ Normalization rules:
 - **Placement** → for providers that place rather than let you pick, `OfferID` identifies
   the *class* requested and `Instance` carries what was actually placed. Ranking operates
   on the class; the sizing check re-runs against the placed instance before bootstrap.
+- **A failed create excludes the listing, not a machine.** There is no machine to exclude
+  when the provider does the placing, and the fallback that excluded only machines therefore
+  excluded nothing here: it re-ranked the same market and chose the same offer on all three
+  attempts. Stock is reported per size, so the size that failed goes rather than the whole
+  type, and a second failure on the model retires the model.
+- **The catalogue advertises types `POST /pods` will not accept.** A probe that could not
+  create anything — an invalid `cloudType` guarantees rejection — showed `NVIDIA A40`
+  failing only on that field while a MIG id failed on `gpuTypeIds/items/enum`, so the
+  refusal is the enum and not stock. Comparing that enum against the catalogue found four
+  such types, one of them a priced 32 GB card that ranking would pick. `purchasable` drops
+  what is unmistakably not a card; the rest fail at create and fall back.
 - **Card count is part of the class.** RunPod sells one GPU type at several sizes, so the
-  adapter lists each type at 1, 2, 4 and 8 cards, and `OfferID` is `<gpuTypeId>#<count>`
+  adapter lists each type at every count it will place, and `OfferID` is `<gpuTypeId>#<count>`
   so it stays unique; `Create` splits it back. Stock is read per size, because it differs
-  by size.
+  by size. Not powers of two: RunPod prices linearly, so three cards buy half again what two
+  do for half again the price, and pricing only 1/2/4/8 rented four to hold what three would.
+  How far the sizes run is asked of the catalogue rather than written down — a cheap first
+  query reads `maxGpuCount` (350 ms, against 2 s for the priced one) and the largest a
+  *purchasable* type advertises sets the range, so hardware RunPod adds is priced without an
+  edit here. A guard bounds the query rather than the market, and a live conformance check
+  fails if anything purchasable ever passes it.
 - **Quote the tier that is rented.** `Create` rents Secure Cloud, so the catalogue is
   priced with `secureCloud: true`. Unfiltered, `lowestPrice` answers across both tiers —
   in practice the Community rate — and a pod quoted at $2.78/hr billed $3.18/hr, above the
@@ -1848,7 +1865,11 @@ suspicion that the timer misfired. The evidence is what closes that:
 
 ```console
 $ larri status 01J9Z…
-  rig 01J9Z…  DESTROYED   ran 2h14m · total $2.87
+  01J9Z…  DESTROYED     $2.8700  ran 2h14m0s
+      hardware  runpod · 2× A100 SXM 160GB · $3.180/hr (quoted $2.780)
+      instance  tgos1yi8whb9ug
+      model     unsloth/Qwen3.8-Flash-Next-GGUF @ UD-Q4_K_XL · llamacpp · served as qwen
+      created   2026-08-21 12:08 UTC
   ended       2026-08-21 14:22:07  ·  policy: idle-timeout
               no operator inference for 31m (window 30m)
               last request 13:51:04 · 1,204 requests over the rig's life

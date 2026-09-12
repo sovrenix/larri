@@ -264,3 +264,43 @@ func TestExplicitRefResolvesWithoutASize(t *testing.T) {
 		t.Errorf("bytes = %d; nothing measured it, so it must say so", w.Bytes)
 	}
 }
+
+// The operator can see the file. Hugging Face offers a download called
+// mtp-…-Q4_K_M.gguf for unsloth/Qwen3.8-Flash-Next-GGUF, so "this repository
+// has no Q4_K_M" reads as a bug in LARRI — the refusal has to name the file
+// and say what it is. Measured: that file is 2.6 GB against 103.7 GB of real
+// Q4-class weights.
+func TestARefusalNamesTheFileTheOperatorCanSee(t *testing.T) {
+	files := []string{
+		"MTP/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf",
+		"MTP/mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf",
+		"UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+		"Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf",
+	}
+	_, err := pickQuant("unsloth/Qwen3.8-Flash-Next-GGUF", files, "Q4_K_M")
+	if err == nil {
+		t.Fatal("a draft head was resolved as the model")
+	}
+	for _, want := range []string{
+		"mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf", // the file they are looking at
+		"multi-token-prediction draft head",  // what it actually is
+		"Q4_K_XL",                            // what the repo does carry
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// A quantisation the repository simply does not have keeps the plain message:
+// there is no file to explain away.
+func TestAMissingQuantisationWithNoLookalikeStaysPlain(t *testing.T) {
+	files := []string{"Q8_0/x-Q8_0-00001-of-00002.gguf"}
+	_, err := pickQuant("org/x-GGUF", files, "Q4_K_M")
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if strings.Contains(err.Error(), "not the model") {
+		t.Errorf("explained away a file that does not exist: %v", err)
+	}
+}

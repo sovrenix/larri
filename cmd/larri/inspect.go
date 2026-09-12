@@ -32,7 +32,11 @@ func cmdOffers(ctx context.Context, args []string) error {
 	ctxLen := fs.Int("context", 8192, "context length")
 	gpu := fs.String("gpu", "", "GPU model filter, e.g. 'RTX 4090'")
 	maxPrice := fs.Float64("max-price", 0, "ceiling in $/hr")
-	disk := fs.Int("disk", 60, "disk in GB")
+	// Zero, exactly as `up` does it: this command exists so the preview and
+	// the rental cannot disagree, and a disk named here but not there is a
+	// disagreement. A fixed 60 made the preview refuse — "disk 60 GB cannot
+	// hold 103.7 GB of weights" — a model `up` rented without complaint.
+	disk := fs.Int("disk", 0, "disk in GB (0: sized to the model's weights, at least 60)")
 	minRel := fs.Float64("min-reliability", 0.90, "reliability floor")
 	engine := fs.String("runtime", "", "vllm, llamacpp or ollama (default: chosen from the model)")
 	top := fs.Int("top", 10, "how many to show")

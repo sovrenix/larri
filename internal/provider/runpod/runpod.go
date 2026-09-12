@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/errs"
@@ -22,6 +23,9 @@ type Provider struct {
 
 	OnDrift  func(error)
 	OnNotice func(string)
+
+	mu     sync.Mutex
+	counts []int // pod sizes to price, read once from the catalogue
 }
 
 // New builds a provider.
@@ -48,10 +52,11 @@ func (p *Provider) notice(format string, a ...any) {
 // applies criteria again and is authoritative; this pass exists to keep the
 // obviously-unusable out of the ranked list an operator reads.
 func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, error) {
+	counts := p.priceCounts(ctx)
 	var data struct {
 		GPUTypes []gpuType `json:"gpuTypes"`
 	}
-	if err := p.c.graphql(ctx, catalogueQuery, &data); err != nil {
+	if err := p.c.graphql(ctx, buildCatalogueQuery(counts), &data); err != nil {
 		return nil, err
 	}
 	if len(data.GPUTypes) == 0 {
@@ -59,7 +64,7 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 			"catalogue returned nothing")
 	}
 
-	out := make([]core.Offer, 0, len(data.GPUTypes)*len(offerCounts))
+	out := make([]core.Offer, 0, len(data.GPUTypes)*len(counts))
 	dropped := map[dropReason]int{}
 	for _, g := range data.GPUTypes {
 		// One catalogue entry is several purchases. A model too large for the
@@ -74,7 +79,7 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 		// skipped at all.
 		var offered bool
 		var why dropReason
-		for _, n := range offerCounts {
+		for _, n := range counts {
 			o, reason, ok := g.normalise(n, c.Interruptible)
 			if !ok {
 				if why == "" {
@@ -107,6 +112,32 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PriceHr < out[j].PriceHr })
 	return out, nil
+}
+
+// priceCounts is the set of pod sizes to ask prices for, taken from the
+// catalogue rather than fixed here: RunPod adds hardware, and a list written
+// into the source goes stale the day it does.
+//
+// Cached for the process, because the sizes a provider will place do not
+// change inside one run, and a retry should not pay for the question twice.
+// A failure is not fatal — the known ladder stands in, and the next call asks
+// again — because a search that cannot list sizes is still better than a
+// search that cannot run (§4a).
+func (p *Provider) priceCounts(ctx context.Context) []int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.counts != nil {
+		return p.counts
+	}
+	var data struct {
+		GPUTypes []gpuSize `json:"gpuTypes"`
+	}
+	if err := p.c.graphql(ctx, sizesQuery, &data); err != nil || len(data.GPUTypes) == 0 {
+		p.notice("runpod: could not read pod sizes; pricing up to %d cards", defaultSizes)
+		return countsTo(defaultSizes)
+	}
+	p.counts = countsTo(sizeCeiling(data.GPUTypes))
+	return p.counts
 }
 
 // matches applies the criteria the catalogue cannot.

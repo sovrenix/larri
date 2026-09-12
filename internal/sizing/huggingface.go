@@ -175,6 +175,16 @@ func (h *HFResolver) Resolve(ctx context.Context, ref, revision string) (Facts, 
 		baseFacts.Ref = ref
 		return baseFacts, nil
 	}
+	// The parameter count alone no longer fails factsFrom — a repository that
+	// publishes file sizes is sized exactly without it — but the base model
+	// is still worth asking, because a repository that publishes neither has
+	// to be estimated from something. Only the missing field is taken: the
+	// architecture comes from the repository the operator named.
+	if f.Params <= 0 && base != "" && base != ref {
+		if bf, berr := h.Resolve(ctx, base, ""); berr == nil && bf.Params > 0 {
+			f.Params = bf.Params
+		}
+	}
 	h.toCache(f)
 	return f, nil
 }

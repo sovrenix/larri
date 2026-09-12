@@ -218,7 +218,7 @@ larri up --model Qwen/Qwen3-Coder-30B \
 | Command | Does |
 |---|---|
 | `larri up` | Search, rank, provision, bootstrap, serve, supervise |
-| `larri status` | State, price, elapsed time, accrued cost — and why a past rig ended |
+| `larri status` | State, provider, hardware and card count, instance, hourly rate (and the quote when the bill differs), model, elapsed time, accrued cost — and why a past rig ended |
 | `larri down` | Destroy, **confirm absence**, report total cost |
 | `larri resume` | Rebuild the tunnel to a rig that outlived the last process |
 | `larri offers` | Search and rank without spending anything |

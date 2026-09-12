@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"go.sovrenix.com/larri/internal/core"
+	"go.sovrenix.com/larri/internal/errs"
 	"go.sovrenix.com/larri/internal/provider/providertest"
 	"go.sovrenix.com/larri/internal/secret"
 )
@@ -195,20 +196,64 @@ func TestRunpodCatalogueLive(t *testing.T) {
 	p := New(secret.Secret{}) // unauthenticated: the catalogue does not require a key
 	p.OnDrift = func(err error) { t.Errorf("SHAPE DRIFT: %v", err) }
 
+	// The catalogue itself first, because it answers whatever the market is
+	// doing. Shape drift and the size ceiling are facts about the API; how
+	// much of it is in stock is not.
+	//
+	// The ceiling on priced sizes is measured from this catalogue, so the
+	// catalogue is where it is checked. A type LARRI can buy that accepts
+	// more cards than it prices is a market it cannot see — quietly renting
+	// four where six would have fitted.
+	var sizes struct {
+		GPUTypes []gpuSize `json:"gpuTypes"`
+	}
+	if err := p.c.graphql(context.Background(), sizesQuery, &sizes); err != nil {
+		t.Fatalf("catalogue: %v", err)
+	}
+	if len(sizes.GPUTypes) < 10 {
+		t.Fatalf("catalogue lists %d types; it normally lists dozens", len(sizes.GPUTypes))
+	}
+	// The sizes priced are the sizes the catalogue says it will place, so the
+	// only way to miss one is the query guard. Nothing purchasable may exceed
+	// it: that would be a market LARRI cannot see, renting four cards where
+	// six would have fitted.
+	for _, g := range sizes.GPUTypes {
+		if purchasable(g.ID) && g.MaxGPUCount > sizeGuard {
+			t.Errorf("%s places up to %d cards, past the %d-size query guard",
+				g.ID, g.MaxGPUCount, sizeGuard)
+		}
+	}
+	counts := p.priceCounts(context.Background())
+	if got, want := counts[len(counts)-1], sizeCeiling(sizes.GPUTypes); got != want {
+		t.Errorf("pricing up to %d cards; the catalogue places up to %d", got, want)
+	}
+	t.Logf("pricing %d sizes, the largest a purchasable type places", len(counts))
+
+	var cat struct {
+		GPUTypes []gpuType `json:"gpuTypes"`
+	}
+	if err := p.c.graphql(context.Background(), buildCatalogueQuery(counts), &cat); err != nil {
+		t.Fatalf("catalogue: %v", err)
+	}
+
+	// Everything below needs something rentable to look at. Secure Cloud
+	// stock is a market condition and swings: a live read had every priced
+	// size at Low, which is nothing to rent and nothing to check — a skip,
+	// not a failure, since the shape checks above already ran.
+	offers, err := p.Search(context.Background(), core.Criteria{})
+	if errs.Is(err, errs.ClassCriteriaUnsatisfiable) {
+		t.Skipf("no secure-cloud stock right now: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("catalogue: %v", err)
+	}
+
 	// Only the search contract: everything else needs a key, and running
 	// those checks unauthenticated would fail on a 401 while proving nothing
 	// about the adapter.
 	providertest.RunSearchContract(t, providertest.Harness{
 		Provider: p, Criteria: core.Criteria{},
 	})
-
-	// And a shape check the shared contract cannot make, because it is
-	// specific to what this catalogue is: every offer must name a GPU type
-	// that POST /pods will accept.
-	offers, err := p.Search(context.Background(), core.Criteria{})
-	if err != nil {
-		t.Fatalf("catalogue: %v", err)
-	}
 	// A floor that catches a normaliser dropping nearly everything, not one
 	// that measures the market. It was ten when stock was read across both
 	// clouds; priced on Secure Cloud alone — the only one Create rents — a

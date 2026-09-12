@@ -53,10 +53,16 @@ type Facts struct {
 // Unresolvable facts are a hard error rather than a guess (§7.1). A fabricated
 // layer count produces a confident VRAM figure that is wrong, and a confident
 // wrong figure is worse than a refusal because it gets acted on.
+//
+// The parameter count is not among them, and checking it here was refusing
+// models that could be sized exactly. It feeds one thing — the weights
+// estimate — and a repository that publishes file sizes does not need it at
+// all: unsloth/Llama-3.3-70B-Instruct-GGUF and unsloth/gemma-3-27b-it-GGUF
+// both publish exact sizes and no parameter count, and both were turned away.
+// Plan asks for it only when it is about to estimate (§4a: a check that
+// decides nothing is not a check).
 func (f Facts) Validate() error {
 	switch {
-	case f.Params <= 0:
-		return fmt.Errorf("sizing: %s: parameter count unknown", f.Ref)
 	case f.Layers <= 0:
 		return fmt.Errorf("sizing: %s: layer count unknown", f.Ref)
 	case f.KVHeads <= 0:

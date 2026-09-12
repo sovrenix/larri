@@ -169,8 +169,51 @@ func auxiliaryGGUF(file string) bool {
 	// unsloth/Qwen3.8-Flash-Next-GGUF resolved --quantization Q4_K_M to a
 	// one-gigabyte draft head and planned to rent a 192 GB box to serve it,
 	// because shortest-name preference then ranked it above the real weights.
-	for _, marker := range []string{"mmproj", "lora", "adapter", "vocab", "projector", "mtp"} {
-		if strings.Contains(l, marker) {
+	return auxiliaryKind(l) != ""
+}
+
+// auxiliaryKind names what a non-model GGUF actually is, or "" for weights.
+//
+// Named rather than merely detected, because the operator can see the file:
+// the Hugging Face page for unsloth/Qwen3.8-Flash-Next-GGUF offers a download
+// called mtp-…-Q4_K_M.gguf, so "this repository has no Q4_K_M" reads as a bug
+// in LARRI. It carries the quantisation in its name and is 2.6 GB against
+// 103.7 GB of real Q4-class weights.
+func auxiliaryKind(file string) string {
+	l := strings.ToLower(file[strings.LastIndex(file, "/")+1:])
+	for _, m := range []struct{ marker, kind string }{
+		{"mmproj", "a multimodal projector"},
+		{"projector", "a multimodal projector"},
+		{"mtp", "a multi-token-prediction draft head"},
+		{"lora", "a LoRA adapter"},
+		{"adapter", "an adapter"},
+		{"vocab", "a vocabulary-only file"},
+	} {
+		if strings.Contains(l, m.marker) {
+			return m.kind
+		}
+	}
+	return ""
+}
+
+// matchesQuant reports whether a file carries one of the spellings asked for.
+//
+// The file's own quantisation tag is compared first. Substring matching alone
+// conflates neighbours — "f16" is inside "bf16", so a request for fp16 would
+// take a BF16 file from a repository carrying both, and which one it got
+// would depend on filename length.
+func matchesQuant(file string, wanted []string) bool {
+	if tag := strings.ToLower(quantTag(file)); tag != "" {
+		for _, w := range wanted {
+			if tag == w {
+				return true
+			}
+		}
+		return false
+	}
+	lf := strings.ToLower(file)
+	for _, w := range wanted {
+		if strings.Contains(lf, w) {
 			return true
 		}
 	}
@@ -197,33 +240,22 @@ func pickQuant(repo string, files []string, quant string) (string, error) {
 	q := strings.ToLower(strings.TrimSpace(quant))
 	wanted := quantAliases(q)
 	var candidates []string
+	// Files that match what was asked for but are not the model. Kept so a
+	// refusal can name the file the operator is looking at rather than deny
+	// it exists.
+	var aux []string
 	for _, f := range files {
-		if isLaterShard(f) || auxiliaryGGUF(f) {
+		if isLaterShard(f) {
 			continue
 		}
-		if q == "" {
+		if auxiliaryGGUF(f) {
+			if q != "" && matchesQuant(f, wanted) {
+				aux = append(aux, f)
+			}
+			continue
+		}
+		if q == "" || matchesQuant(f, wanted) {
 			candidates = append(candidates, f)
-			continue
-		}
-		// Compare the file's own quantisation tag first. Substring matching
-		// alone conflates neighbours — "f16" is inside "bf16", so a request
-		// for fp16 would take a BF16 file from a repository carrying both,
-		// and which one it got would depend on filename length.
-		if tag := strings.ToLower(quantTag(f)); tag != "" {
-			for _, w := range wanted {
-				if tag == w {
-					candidates = append(candidates, f)
-					break
-				}
-			}
-			continue
-		}
-		lf := strings.ToLower(f)
-		for _, w := range wanted {
-			if strings.Contains(lf, w) {
-				candidates = append(candidates, f)
-				break
-			}
 		}
 	}
 	if len(candidates) == 1 {
@@ -236,6 +268,11 @@ func pickQuant(repo string, files []string, quant string) (string, error) {
 			return len(candidates[i]) < len(candidates[j])
 		})
 		return candidates[0], nil
+	}
+	if len(aux) > 0 {
+		return "", errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
+			"%s has no %s weights: %s is %s, not the model; it carries: %s",
+			repo, quant, aux[0], auxiliaryKind(aux[0]), strings.Join(quantsIn(files), ", "))
 	}
 	return "", errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
 		"%s has no %s quantisation; it carries: %s",

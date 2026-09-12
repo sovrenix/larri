@@ -499,3 +499,53 @@ func TestContradictoryCriteriaAreRefusedForEverySurface(t *testing.T) {
 		}
 	}
 }
+
+// FR-PROV-05: a host failure is worth another offer. It was not, for a
+// provider that places pods itself — RunPod names no machine behind an offer,
+// so a refused create excluded nothing, the market re-ranked unchanged, and
+// all three attempts bought the same failure. A probe attempted
+// `cheap, cheap, cheap` where the market held two other offers.
+func TestFallbackMovesOnWhenThereIsNoMachineToExclude(t *testing.T) {
+	market := []core.Offer{}
+	for i, price := range []float64{1.00, 2.00, 3.00} {
+		market = append(market, core.Offer{
+			Provider: "fake", OfferID: fmt.Sprintf("o%d", i), GPUModel: fmt.Sprintf("GPU%d", i),
+			GPUCount: 1, VRAMPerGPUGB: 80, PriceHr: price, Reliability: 0.99,
+			NetDownMbps: 1000, // no MachineID: the provider places it
+		})
+	}
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	p := pfake.New("fake", market, pfake.Behaviour{CreateRefused: true})
+	o := &Orchestrator{
+		Store: st, Provider: p, Runtime: rfake.New(rfake.Behaviour{}),
+		Resolver: sizing.StaticResolver{"test/m": sizing.Facts{
+			Ref: "test/m", Params: 8, Layers: 32, AttentionHeads: 32, KVHeads: 8,
+			HeadDim: 128, HiddenSize: 4096, MaxContextLen: 32768}},
+		Policy: rank.DefaultPolicy(), Deadline: 10 * time.Second,
+	}
+	_, err = o.UpAndServe(context.Background(), UpRequest{
+		Model: core.ModelSpec{Ref: "test/m", ServedName: "m",
+			Quantization: "q4_K_M", ContextLen: 4096},
+	})
+	if err == nil {
+		t.Fatal("a provider refusing every create produced a rig")
+	}
+	rigs, err := st.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tried := map[string]bool{}
+	for _, r := range rigs {
+		tried[r.Offer.OfferID] = true
+	}
+	// Three attempts, three listings. Two would mean an attempt was spent
+	// re-buying the failure that had just been reported.
+	if len(tried) != 3 {
+		t.Errorf("attempted %v of 3 listings; a refused create must not send the "+
+			"fallback back to one already tried", tried)
+	}
+}

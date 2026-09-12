@@ -313,3 +313,28 @@ func TestAnUnknownQuantisationSizesFromAMeasurement(t *testing.T) {
 		t.Errorf("weights = %s", HumanBytes(p.WeightsBytes))
 	}
 }
+
+// A parameter count feeds one thing: the estimate. A repository that
+// publishes exact file sizes does not need it, and requiring it turned away
+// models that could be sized precisely — unsloth/Llama-3.3-70B-Instruct-GGUF
+// and unsloth/gemma-3-27b-it-GGUF both publish sizes and no parameter count.
+func TestAMeasuredModelNeedsNoParameterCount(t *testing.T) {
+	f := llama70B
+	f.Params = 0
+
+	if err := f.Validate(); err != nil {
+		t.Errorf("facts with every architectural field were refused: %v", err)
+	}
+	p, err := Plan(Request{Spec: spec("q4_K_M", 8192), Facts: f, WeightBytes: 40 << 30})
+	if err != nil {
+		t.Fatalf("a measured model was refused for a missing parameter count: %v", err)
+	}
+	if p.WeightsBytes != 40<<30 {
+		t.Errorf("weights = %s", HumanBytes(p.WeightsBytes))
+	}
+	// Without a measurement there is nothing to size from, and that is still
+	// a refusal rather than a guess.
+	if _, err := Plan(Request{Spec: spec("q4_K_M", 8192), Facts: f}); err == nil {
+		t.Error("an unmeasured model with no parameter count was sized anyway")
+	}
+}

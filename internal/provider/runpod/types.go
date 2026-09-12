@@ -4,6 +4,7 @@
 package runpod
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,15 +12,75 @@ import (
 	"go.sovrenix.com/larri/internal/core"
 )
 
-// offerCounts are the GPU counts LARRI asks the catalogue to price.
+// sizeGuard bounds how many sizes one query may ask for.
 //
-// Powers of two, and not every count up to maxGpuCount, for two reasons that
-// point the same way. RunPod prices linearly — 2× H100 SXM is exactly twice
-// 1× — so an odd count buys nothing a smaller power of two does not, while
-// vLLM's tensor parallelism only accepts degrees that divide the head count,
-// and published head counts are powers of two or their multiples. Listing 3
-// and 5 would pad the ranked list with sizes the engine then declines.
-var offerCounts = []int{1, 2, 4, 8}
+// Not a limit on what RunPod sells — the ceiling comes from the catalogue, so
+// a provider that starts placing twelve-card pods is priced at twelve without
+// anyone editing this. It is a bound on the query: sizes cost latency (four
+// sizes take a second, thirty-two take four and a half), and a catalogue that
+// ever reported an absurd figure would otherwise build an absurd query. The
+// largest ever advertised is 32, by a MIG slice LARRI cannot buy, and a live
+// conformance check fails if a purchasable type passes this.
+const sizeGuard = 32
+
+// defaultSizes is the ladder used when the catalogue cannot be asked how large
+// a pod it will place. Ten was the ceiling across every purchasable type when
+// this was written; guessing low loses offers, so it is not lower.
+const defaultSizes = 10
+
+// sizesQuery asks only how many cards each type accepts.
+//
+// Its own round trip, and a cheap one: the priced query cannot be built until
+// the answer is known, because each size in it is a separate alias.
+const sizesQuery = `query { gpuTypes { id maxGpuCount } }`
+
+// countsTo is every size from one card up to n.
+//
+// Every count, not the powers of two this first shipped with. RunPod prices
+// linearly — 3× H100 SXM is $10.47 against $3.49 for one — so three cards buy
+// half again what two do, and pricing only 1/2/4/8 rented four cards to hold
+// what three would: a third more per hour for as long as the rig lives.
+//
+// The engines do not agree about which counts they can use, and that is not a
+// reason to hide any: llama.cpp splits by layer and takes any number, while
+// vLLM needs a degree that divides the attention heads — and sizing answers
+// that already, by sizing a three-card offer on the two cards vLLM can reach,
+// so it loses to the cheaper two-card offer on price rather than by being
+// absent from the market.
+func countsTo(n int) []int {
+	if n < 1 {
+		n = 1
+	}
+	if n > sizeGuard {
+		n = sizeGuard
+	}
+	out := make([]int, 0, n)
+	for i := 1; i <= n; i++ {
+		out = append(out, i)
+	}
+	return out
+}
+
+// sizeCeiling is the largest pod the catalogue will place from a type LARRI
+// can actually buy.
+func sizeCeiling(types []gpuSize) int {
+	max := 0
+	for _, g := range types {
+		if purchasable(g.ID) && g.MaxGPUCount > max {
+			max = g.MaxGPUCount
+		}
+	}
+	if max < 1 {
+		return defaultSizes
+	}
+	return max
+}
+
+// gpuSize is one catalogue entry in the sizes query.
+type gpuSize struct {
+	ID          string `json:"id"`
+	MaxGPUCount int    `json:"maxGpuCount"`
+}
 
 // gpuPrice is what a GPU type costs at one particular count.
 //
@@ -52,26 +113,52 @@ type gpuType struct {
 	// unsatisfiable on a provider that sells eight-card pods.
 	MaxGPUCount int `json:"maxGpuCount"`
 
-	Price1 *gpuPrice `json:"price1"`
-	Price2 *gpuPrice `json:"price2"`
-	Price4 *gpuPrice `json:"price4"`
-	Price8 *gpuPrice `json:"price8"`
+	// Prices is one entry per size the query asked for, keyed by card count
+	// and filled from the price<N> aliases. A map rather than a field each,
+	// so the set of sizes lives in one place: a fixed field list is how the
+	// query and the decoder drift apart.
+	Prices map[int]*gpuPrice `json:"-"`
+}
+
+// UnmarshalJSON reads the scalar fields and every price<N> alias.
+func (g *gpuType) UnmarshalJSON(b []byte) error {
+	type plain gpuType // no UnmarshalJSON, so this does not recurse
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(b, &all); err != nil {
+		return err
+	}
+	p.Prices = map[int]*gpuPrice{}
+	for k, raw := range all {
+		n, ok := strings.CutPrefix(k, "price")
+		if !ok {
+			continue
+		}
+		count, err := strconv.Atoi(n)
+		if err != nil {
+			continue
+		}
+		// A size the catalogue cannot price answers null, and unmarshalling
+		// null into a struct succeeds — leaving an entry that is present and
+		// empty, which reads as priced.
+		if string(raw) == "null" {
+			continue
+		}
+		var price gpuPrice
+		if err := json.Unmarshal(raw, &price); err != nil {
+			continue // a shape this version does not know
+		}
+		p.Prices[count] = &price
+	}
+	*g = gpuType(p)
+	return nil
 }
 
 // priceAt returns the catalogue's entry for a GPU count, or nil.
-func (g gpuType) priceAt(count int) *gpuPrice {
-	switch count {
-	case 1:
-		return g.Price1
-	case 2:
-		return g.Price2
-	case 4:
-		return g.Price4
-	case 8:
-		return g.Price8
-	}
-	return nil
-}
+func (g gpuType) priceAt(count int) *gpuPrice { return g.Prices[count] }
 
 // catalogueQuery asks for everything an Offer needs.
 //
@@ -90,15 +177,17 @@ func (g gpuType) priceAt(count int) *gpuPrice {
 // above the --max-price it was meant to respect. Stock is read the same way,
 // and it disagrees too: 2× A100 SXM was Medium on Secure while Community had
 // none at all.
-const catalogueQuery = `query {
-  gpuTypes {
-    id displayName memoryInGb secureCloud communityCloud maxGpuCount
-    price1: lowestPrice(input: {gpuCount: 1, secureCloud: true}) { minimumBidPrice uninterruptablePrice stockStatus }
-    price2: lowestPrice(input: {gpuCount: 2, secureCloud: true}) { minimumBidPrice uninterruptablePrice stockStatus }
-    price4: lowestPrice(input: {gpuCount: 4, secureCloud: true}) { minimumBidPrice uninterruptablePrice stockStatus }
-    price8: lowestPrice(input: {gpuCount: 8, secureCloud: true}) { minimumBidPrice uninterruptablePrice stockStatus }
-  }
-}`
+func buildCatalogueQuery(counts []int) string {
+	var b strings.Builder
+	b.WriteString("query {\n  gpuTypes {\n")
+	b.WriteString("    id displayName memoryInGb secureCloud communityCloud maxGpuCount\n")
+	for _, n := range counts {
+		fmt.Fprintf(&b, "    price%d: lowestPrice(input: {gpuCount: %d, secureCloud: true})"+
+			" { minimumBidPrice uninterruptablePrice stockStatus }\n", n, n)
+	}
+	b.WriteString("  }\n}")
+	return b.String()
+}
 
 // dropReason says why a catalogue entry cannot be offered, or "" if it can.
 type dropReason string
@@ -213,7 +302,9 @@ func (g gpuType) normalise(count int, mode core.Tristate) (core.Offer, dropReaso
 		//
 		// MachineID: RunPod places the pod, so there is no host to name — and
 		// naming the GPU type here would make one failed pod exclude every
-		// machine of that type for the rest of the run (§5.4).
+		// machine of that type for the rest of the run (§5.4). The fallback
+		// knows: with no machine to exclude it excludes the listing, and
+		// retires the model only on a second failure.
 		//
 		// Reliability: there is no host to score. Zero means unreported, and
 		// the floor skips offers that report none rather than rejecting the

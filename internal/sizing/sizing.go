@@ -118,10 +118,15 @@ func Plan(req Request) (core.SizingPlan, error) {
 		return core.SizingPlan{}, err
 	}
 	// A measured size skips the estimate entirely, including its demand that
-	// the quantisation be one the table knows. Nothing downstream needs the
-	// bits figure once the bytes are known.
+	// the quantisation be one the table knows and that the repository
+	// published a parameter count. Nothing downstream needs either once the
+	// bytes are known.
 	var bits float64
 	if req.WeightBytes == 0 {
+		if req.Facts.Params <= 0 {
+			return core.SizingPlan{}, fmt.Errorf(
+				"sizing: %s: parameter count unknown", req.Facts.Ref)
+		}
 		var err error
 		if bits, err = BitsPerWeight(req.Spec.Quantization); err != nil {
 			return core.SizingPlan{}, err

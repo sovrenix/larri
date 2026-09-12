@@ -49,6 +49,13 @@ type Behaviour struct {
 	// TransientFailures is the number of times each mutating call fails with
 	// a retryable error before succeeding.
 	TransientFailures int
+
+	// CreateRefused reproduces a provider that places pods itself and has
+	// nothing to place: the create fails host-attributably and no instance
+	// exists afterwards. RunPod answers "there are no instances currently
+	// available", and it is the common failure there — the fallback has to
+	// move to another listing rather than re-pick the one that just failed.
+	CreateRefused bool
 }
 
 // Provider is a fake marketplace.
@@ -163,6 +170,10 @@ func (p *Provider) Create(ctx context.Context, o core.Offer, spec provider.Creat
 	p.record("Create")
 	if err := p.gate("Create"); err != nil {
 		return nil, err
+	}
+	if p.behaviour.CreateRefused {
+		return nil, errs.Newf(errs.ClassHostFailure, p.name+".Create",
+			"this gpu type could not be placed: no instances currently available")
 	}
 	p.nextID++
 	id := fmt.Sprintf("%s-%d", p.name, p.nextID)

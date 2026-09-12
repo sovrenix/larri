@@ -6,6 +6,7 @@ package runpod
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -41,6 +42,7 @@ const catalogueJSON = `{"data":{"gpuTypes":[
   "secureCloud":true,"communityCloud":true,"maxGpuCount":8,
   "price1":{"minimumBidPrice":1.19,"uninterruptablePrice":1.19,"stockStatus":"High"},
   "price2":{"minimumBidPrice":2.38,"uninterruptablePrice":2.38,"stockStatus":"High"},
+  "price3":{"minimumBidPrice":3.57,"uninterruptablePrice":3.57,"stockStatus":"High"},
   "price4":{"minimumBidPrice":4.76,"uninterruptablePrice":4.76,"stockStatus":"Medium"},
   "price8":{"minimumBidPrice":9.52,"uninterruptablePrice":9.52,"stockStatus":"Low"}},
  {"id":"NVIDIA RTX A5000","displayName":"RTX A5000","memoryInGb":24,
@@ -150,8 +152,10 @@ func TestMultiGPUOffersAreListedPerCount(t *testing.T) {
 			byCount[o.GPUCount] = o
 		}
 	}
-	// 1, 2 and 4 are in stock; 8 is Low and must not be offered.
-	for _, n := range []int{1, 2, 4} {
+	// 1, 2, 3 and 4 are in stock; 8 is Low and must not be offered. Three
+	// matters most: it is the size the powers-of-two list used to skip, and
+	// the cheapest fit for anything between two cards' VRAM and four.
+	for _, n := range []int{1, 2, 3, 4} {
 		o, ok := byCount[n]
 		if !ok {
 			t.Fatalf("no %d-GPU offer for a type RunPod places up to 8 at a time", n)
@@ -767,8 +771,79 @@ func TestVolumeLinkNeverStopsTheScript(t *testing.T) {
 // $2.78/hr billed $3.18/hr — above the figure it was ranked on and above the
 // --max-price meant to cap it.
 func TestCataloguePricesTheCloudCreateRentsFrom(t *testing.T) {
-	if got := strings.Count(catalogueQuery, "secureCloud: true"); got != len(offerCounts) {
+	counts := countsTo(defaultSizes)
+	catalogueQuery := buildCatalogueQuery(counts)
+	if got := strings.Count(catalogueQuery, "secureCloud: true"); got != len(counts) {
 		t.Errorf("%d of %d price lookups filter on Secure Cloud; every one must, "+
-			"or that size is quoted at a rate it will not be billed at", got, len(offerCounts))
+			"or that size is quoted at a rate it will not be billed at", got, len(counts))
+	}
+}
+
+// The query and the decoder share one list of sizes. A fixed field per size
+// is how the two drift: a size added to the query and not to the struct is
+// fetched, paid for in latency, and silently dropped.
+func TestEveryPricedSizeIsAskedForAndRead(t *testing.T) {
+	counts := countsTo(defaultSizes)
+	q := buildCatalogueQuery(counts)
+	for _, n := range counts {
+		if !strings.Contains(q, fmt.Sprintf("price%d: lowestPrice(input: {gpuCount: %d, secureCloud: true})", n, n)) {
+			t.Errorf("the query does not ask for %d cards", n)
+		}
+	}
+	var g gpuType
+	if err := json.Unmarshal([]byte(`{"id":"x","maxGpuCount":10,
+		"price1":{"uninterruptablePrice":1,"stockStatus":"High"},
+		"price7":{"uninterruptablePrice":7,"stockStatus":"High"},
+		"price10":null}`), &g); err != nil {
+		t.Fatal(err)
+	}
+	if g.priceAt(1) == nil || g.priceAt(7) == nil {
+		t.Error("a priced size was not read back")
+	}
+	if g.priceAt(10) != nil || g.priceAt(2) != nil {
+		t.Error("a size the catalogue did not price came back priced")
+	}
+	if g.ID != "x" || g.MaxGPUCount != 10 {
+		t.Errorf("the scalar fields were lost: %+v", g)
+	}
+}
+
+// Sizes above what RunPod will place for a type are not offered, however the
+// catalogue prices them.
+func TestNoOfferAboveWhatTheTypeAllows(t *testing.T) {
+	offers, err := catalogueOnly(t).Search(context.Background(), core.Criteria{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range offers {
+		if gpuTypeID(o.OfferID) == "NVIDIA GeForce RTX 4090" && o.GPUCount > 4 {
+			t.Errorf("offered %d cards of a type RunPod caps at 4", o.GPUCount)
+		}
+	}
+}
+
+// The ceiling comes from the catalogue, so a provider that starts placing
+// bigger pods is priced at the bigger size without anyone editing this file.
+func TestSizesFollowTheCatalogue(t *testing.T) {
+	for name, c := range map[string]struct {
+		types []gpuSize
+		want  int
+	}{
+		"the largest purchasable type wins": {
+			[]gpuSize{{ID: "NVIDIA A40", MaxGPUCount: 10}, {ID: "NVIDIA L4", MaxGPUCount: 9}}, 10},
+		"a bigger catalogue prices bigger": {
+			[]gpuSize{{ID: "NVIDIA A40", MaxGPUCount: 12}}, 12},
+		"types create will not take do not raise it": {
+			[]gpuSize{{ID: "NVIDIA A40", MaxGPUCount: 4},
+				{ID: "NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb", MaxGPUCount: 32}}, 4},
+		"an empty answer keeps the known ladder": {nil, defaultSizes},
+	} {
+		if got := sizeCeiling(c.types); got != c.want {
+			t.Errorf("%s: ceiling %d, want %d", name, got, c.want)
+		}
+	}
+	// The guard bounds the query, not the market: it only ever trims.
+	if got := countsTo(1000); len(got) != sizeGuard {
+		t.Errorf("a runaway catalogue built a query of %d sizes", len(got))
 	}
 }

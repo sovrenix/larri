@@ -129,6 +129,16 @@ hold in code:
   provisioned meanwhile, that is two billing instances — detect and surface both.
 - **Unreachable is not absent.** A failed provider query resolves nothing. Hold the state,
   keep supervising, conclude nothing.
+- **Quote the tier you rent.** RunPod's catalogue prices across Secure and Community
+  cloud, and `Create` rents Secure. Reading the unfiltered price quoted a pod at $2.78/hr
+  that billed $3.18/hr — above what ranking chose it on and above `--max-price`. Ask the
+  catalogue for the tier the create call uses, and read stock the same way, since they
+  differ too. `larri status` shows the billed rate beside the quote, which is how this
+  surfaced.
+- **A failed create must exclude something.** Falling back means excluding what failed:
+  the machine where the provider names one, the listing where it does not. Excluding
+  nothing re-ranks an unchanged market and buys the same failure until the attempts run
+  out — three identical attempts, in a probe against a provider refusing every create.
 - **Nothing before sshd may fail.** A start script that exits before sshd leaves a pod that
   bills and cannot be reached, until the stall limit notices. Setup that runs first — the
   RunPod volume links are the case — is written so every step can fail harmlessly, and
@@ -137,6 +147,11 @@ hold in code:
 - Supervision classifies by evidence across six cases (absent / stopped / ssh-down /
   runtime-down / wedged / provider-unreachable), not by a preempted-vs-unhealthy binary, and
   must never silently re-provision at a higher price without the user's consent.
+- **A red merge build can be a disagreement, not a defect.** CI tests the merge with
+  `main`, so a branch and `main` deciding a question differently show up as failing tests.
+  That is a decision to take, not a build to make green: an agent reviewing this project
+  answered one by adding a guard that silently cancelled a deliberate change on `main`,
+  and weakened the test that would have caught it.
 - **Idle reclamation is on by default** (`--idle-timeout 30m --idle-action destroy`). Only
   operator inference counts as activity — LARRI's own health probes must be excluded, or the
   timer resets every interval and never fires. `destroy` is the only reclamation action;

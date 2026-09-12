@@ -247,6 +247,12 @@ type Orchestrator struct {
 	// on the same box each time, since only the offer ID had changed.
 	excludedMachines []string
 
+	// excludedOffers holds listings already tried, for providers that name no
+	// machine behind an offer. RunPod places the pod itself, so there is no
+	// host to exclude — and without this the fallback re-ranked an unchanged
+	// market and chose the same offer on every attempt.
+	excludedOffers []string
+
 	// failedModels counts host failures per GPU model and failure kind.
 	//
 	// Machine-level exclusion is not enough on a marketplace that lists a
@@ -454,6 +460,13 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 		if dropped := before - len(offers); dropped > 0 {
 			o.emit("fallback", "skipping %d offers on %d host(s) already tried",
 				dropped, len(o.excludedMachines))
+		}
+	}
+	if len(o.excludedOffers) > 0 {
+		before := len(offers)
+		offers = withoutOffers(offers, o.excludedOffers)
+		if dropped := before - len(offers); dropped > 0 {
+			o.emit("fallback", "skipping %d listing(s) already tried", dropped)
 		}
 	}
 	if retired := o.retiredModels(); len(retired) > 0 {
@@ -799,31 +812,21 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 		}
 		// Excluded on any host failure, not only when an instance survived to
 		// be torn down. A create that fails outright still says something
-		// about that machine, and leaving it in the pool invites the fallback
-		// to select it again immediately.
+		// about what was bought — the machine where the provider names one,
+		// the listing where it does not — and leaving it in the pool invites
+		// the fallback to select it again immediately, which it did: three
+		// attempts, one offer, the same failure each time.
 		//
 		// The nil guard stays: rig is non-nil by the check above, and a
 		// future edit to that check should not turn this into a panic while
 		// an operator is mid-spend.
 		if rig != nil && errs.ClassOf(err) == errs.ClassHostFailure {
-			if key := machineKey(rig.Offer); key != "" {
-				o.excludedMachines = append(o.excludedMachines, key)
-			}
+			o.excludeFailed(rig.Offer)
+			o.noteModelFailure(rig.Offer, err)
 		}
 		if rig != nil && rig.Instance != nil {
 			o.warn("cleanup", "tearing down rather than leaving it billing")
 			o.teardownAfterFailure(rig, core.ReasonHostFailure, err)
-			if m := strings.TrimSpace(rig.Offer.GPUModel); m != "" {
-				if o.failedModels == nil {
-					o.failedModels = map[modelFailure]int{}
-				}
-				k := modelFailure{model: m, op: errs.OpOf(err)}
-				o.failedModels[k]++
-				if o.failedModels[k] == modelStrikes {
-					o.warn("fallback", "%d %s hosts failed the same way (%s) — trying different hardware",
-						modelStrikes, m, orUnknown(k.op))
-				}
-			}
 		}
 		// Only host-attributable failures are worth another machine.
 		if errs.ClassOf(err) != errs.ClassHostFailure {
@@ -1149,6 +1152,61 @@ func parseCUDA(s string) float64 {
 // So an unidentifiable host is not excluded at all. MaxHostAttempts still
 // bounds the retrying; what it must not do is bound it by throwing away the
 // hardware the operator asked for.
+// excludeFailed takes the offer that just failed out of the running.
+//
+// Which thing to exclude depends on what the provider sells. A marketplace
+// names the machine, and another offer on the same machine is the same
+// hardware, so the machine goes. A provider that places the pod itself names
+// none — and the fallback then excluded nothing at all, so it re-ranked an
+// unchanged market, chose the same offer, and failed identically three times.
+// A probe against a provider refusing every create attempted `cheap, cheap,
+// cheap`, where FR-PROV-05 asks for the next offer.
+//
+// So for those, the size that failed is excluded: stock is per size on
+// RunPod, and 2× A100 being unavailable says nothing certain about 1×. If the
+// type is the problem rather than the size, the next failure on the same
+// model retires the model — precise first, wider on evidence.
+func (o *Orchestrator) excludeFailed(of core.Offer) {
+	if key := machineKey(of); key != "" {
+		o.excludedMachines = append(o.excludedMachines, key)
+		return
+	}
+	if key := offerKey(of); key != "" {
+		o.excludedOffers = append(o.excludedOffers, key)
+	}
+}
+
+// noteModelFailure records a strike against a GPU model, and says so once the
+// model has earned enough of them to be skipped.
+//
+// Recorded for any host failure, not only one that got as far as an instance:
+// a create refused because the type cannot be placed is exactly the evidence
+// that the rest of that type is not worth trying either.
+func (o *Orchestrator) noteModelFailure(of core.Offer, err error) {
+	m := strings.TrimSpace(of.GPUModel)
+	if m == "" {
+		return
+	}
+	if o.failedModels == nil {
+		o.failedModels = map[modelFailure]int{}
+	}
+	k := modelFailure{model: m, op: errs.OpOf(err)}
+	o.failedModels[k]++
+	if o.failedModels[k] == modelStrikes {
+		o.warn("fallback", "%d %s hosts failed the same way (%s) — trying different hardware",
+			modelStrikes, m, orUnknown(k.op))
+	}
+}
+
+// offerKey identifies one purchasable listing, for providers that name no
+// machine behind it.
+func offerKey(o core.Offer) string {
+	if o.OfferID == "" {
+		return ""
+	}
+	return o.Provider + ":o" + o.OfferID
+}
+
 func machineKey(o core.Offer) string {
 	if o.MachineID == "" {
 		return ""
@@ -1188,6 +1246,22 @@ func (o *Orchestrator) retiredModels() []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// withoutOffers drops listings already tried, for providers that name no
+// machine to exclude instead.
+func withoutOffers(offers []core.Offer, keys []string) []core.Offer {
+	skip := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		skip[k] = true
+	}
+	out := offers[:0:0]
+	for _, of := range offers {
+		if !skip[offerKey(of)] {
+			out = append(out, of)
+		}
+	}
 	return out
 }
 

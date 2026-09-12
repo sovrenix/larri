@@ -23,7 +23,7 @@ ifneq ($(TAG),)
 LDFLAGS += -X '$(PKG).version=$(TAG)'
 endif
 
-.PHONY: all build test race vet vet-e2e fmt headers check version version-check clean stale-check refresh-image site-extract site-embed
+.PHONY: all build test race vet vet-e2e fmt headers file-size check version version-check clean stale-check refresh-image site-extract site-embed
 
 all: check build
 
@@ -53,6 +53,9 @@ fmt:
 
 headers:
 	@./scripts/check-headers.sh
+
+file-size:
+	@bash ./scripts/check-file-sizes.sh
 
 # refresh-image re-reads the runtime image's digest and the hardware facts
 # derived from it. The floors are not free-standing numbers: they belong to
@@ -88,7 +91,7 @@ stale-check:
 		echo "bin/larri is up to date"; \
 	fi
 
-check: fmt vet vet-e2e headers test race version-check stale-check
+check: fmt vet vet-e2e headers file-size test race version-check stale-check
 
 clean:
 	rm -rf bin
