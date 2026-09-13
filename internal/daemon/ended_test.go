@@ -94,3 +94,46 @@ func TestAnUnreachableProviderDoesNotEndARig(t *testing.T) {
 		t.Errorf("ended a rig on an unanswered query: %+v", term)
 	}
 }
+
+// Two teardowns of one rig — an idle policy firing in `larri up` while the
+// operator runs `larri down` — each hold a copy read before the other ended
+// it. The first record stands and the second adopts it, whether the second
+// notices at the start or only when it goes to write.
+func TestTwoTeardownsRecordOneEnding(t *testing.T) {
+	o, live := liveRig(t)
+	first, _ := o.Store.Load(live.Rig.ID)
+	second, _ := o.Store.Load(live.Rig.ID)
+	late, _ := o.Store.Load(live.Rig.ID)
+
+	idle := &core.Termination{Actor: core.ActorPolicy, Code: core.ReasonIdleTimeout, Summary: "idle"}
+	if err := o.Down(context.Background(), first, idle); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Down(context.Background(), second, nil); err != nil {
+		t.Fatalf("a second teardown of an ended rig failed: %v", err)
+	}
+	if second.End == nil || second.End.Code != core.ReasonIdleTimeout {
+		t.Errorf("second teardown holds %+v; it adopts the first record", second.End)
+	}
+	// One that passed the start check before the first finished meets the
+	// store's refusal at the write, and adopts the record there.
+	late.State = core.StateDraining
+	late.End = &core.Termination{Actor: core.ActorOperator, Code: core.ReasonOperatorRequest}
+	if err := o.recordEnd(late, "late"); err != nil {
+		t.Fatalf("late write: %v", err)
+	}
+	saved, _ := o.Store.Load(live.Rig.ID)
+	if saved.End.Code != core.ReasonIdleTimeout {
+		t.Errorf("stored ending = %s; the first teardown's reason was replaced", saved.End.Code)
+	}
+	entries, _ := o.Store.Entries()
+	ended := 0
+	for _, e := range state.EntriesFor(entries, live.Rig.ID) {
+		if e.To == core.StateDestroyed {
+			ended++
+		}
+	}
+	if ended != 1 {
+		t.Errorf("journalled %d endings, want 1", ended)
+	}
+}

@@ -6,6 +6,7 @@ package daemon
 import (
 	"context"
 	"strings"
+	"time"
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/errs"
@@ -71,8 +72,10 @@ func (o *Orchestrator) RecordNothingCreated(ctx context.Context, rig *core.Rig, 
 			rig.ProviderName())
 	}
 
+	// A rig ended before endings were recorded has none, and this is the
+	// first: it is dated when the operator made it.
 	end := core.Termination{Actor: core.ActorOperator, Code: core.ReasonOperatorRequest,
-		Summary: "recorded by the operator as never created"}
+		At: time.Now().UTC(), Summary: "recorded by the operator as never created"}
 	if rig.End != nil {
 		end = *rig.End
 	}

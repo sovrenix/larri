@@ -19,6 +19,7 @@ package state
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -111,16 +112,15 @@ func (s *Store) RecordIntent(rig *core.Rig, to core.LifecycleState, note string)
 	return s.journal.Append(e)
 }
 
+// ErrAlreadyDestroyed is returned for a move from a stale copy of a rig that
+// the store already holds as destroyed. Nothing was written; the record that
+// ended it stands.
+var ErrAlreadyDestroyed = errors.New("rig already destroyed")
+
 // Transition journals a completed move and updates the snapshot.
 func (s *Store) Transition(rig *core.Rig, to core.LifecycleState, note string) error {
-	// A destroyed rig stays destroyed. Two processes can hold the same rig —
-	// one serving it, one running `larri down` — and the one holding a stale
-	// copy wrote DEGRADED over DESTROYED, which put a pod that no longer
-	// existed back to billing in the journal.
-	if to != core.StateDestroyed {
-		if cur, err := s.Load(rig.ID); err == nil && cur != nil && cur.State == core.StateDestroyed {
-			return fmt.Errorf("state: rig %s is already destroyed", rig.ID)
-		}
+	if err := s.guardDestroyed(rig, to); err != nil {
+		return err
 	}
 	if err := s.RecordIntent(rig, to, note); err != nil {
 		return err
@@ -130,6 +130,35 @@ func (s *Store) Transition(rig *core.Rig, to core.LifecycleState, note string) e
 	})
 	rig.State = to
 	return s.Save(rig)
+}
+
+// guardDestroyed keeps a destroyed rig destroyed.
+//
+// Two processes can hold the same rig — one serving it, one running `larri
+// down` — and the one holding a stale copy wrote DEGRADED over DESTROYED,
+// which put a pod that no longer existed back to billing in the journal. A
+// stale second teardown is refused too, or it replaces the reason the first
+// one recorded; a rig already destroyed in the caller's own copy may still be
+// re-recorded, which is how an operator's correction lands.
+//
+// A snapshot that cannot be read fails closed for every move but teardown:
+// it cannot show the rig is not destroyed, and teardown must never be the
+// thing a bad file blocks.
+func (s *Store) guardDestroyed(rig *core.Rig, to core.LifecycleState) error {
+	cur, err := s.Load(rig.ID)
+	if err != nil {
+		if to == core.StateDestroyed {
+			return nil
+		}
+		return err
+	}
+	if cur == nil || cur.State != core.StateDestroyed {
+		return nil
+	}
+	if to != core.StateDestroyed || rig.State != core.StateDestroyed {
+		return fmt.Errorf("state: rig %s: %w", rig.ID, ErrAlreadyDestroyed)
+	}
+	return nil
 }
 
 // Save writes a rig snapshot atomically: temp file, fsync, rename, fsync the

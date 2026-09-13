@@ -355,7 +355,7 @@ Normalization rules:
   filters on. `storage_cost` is dollars per gigabyte per *month* (Vast's CLI labels it so, and
   its own `storage_total_cost` is `storage_cost × disk ÷ 720`); read as dollars an hour, it
   added $0.20/hr to every rig. An instance's `PriceHr` is everything it bills while running,
-  storage included, and `StorageHr` is the part still billed while `STOPPED`.
+  storage included, and `StorageHr` is what it bills while `STOPPED`.
 - **A rig is acted on through the provider that holds it.** Another provider answers "not
   found" for an instance it never held, and not found is what confirmed absence looks like.
   `Down` and `Adopt` refuse an orchestrator whose provider is not the rig's, because the
@@ -1127,8 +1127,9 @@ Journal entry:
 Cost accounting is derived from the journal, not from a running counter, so it survives
 restarts and remains auditable (FR-STATE-03). `price_hr` is the rate the rig bills while it
 runs — the provider's own once an instance reports one, the quote before — and `storage_hr`
-the part of it still billed while `STOPPED`, so a running hour costs `price_hr` once and a
-stopped hour `storage_hr`. The entry that ends a rig carries its `termination`: the field was
+the rate it bills while `STOPPED`, so a running hour costs `price_hr` and a stopped hour
+`storage_hr`. They are separate rates, not a whole and its part: RunPod's stopped volume
+costs twice its running one. The entry that ends a rig carries its `termination`: the field was
 declared from the start and never written, so the reason lived only in the snapshot and a
 `nothing_created` recorded at teardown never reached the cost it was meant to stop.
 

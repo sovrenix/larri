@@ -80,9 +80,9 @@ type Weights = runtime.Weights
 // carry the requested quantisation is a line of output rather than a bill. The
 // error lists what the repo *does* carry, because "not found" without the
 // alternatives leaves the operator to go and look it up themselves.
-func ResolveGGUF(ctx context.Context, ref, quant string, token secret.Secret) (Weights, error) {
+func ResolveGGUF(ctx context.Context, ref, revision, quant string, token secret.Secret) (Weights, error) {
 	repo, named := sizing.SplitRef(ref)
-	info, err := fetchGGUFListing(ctx, repo, token)
+	info, err := fetchGGUFListing(ctx, repo, revision, token)
 	if err != nil {
 		return Weights{}, err
 	}
@@ -114,7 +114,28 @@ func ResolveGGUF(ctx context.Context, ref, quant string, token secret.Secret) (W
 	if err != nil {
 		return Weights{}, err
 	}
+	if err := completeSet(repo, file, sizes); err != nil {
+		return Weights{}, err
+	}
 	return Weights{File: file, Bytes: shardBytes(file, sizes), Quantization: quant}, nil
+}
+
+// completeSet refuses a multi-part GGUF with a part the repository does not
+// hold.
+//
+// Every part is downloaded, and a missing one fails the download on the
+// rented host — after the boot and the parts before it are paid for. A failed
+// download reads as the host's fault, so the next offer is rented to fail the
+// same way. A repository still uploading, or a part named that is not there,
+// is knowable from the listing.
+func completeSet(repo, first string, listed map[string]uint64) error {
+	for _, part := range ShardFiles(first) {
+		if _, ok := listed[part]; !ok {
+			return errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
+				"%s has no file %s: the set %s starts is incomplete", repo, part, first)
+		}
+	}
+	return nil
 }
 
 // namedFile checks a file the operator named against the repository listing.
@@ -127,10 +148,13 @@ func ResolveGGUF(ctx context.Context, ref, quant string, token secret.Secret) (W
 func namedFile(repo, file, quant string, ggufs []string, sizes map[string]uint64) (Weights, error) {
 	// llama.cpp is pointed at part one and finds the rest itself, so naming
 	// any part names the set.
-	first := ShardFiles(file)[0]
-	if _, ok := sizes[first]; !ok {
+	if _, ok := sizes[file]; !ok {
 		return Weights{}, errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
 			"%s has no file %s; it carries: %s", repo, file, strings.Join(quantsIn(ggufs), ", "))
+	}
+	first := ShardFiles(file)[0]
+	if err := completeSet(repo, first, sizes); err != nil {
+		return Weights{}, err
 	}
 	if kind := auxiliaryKind(first); kind != "" {
 		return Weights{}, errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
@@ -487,12 +511,20 @@ func adviseSmallerQuant(repo, chosen string, chosenSize uint64, sizes map[string
 // can serve a listing without reaching Hugging Face.
 var listingEndpoint = "https://huggingface.co"
 
-func fetchGGUFListing(ctx context.Context, repo string, token secret.Secret) (hfModelInfo, error) {
+func fetchGGUFListing(ctx context.Context, repo, revision string, token secret.Secret) (hfModelInfo, error) {
 	var info hfModelInfo
 	// blobs=true so file sizes come back with the listing. They cost nothing
 	// extra here and are what lets a smaller quantisation be offered with a
 	// number attached rather than as a vague suggestion.
-	url := listingEndpoint + "/api/models/" + repo + "?blobs=true"
+	//
+	// At the revision Bootstrap will download from. Listing main while a
+	// pinned revision is fetched sizes and picks from one set of files and
+	// downloads another.
+	path := "/api/models/" + repo
+	if revision != "" {
+		path += "/revision/" + revision
+	}
+	url := listingEndpoint + path + "?blobs=true"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return info, err
@@ -529,7 +561,7 @@ func fetchGGUFListing(ctx context.Context, repo string, token secret.Secret) (hf
 // nothing here may interfere with a bring-up.
 func (r *Runtime) AdviseModel(ctx context.Context, spec core.ModelSpec) []string {
 	repo := RepoOf(spec.Ref)
-	info, err := fetchGGUFListing(ctx, repo, r.hfToken)
+	info, err := fetchGGUFListing(ctx, repo, spec.Revision, r.hfToken)
 	if err != nil {
 		return nil
 	}

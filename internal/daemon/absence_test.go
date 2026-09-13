@@ -147,3 +147,22 @@ func TestARigIsNeverTornDownThroughAnotherProvider(t *testing.T) {
 		t.Error("adopted a rig through a provider that does not hold it")
 	}
 }
+
+// A rig destroyed before endings were recorded has none. The correction is
+// then the first record of why it ended, and it is dated.
+func TestACorrectionToARigWithNoEndingIsDated(t *testing.T) {
+	o, _, st := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	rig := legacyRig(t, st, "")
+	rig.End = nil
+	if err := st.Save(rig); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().UTC().Add(-time.Second)
+	if err := o.RecordNothingCreated(context.Background(), rig, "checked the billing page"); err != nil {
+		t.Fatal(err)
+	}
+	saved, _ := st.Load(rig.ID)
+	if saved.End == nil || saved.End.At.Before(before) {
+		t.Errorf("ending = %+v; the correction is dated when it was made", saved.End)
+	}
+}

@@ -30,7 +30,11 @@ type Deps struct {
 	// providerName is the provider holding an existing rig, or "" for the
 	// configured default when there is no rig yet. Acting on a rig through
 	// any other provider reads "not found" as confirmed absence.
-	NewOrchestrator func(runtimeKind, providerName string) (*daemon.Orchestrator, error)
+	//
+	// model is what the engine is chosen from when runtimeKind is empty, the
+	// same reading the CLI gives it. Chosen from nothing, a named .gguf file
+	// or a Q4_K_M request got vLLM, which cannot load either.
+	NewOrchestrator func(runtimeKind, providerName string, model core.ModelSpec) (*daemon.Orchestrator, error)
 
 	// Session is the rig this surface is holding, when it is long-running
 	// enough to hold one. An MCP server outlives its tool calls, so it can;
@@ -287,7 +291,7 @@ func (d Deps) plan(ctx context.Context, raw json.RawMessage) (any, error) {
 	if a.Model == "" {
 		return nil, fmt.Errorf("model is required")
 	}
-	o, err := d.NewOrchestrator("", "")
+	o, err := d.NewOrchestrator("", "", a.spec())
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +344,7 @@ func (d Deps) searchOffers(ctx context.Context, raw json.RawMessage) (any, error
 	if a.Top <= 0 {
 		a.Top = 10
 	}
-	o, err := d.NewOrchestrator("", "")
+	o, err := d.NewOrchestrator("", "", a.spec())
 	if err != nil {
 		return nil, err
 	}

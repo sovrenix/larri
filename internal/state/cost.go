@@ -4,7 +4,6 @@
 package state
 
 import (
-	"math"
 	"time"
 
 	"go.sovrenix.com/larri/internal/core"
@@ -63,19 +62,26 @@ func cost(entries []Entry, now time.Time, billedHr float64) core.CostSummary {
 			return
 		}
 		hours := until.Sub(since).Hours()
-		if computeBilling(state) {
-			// PriceHr is everything billed while the machine runs, storage
-			// included, so compute is what is left once storage is counted
-			// on its own line. Adding the two double-counted storage. An
-			// entry from before that rule held the quote, with storage on
-			// top.
-			if legacy && billedHr == 0 {
+		// Old rules, where the snapshot kept no billed rate: the quote for
+		// compute and storage on top of it wherever storage bills.
+		if legacy && billedHr == 0 {
+			if computeBilling(state) {
 				sum.ComputeUSD += hours * priceHr
-			} else {
-				sum.ComputeUSD += hours * math.Max(priceHr-storageHr, 0)
 			}
+			if storageBilling(state) {
+				sum.StorageUSD += hours * storageHr
+			}
+			return
 		}
-		if storageBilling(state) {
+		// PriceHr is everything a running machine bills, disk included, and
+		// StorageHr is what it bills stopped. They are separate rates, not a
+		// whole and its part: RunPod charges a stopped volume twice what a
+		// running one costs, so subtracting one from the other misstated the
+		// split and, on a large enough volume, the total.
+		switch {
+		case computeBilling(state):
+			sum.ComputeUSD += hours * priceHr
+		case storageBilling(state):
 			sum.StorageUSD += hours * storageHr
 		}
 	}

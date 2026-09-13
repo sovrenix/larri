@@ -1478,8 +1478,10 @@ func (o *Orchestrator) Down(ctx context.Context, rig *core.Rig, term *core.Termi
 		return err
 	}
 	// Already over, and the record says why. Teardown is idempotent
-	// (FR-DEL-02), and a second one would journal a second ending.
-	if rig.State == core.StateDestroyed {
+	// (FR-DEL-02), and a second one would journal a second ending. The store
+	// is asked as well as this copy: another process may have ended the rig
+	// since the copy was taken.
+	if rig.State == core.StateDestroyed || o.adoptEnding(rig) {
 		return nil
 	}
 	if term == nil {
@@ -1508,16 +1510,21 @@ func (o *Orchestrator) Down(ctx context.Context, rig *core.Rig, term *core.Termi
 				found.InstanceID)
 			rig.Instance = found
 		} else {
-			if checked {
-				if term.Evidence == nil {
-					term.Evidence = map[string]string{}
-				}
-				term.Evidence[core.EvidenceNothingCreated] = "no instance carries this rig's label"
-			} else {
-				o.warn("destroy", "could not reach the provider to confirm nothing was created")
+			// Unreachable is not absent. Recording DESTROYED here stopped
+			// the cost of whatever a lost create had made, on nothing more
+			// than a query that failed; the rig stays billable and loud
+			// until the provider can answer.
+			if !checked {
+				return errs.Newf(errs.ClassProviderTransient, "daemon.Down",
+					"rig %s: %s did not answer whether anything carries its label: retry larri down",
+					rig.ID, rig.ProviderName())
 			}
+			if term.Evidence == nil {
+				term.Evidence = map[string]string{}
+			}
+			term.Evidence[core.EvidenceNothingCreated] = "no instance carries this rig's label"
 			rig.End = term
-			return o.Store.Transition(rig, core.StateDestroyed, "no instance was ever created")
+			return o.recordEnd(rig, "no instance was ever created")
 		}
 	}
 
@@ -1542,7 +1549,28 @@ func (o *Orchestrator) Down(ctx context.Context, rig *core.Rig, term *core.Termi
 	term.Cost = state.CostForRig(entries, rig, time.Now().UTC())
 	rig.End = term
 	o.emit("destroy", "confirmed absent")
-	return o.Store.Transition(rig, core.StateDestroyed, term.Summary)
+	return o.recordEnd(rig, term.Summary)
+}
+
+// adoptEnding takes on the stored record of a rig another process has
+// already ended, reporting whether it did.
+func (o *Orchestrator) adoptEnding(rig *core.Rig) bool {
+	stored, err := o.Store.Load(rig.ID)
+	if err != nil || stored == nil || stored.State != core.StateDestroyed {
+		return false
+	}
+	*rig = *stored
+	return true
+}
+
+// recordEnd writes a teardown's DESTROYED, unless another teardown got there
+// first — then its record stands and this one adopts it.
+func (o *Orchestrator) recordEnd(rig *core.Rig, note string) error {
+	err := o.Store.Transition(rig, core.StateDestroyed, note)
+	if errors.Is(err, state.ErrAlreadyDestroyed) && o.adoptEnding(rig) {
+		return nil
+	}
+	return err
 }
 
 // holdsRig refuses to act on a rig through a provider that does not hold it.

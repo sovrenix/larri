@@ -69,8 +69,8 @@ func cmdMCP(ctx context.Context, args []string) error {
 		Store:   st,
 		Session: sess,
 		HFToken: secret.New(os.Getenv("HF_TOKEN")),
-		NewOrchestrator: func(kind, prov string) (*daemon.Orchestrator, error) {
-			return newOrchestrator(st, kind, prov, events)
+		NewOrchestrator: func(kind, prov string, model core.ModelSpec) (*daemon.Orchestrator, error) {
+			return newOrchestrator(st, kind, prov, model, events)
 		},
 	}
 	reg := tools.NewRegistry()
@@ -97,7 +97,7 @@ func cmdMCP(ctx context.Context, args []string) error {
 }
 
 // newOrchestrator builds one configured from the environment.
-func newOrchestrator(st *state.Store, runtimeKind, providerName string, events chan<- daemon.Event) (*daemon.Orchestrator, error) {
+func newOrchestrator(st *state.Store, runtimeKind, providerName string, model core.ModelSpec, events chan<- daemon.Event) (*daemon.Orchestrator, error) {
 	prov, err := openProvider(providerName)
 	if err != nil {
 		return nil, err
@@ -110,7 +110,7 @@ func newOrchestrator(st *state.Store, runtimeKind, providerName string, events c
 	if err != nil {
 		return nil, err
 	}
-	eng, err := pickRuntime(runtimeKind, core.ModelSpec{})
+	eng, err := pickRuntime(runtimeKind, model)
 	if err != nil {
 		return nil, err
 	}

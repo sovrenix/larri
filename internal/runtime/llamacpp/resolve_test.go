@@ -156,7 +156,7 @@ func TestANamedFileAcceptsAnotherSpellingOfItsQuantization(t *testing.T) {
 	})
 	_, err := ResolveGGUF(context.Background(),
 		"unsloth/Qwen3.8-Flash-Next-GGUF/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00001.gguf",
-		"ud-q4_k_xl", secret.Secret{})
+		"", "ud-q4_k_xl", secret.Secret{})
 	if err != nil {
 		t.Errorf("the folder's spelling was refused: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestAQuantisationPublishedTwiceIsOneDownload(t *testing.T) {
 		"Llama-3.3-70B-Instruct-Q8_0/Llama-3.3-70B-Instruct-Q8_0-00002-of-00002.gguf": 35_200_000_000,
 		"Llama-3.3-70B-Instruct-Q3_K_M.gguf":                                          34_300_000_000,
 	})
-	info, err := fetchGGUFListing(context.Background(), "unsloth/Llama-3.3-70B-Instruct-GGUF", secret.Secret{})
+	info, err := fetchGGUFListing(context.Background(), "unsloth/Llama-3.3-70B-Instruct-GGUF", "", secret.Secret{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,5 +197,42 @@ func TestAQuantisationPublishedTwiceIsOneDownload(t *testing.T) {
 	}
 	if len(advice) != 1 || !strings.Contains(advice[0], "Q3_K_M at 34.3 GB against Q6_K at 57.9 GB") {
 		t.Errorf("advice = %q, want Q3_K_M measured against one 57.9 GB set", advice)
+	}
+}
+
+// Every part is downloaded, and a missing one fails on the rented host after
+// the rest are paid for — then again on the next host, since a failed
+// download reads as the host's fault. The listing already says so.
+func TestAnIncompleteSetIsRefusedBeforeRenting(t *testing.T) {
+	serveListing(t, "org/Big-GGUF", map[string]uint64{
+		"Q4_K_M/Big-Q4_K_M-00001-of-00003.gguf": 40 << 30,
+		"Q4_K_M/Big-Q4_K_M-00003-of-00003.gguf": 12 << 30,
+		// part 2 not uploaded
+	})
+	for name, spec := range map[string]core.ModelSpec{
+		"named part two, which is missing":    {Ref: "org/Big-GGUF/Q4_K_M/Big-Q4_K_M-00002-of-00003.gguf"},
+		"named part one of an incomplete set": {Ref: "org/Big-GGUF/Q4_K_M/Big-Q4_K_M-00001-of-00003.gguf"},
+		"picked from the listing":             {Ref: "org/Big-GGUF", Quantization: "Q4_K_M"},
+	} {
+		_, err := New().ResolveWeights(context.Background(), spec)
+		if err == nil || !strings.Contains(err.Error(), "Big-Q4_K_M-00002-of-00003.gguf") {
+			t.Errorf("%s: err = %v, want the missing part named", name, err)
+		}
+	}
+}
+
+// Bootstrap downloads at the spec's revision, so the file is chosen and
+// measured from the listing at that revision, not from main.
+func TestResolutionReadsTheRevisionItWillDownload(t *testing.T) {
+	serveListing(t, "org/Pinned-GGUF/revision/abc123", map[string]uint64{
+		"Pinned-Q4_K_M.gguf": 4 << 30,
+	})
+	w, err := New().ResolveWeights(context.Background(),
+		core.ModelSpec{Ref: "org/Pinned-GGUF", Revision: "abc123"})
+	if err != nil {
+		t.Fatalf("resolved against main, not the pinned revision: %v", err)
+	}
+	if w.File != "Pinned-Q4_K_M.gguf" {
+		t.Errorf("file = %q", w.File)
 	}
 }

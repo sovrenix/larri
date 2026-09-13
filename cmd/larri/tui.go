@@ -91,7 +91,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	fmt.Printf("\n  %s\n\n", describePolicy(cfg))
 
 	events := make(chan daemon.Event, 256)
-	o, err := newOrchestrator(st, *engine, "", events)
+	o, err := newOrchestrator(st, *engine, "", spec, events)
 	if err != nil {
 		return err
 	}

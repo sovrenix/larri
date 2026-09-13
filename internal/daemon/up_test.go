@@ -240,6 +240,35 @@ func TestDownOfARigThatCreatedNothingStopsItsCostInTheJournal(t *testing.T) {
 	}
 }
 
+// A provider that cannot be asked has not said nothing exists. Recording the
+// rig destroyed on a failed query stopped its cost while whatever a lost
+// create had made went on billing.
+func TestDownOfARigWithNoInstanceWaitsForTheProvider(t *testing.T) {
+	o, p, st := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	hourly(st)
+	id, err := state.NewID(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig := &core.Rig{ID: id, State: core.StateSelected, Offer: offers()[0], Model: upReq().Model}
+	for _, to := range []core.LifecycleState{core.StateCreating, core.StateFailed} {
+		if err := st.Transition(rig, to, "create failed"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.SetUnreachable(true)
+	if err := o.Down(context.Background(), rig, nil); !errs.Is(err, errs.ClassProviderTransient) {
+		t.Fatalf("err = %v, want a transient error asking for a retry", err)
+	}
+	if saved, _ := st.Load(rig.ID); saved.State == core.StateDestroyed {
+		t.Error("recorded DESTROYED on a query that failed")
+	}
+	entries, _ := st.Entries()
+	if c := state.CostFor(entries, rig.ID, entries[len(entries)-1].At.Add(time.Hour)); c.TotalUSD == 0 {
+		t.Error("stopped accruing without evidence that nothing exists")
+	}
+}
+
 // R-13: a destroy that only stops leaves a storage-billing container, and the
 // absence check is what catches it.
 func TestDestroyThatOnlyStopsIsNotConfirmed(t *testing.T) {

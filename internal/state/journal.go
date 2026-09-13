@@ -37,8 +37,7 @@ type Entry struct {
 
 	// StorageHr is what the rig bills while STOPPED. It is carried because
 	// storage outlives compute, not because it is billed on top of PriceHr:
-	// a running hour costs PriceHr, and compute is what is left of it once
-	// storage is counted on its own line.
+	// a running hour costs PriceHr and a stopped hour StorageHr.
 	StorageHr float64 `json:"storage_hr,omitempty"`
 
 	// Rates says which rules PriceHr and StorageHr were written under. The

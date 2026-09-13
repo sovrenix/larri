@@ -33,17 +33,14 @@ func TestCostIsDerivedFromTheJournal(t *testing.T) {
 	}
 	c := Cost(entries, at(120))
 
-	// 67 minutes billable at $1.20/hr all-in = $1.34, of which a cent is
-	// storage.
+	// 67 minutes running at $1.20/hr all-in = $1.34. Nothing was stopped,
+	// so none of it is storage.
 	near(t, "total", c.TotalUSD, 1.34)
-	near(t, "compute", c.ComputeUSD, 1.34-0.011)
+	near(t, "compute", c.ComputeUSD, 1.34)
 	// Boot is the 6 minutes before READY — the figure R-03 is about.
-	near(t, "boot", c.BootUSD, 0.12+0.001)
+	near(t, "boot", c.BootUSD, 0.12)
 	if !c.ReachedReady {
 		t.Error("this rig reached READY")
-	}
-	if c.TotalUSD <= c.ComputeUSD {
-		t.Error("total must include storage as well as compute")
 	}
 }
 
@@ -73,8 +70,8 @@ func TestStoppedAccruesStorageButNotCompute(t *testing.T) {
 	}
 	c := Cost(entries, at(660)) // ten hours stopped
 
-	near(t, "compute", c.ComputeUSD, 0.98) // only the first hour, less its storage
-	near(t, "storage", c.StorageUSD, 0.02*11)
+	near(t, "compute", c.ComputeUSD, 1.00) // only the running hour
+	near(t, "storage", c.StorageUSD, 0.02*10)
 	if c.TotalUSD <= c.ComputeUSD {
 		t.Fatal("ten hours STOPPED must not be free")
 	}
@@ -164,7 +161,23 @@ func TestARunningRigCostsItsBilledRateOnce(t *testing.T) {
 	}
 	c := Cost(entries, at(60))
 	near(t, "total", c.TotalUSD, 0.821)
-	near(t, "storage", c.StorageUSD, 0.0214)
+}
+
+// A stopped RunPod volume bills twice what a running one does, so the stopped
+// rate is not a part of the running one. Subtracting it split a running hour
+// wrongly and, with a big enough volume, billed more than the pod cost: a
+// $0.10/hr card on a 2 TB volume runs at $0.3783/hr, stops at $0.5556/hr.
+func TestRunningAndStoppedRatesAreSeparate(t *testing.T) {
+	running := 0.10 + 2020*0.10/720
+	stopped := 2000 * 0.20 / 720
+	entries := []Entry{
+		{At: at(0), RigID: "r", To: core.StateReady, PriceHr: running, StorageHr: stopped, Rates: RatesBilled},
+		{At: at(60), RigID: "r", To: core.StateStopped, PriceHr: running, StorageHr: stopped, Rates: RatesBilled},
+	}
+	c := Cost(entries, at(120))
+	near(t, "running hour", c.ComputeUSD, running)
+	near(t, "stopped hour", c.StorageUSD, stopped)
+	near(t, "total", c.TotalUSD, running+stopped)
 }
 
 // Entries from before RatesBilled keep their meaning: the quote as the rate,

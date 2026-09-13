@@ -67,7 +67,7 @@ func (r *Runtime) ResolveWeights(ctx context.Context, spec core.ModelSpec) (runt
 	if quant == "" && explicitFile(spec.Ref) == "" {
 		quant = r.DefaultQuantization()
 	}
-	w, err := ResolveGGUF(ctx, spec.Ref, quant, r.hfToken)
+	w, err := ResolveGGUF(ctx, spec.Ref, spec.Revision, quant, r.hfToken)
 	if err != nil {
 		return runtime.Weights{}, err
 	}

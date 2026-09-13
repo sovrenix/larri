@@ -4,6 +4,7 @@
 package state
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -314,5 +315,52 @@ func TestADestroyedRigCannotBeMovedBackToALiveState(t *testing.T) {
 	}
 	if got, _ := s.Load(rig.ID); got.State != core.StateDestroyed {
 		t.Errorf("stored state = %s", got.State)
+	}
+}
+
+// A second teardown from a stale copy must not replace the reason the first
+// recorded. A rig already destroyed in the caller's own copy may be recorded
+// again, which is how an operator's correction lands.
+func TestAStaleSecondTeardownKeepsTheFirstRecord(t *testing.T) {
+	s := openStore(t)
+	rig := newRig(t)
+	if err := s.Transition(rig, core.StateReady, "ready"); err != nil {
+		t.Fatal(err)
+	}
+	stale := *rig
+	rig.End = &core.Termination{Actor: core.ActorPolicy, Code: core.ReasonIdleTimeout, Summary: "idle"}
+	if err := s.Transition(rig, core.StateDestroyed, "idle"); err != nil {
+		t.Fatal(err)
+	}
+	stale.End = &core.Termination{Actor: core.ActorOperator, Code: core.ReasonOperatorRequest, Summary: "down"}
+	if err := s.Transition(&stale, core.StateDestroyed, "down"); !errors.Is(err, ErrAlreadyDestroyed) {
+		t.Fatalf("err = %v, want ErrAlreadyDestroyed", err)
+	}
+	if got, _ := s.Load(rig.ID); got.End.Code != core.ReasonIdleTimeout {
+		t.Errorf("ending = %s; the first teardown's record stands", got.End.Code)
+	}
+	// The destroyed copy itself can record a correction.
+	rig.End.Evidence = map[string]string{core.EvidenceNothingCreated: "operator: checked"}
+	if err := s.Transition(rig, core.StateDestroyed, "correction"); err != nil {
+		t.Errorf("a correction to a destroyed rig was refused: %v", err)
+	}
+}
+
+// A rig file that cannot be read cannot show the rig is not destroyed, so
+// only teardown proceeds past it.
+func TestAnUnreadableRigFileFailsClosedExceptForTeardown(t *testing.T) {
+	s := openStore(t)
+	rig := newRig(t)
+	if err := s.Transition(rig, core.StateReady, "ready"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.rigPath(rig.ID), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transition(rig, core.StateDegraded, "probes failing"); err == nil {
+		t.Error("moved a rig whose record could not be read")
+	}
+	if err := s.Transition(rig, core.StateDestroyed, "down"); err != nil {
+		t.Errorf("teardown was blocked by an unreadable file: %v", err)
 	}
 }
