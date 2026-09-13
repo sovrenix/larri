@@ -267,3 +267,74 @@ func TestFitAndLaunchAgreeOnUsableVRAM(t *testing.T) {
 		t.Error("an 11 GB card must not pass")
 	}
 }
+
+// A measured weight size beats the estimate, and the estimate is what was
+// wrong: unsloth's UD-IQ1_M is 3.31 bits per weight where the name says 1.75,
+// so a 180B model sized from the table came out at 39 GB against a real 69 GB.
+// That selects a single card for a model that needs four.
+func TestMeasuredWeightsBeatTheEstimate(t *testing.T) {
+	f := llama70B
+	measured := uint64(69) << 30
+
+	est, err := Plan(Request{Spec: spec("q4_K_M", 8192), Facts: f})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Plan(Request{Spec: spec("q4_K_M", 8192), Facts: f, WeightBytes: measured})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.WeightsBytes != measured {
+		t.Errorf("weights = %s, want the measured %s",
+			HumanBytes(got.WeightsBytes), HumanBytes(measured))
+	}
+	if est.WeightsBytes == got.WeightsBytes {
+		t.Error("the measurement changed nothing; the test is not exercising the path")
+	}
+	if got.RequiredVRAMBytes <= measured {
+		t.Error("the requirement must exceed the weights: there is a KV cache too")
+	}
+}
+
+// Once the bytes are known the quantisation's name is not needed, which is
+// what lets a naming scheme the table has never seen still size. New ones keep
+// arriving — UD-Q4_K_XL was one.
+func TestAnUnknownQuantisationSizesFromAMeasurement(t *testing.T) {
+	f := llama70B
+	if _, err := Plan(Request{Spec: spec("UD-SOMETHING-NEW", 8192), Facts: f}); err == nil {
+		t.Fatal("an unknown quantisation with nothing measured must still be refused")
+	}
+	p, err := Plan(Request{Spec: spec("UD-SOMETHING-NEW", 8192), Facts: f,
+		WeightBytes: 40 << 30})
+	if err != nil {
+		t.Fatalf("a measured quantisation was refused for its name: %v", err)
+	}
+	if p.WeightsBytes != 40<<30 {
+		t.Errorf("weights = %s", HumanBytes(p.WeightsBytes))
+	}
+}
+
+// A parameter count feeds one thing: the estimate. A repository that
+// publishes exact file sizes does not need it, and requiring it turned away
+// models that could be sized precisely — unsloth/Llama-3.3-70B-Instruct-GGUF
+// and unsloth/gemma-3-27b-it-GGUF both publish sizes and no parameter count.
+func TestAMeasuredModelNeedsNoParameterCount(t *testing.T) {
+	f := llama70B
+	f.Params = 0
+
+	if err := f.Validate(); err != nil {
+		t.Errorf("facts with every architectural field were refused: %v", err)
+	}
+	p, err := Plan(Request{Spec: spec("q4_K_M", 8192), Facts: f, WeightBytes: 40 << 30})
+	if err != nil {
+		t.Fatalf("a measured model was refused for a missing parameter count: %v", err)
+	}
+	if p.WeightsBytes != 40<<30 {
+		t.Errorf("weights = %s", HumanBytes(p.WeightsBytes))
+	}
+	// Without a measurement there is nothing to size from, and that is still
+	// a refusal rather than a guess.
+	if _, err := Plan(Request{Spec: spec("q4_K_M", 8192), Facts: f}); err == nil {
+		t.Error("an unmeasured model with no parameter count was sized anyway")
+	}
+}

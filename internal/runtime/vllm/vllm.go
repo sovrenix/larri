@@ -383,6 +383,7 @@ func (r *Runtime) Requires() runtime.Requirements {
 	return runtime.Requirements{
 		MinComputeCapability: lowestArch(ImageArchList),
 		MinCUDA:              cudaTimesTen(ImageCUDA),
+		TensorParallel:       true,
 		Why:                  "vLLM",
 	}
 }
@@ -543,7 +544,9 @@ func (r *Runtime) SetHuggingFaceEndpoint(endpoint string) { r.hfEndpoint = endpo
 // hf-xet adds a chunk store beside the hub directory.
 //
 // So every plausible root is measured and the largest wins. They nest, so
-// summing would double-count.
+// summing would double-count. On RunPod /root/.cache/huggingface is a link
+// onto the sized volume, made by the start script; measuring the path follows
+// it, so nothing here changes.
 var weightsCacheRoots = []string{
 	"$HF_HOME", "$HF_HUB_CACHE", "$HOME/.cache/huggingface",
 	"/root/.cache/huggingface", "/vllm-workspace",

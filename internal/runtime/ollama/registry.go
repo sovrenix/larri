@@ -29,13 +29,14 @@ const headerBytes = 1 << 20
 
 // Info is what the registry and the model's own header say about a tag.
 type Info struct {
-	Ref           string
-	Arch          string
-	Layers        int
-	KVHeads       int
-	HeadDim       int
-	HiddenSize    int
-	MaxContextLen int
+	Ref            string
+	Arch           string
+	Layers         int
+	AttentionHeads int
+	KVHeads        int
+	HeadDim        int
+	HiddenSize     int
+	MaxContextLen  int
 
 	// Quantization is the model's actual scheme, read from its header rather
 	// than taken from whatever the operator typed. An Ollama tag ships one
@@ -132,6 +133,7 @@ func Inspect(ctx context.Context, ref string) (Info, error) {
 	// head_count_kv is absent on models without grouped-query attention,
 	// where every head has its own KV — so falling back to head_count is the
 	// correct reading rather than a guess.
+	info.AttentionHeads = heads
 	if kv, ok := f.ArchUint("attention.head_count_kv"); ok && kv > 0 {
 		info.KVHeads = int(kv)
 	} else {

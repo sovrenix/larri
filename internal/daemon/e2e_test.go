@@ -534,13 +534,13 @@ func e2eRuntime(t *testing.T, model string) (runtime.Runtime, string) {
 		r := llamacpp.New()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		file, err := llamacpp.ResolveGGUF(ctx, model, e2eQuant(),
+		w, err := llamacpp.ResolveGGUF(ctx, model, e2eQuant(),
 			secret.New(os.Getenv("HF_TOKEN")))
 		if err != nil {
 			t.Fatalf("resolve gguf: %v", err)
 		}
-		t.Logf("weights: %s", file)
-		r.SetGGUF(file)
+		t.Logf("weights: %s", w.File)
+		r.SetWeights(w)
 		return r, "llamacpp"
 	case "ollama":
 		// The tag carries its own quantisation and architecture; nothing

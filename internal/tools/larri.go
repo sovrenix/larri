@@ -81,6 +81,10 @@ func larriTools(d Deps) []Tool {
 				"quantization": {Type: "string"},
 				"context":      {Type: "integer"},
 				"gpu":          {Type: "string", Description: "GPU model filter, e.g. 'RTX 4090'"},
+				"gpus":         {Type: "integer", Description: "minimum GPUs per host"},
+				"max_gpus":     {Type: "integer", Description: "maximum GPUs per host"},
+				"vram":         {Type: "integer", Description: "minimum aggregate VRAM in GB"},
+				"vram_per_gpu": {Type: "integer", Description: "minimum VRAM per card in GB"},
 				"max_price":    {Type: "number", Description: "ceiling in $/hr"},
 				"top":          {Type: "integer", Description: "how many to return (default 10)"},
 			}, "model"),
@@ -115,6 +119,10 @@ func larriTools(d Deps) []Tool {
 				"quantization": {Type: "string"},
 				"context":      {Type: "integer"},
 				"gpu":          {Type: "string"},
+				"gpus":         {Type: "integer"},
+				"max_gpus":     {Type: "integer"},
+				"vram":         {Type: "integer"},
+				"vram_per_gpu": {Type: "integer"},
 				"max_price":    {Type: "number", Description: "ceiling in $/hr; refuses above it"},
 				"idle_timeout": {Type: "string", Description: "e.g. '30m'; destroys after this long unused"},
 				"budget":       {Type: "number", Description: "spend ceiling in $; destroys on breach"},
@@ -172,24 +180,38 @@ func (d Deps) status(ctx context.Context, raw json.RawMessage) (any, error) {
 		if !a.All && r.State.Terminal() {
 			continue
 		}
+		// The same summary `larri status` renders, so an agent and an
+		// operator asking about one rig get one answer.
+		sm := state.Summarise(r, entries, now)
 		row := map[string]any{
-			"rig":      r.ID,
-			"state":    string(r.State),
-			"model":    r.Model.Ref,
-			"served":   r.Model.ServedName,
-			"runtime":  string(r.Runtime),
-			"gpu":      r.Offer.GPUModel,
-			"price_hr": round4(r.Offer.PriceHr),
-			"billable": r.State.Billable(),
+			"rig":       sm.ID,
+			"state":     string(sm.State),
+			"provider":  sm.Provider,
+			"hardware":  sm.Hardware,
+			"gpu":       sm.GPUModel,
+			"gpu_count": sm.GPUCount,
+			"vram_gb":   sm.VRAMGB,
+			"model":     sm.Model,
+			"quant":     sm.Quantization,
+			"served":    sm.Served,
+			"runtime":   string(sm.Runtime),
+			"price_hr":  round4(sm.PriceHr),
+			"quoted_hr": round4(sm.QuotedHr),
+			"billable":  sm.State.Billable(),
+			"created":   sm.CreatedAt.UTC().Format(time.RFC3339),
 		}
-		if r.Instance != nil {
-			row["instance"] = r.Instance.InstanceID
-			row["provider"] = r.Instance.Provider
+		if sm.Instance != "" {
+			row["instance"] = sm.Instance
+		}
+		if sm.Region != "" {
+			row["region"] = sm.Region
+		}
+		if sm.Endpoint != "" {
+			row["endpoint"] = sm.Endpoint
 		}
 		if entries != nil {
-			c := state.CostFor(entries, r.ID, now)
-			row["accrued_usd"] = round4(c.TotalUSD)
-			row["ran"] = c.Ran.Round(time.Second).String()
+			row["accrued_usd"] = round4(sm.Cost.TotalUSD)
+			row["ran"] = sm.Cost.Ran.Round(time.Second).String()
 		}
 		// Why a past rig ended is the whole reason terminated rigs are kept.
 		if r.End != nil {
@@ -267,8 +289,8 @@ func (d Deps) plan(ctx context.Context, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	sv, err := o.Offers(ctx, daemon.UpRequest{
-		Criteria: core.Criteria{MinReliability: 0.90, DiskGB: 60},
-		Model:    a.spec(), DiskGB: 60,
+		Criteria: core.Criteria{MinReliability: 0.90},
+		Model:    a.spec(),
 	})
 	if err != nil {
 		return nil, err
@@ -295,9 +317,13 @@ func (d Deps) plan(ctx context.Context, raw json.RawMessage) (any, error) {
 
 type offersArgs struct {
 	planArgs
-	GPU      string  `json:"gpu"`
-	MaxPrice float64 `json:"max_price"`
-	Top      int     `json:"top"`
+	GPU        string  `json:"gpu"`
+	GPUCount   int     `json:"gpus"`
+	MaxGPU     int     `json:"max_gpus"`
+	VRAMTotal  int     `json:"vram"`
+	VRAMPerGPU int     `json:"vram_per_gpu"`
+	MaxPrice   float64 `json:"max_price"`
+	Top        int     `json:"top"`
 }
 
 func (d Deps) searchOffers(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -315,11 +341,18 @@ func (d Deps) searchOffers(ctx context.Context, raw json.RawMessage) (any, error
 	if err != nil {
 		return nil, err
 	}
-	crit := core.Criteria{MaxPriceHr: a.MaxPrice, MinReliability: 0.90, DiskGB: 60}
+	crit := core.Criteria{
+		MaxPriceHr:     a.MaxPrice,
+		MinReliability: 0.90,
+		GPUCount:       a.GPUCount,
+		MaxGPUCount:    a.MaxGPU,
+		VRAMTotalGB:    a.VRAMTotal,
+		VRAMPerGPUGB:   a.VRAMPerGPU,
+	}
 	if a.GPU != "" {
 		crit.GPUModel = []string{a.GPU}
 	}
-	sv, err := o.Offers(ctx, daemon.UpRequest{Criteria: crit, Model: a.spec(), DiskGB: 60})
+	sv, err := o.Offers(ctx, daemon.UpRequest{Criteria: crit, Model: a.spec()})
 	if err != nil {
 		return nil, err
 	}

@@ -127,7 +127,14 @@ func (d Deps) up(ctx context.Context, raw json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("this surface cannot hold a rig")
 	}
 
-	crit := core.Criteria{MaxPriceHr: a.MaxPrice, MinReliability: 0.90, DiskGB: 60}
+	crit := core.Criteria{
+		MaxPriceHr:     a.MaxPrice,
+		MinReliability: 0.90,
+		GPUCount:       a.GPUCount,
+		MaxGPUCount:    a.MaxGPU,
+		VRAMTotalGB:    a.VRAMTotal,
+		VRAMPerGPUGB:   a.VRAMPerGPU,
+	}
 	if a.GPU != "" {
 		crit.GPUModel = []string{a.GPU}
 	}
@@ -139,7 +146,7 @@ func (d Deps) up(ctx context.Context, raw json.RawMessage) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		sv, err := o.Offers(ctx, daemon.UpRequest{Criteria: crit, Model: spec, DiskGB: 60})
+		sv, err := o.Offers(ctx, daemon.UpRequest{Criteria: crit, Model: spec})
 		if err != nil {
 			return nil, err
 		}
@@ -213,8 +220,11 @@ func (d Deps) bringUp(ctx context.Context, crit core.Criteria, spec core.ModelSp
 	}()
 	defer close(events)
 
+	// DiskGB unset: the daemon sizes it to the weights, the same answer the
+	// CLI gets. A fixed 60 here would be an agent renting a disk the model
+	// cannot fit on.
 	live, err := o.UpAndServe(ctx, daemon.UpRequest{
-		Criteria: crit, Model: spec, DiskGB: 60,
+		Criteria: crit, Model: spec,
 		HFToken: d.HFToken, LocalPort: 0,
 	})
 	if err != nil {

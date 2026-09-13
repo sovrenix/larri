@@ -81,12 +81,38 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 	if len(c.GPUModel) > 0 {
 		req.GPUName = &stringsFilter{In: c.GPUModel}
 	}
-	if c.GPUCount > 0 {
-		req.NumGPUs = &intFilter{Gte: &c.GPUCount}
+	// One filter, two bounds. A floor alone would leave an operator who
+	// asked for at most two cards reading a list led by eight-card hosts,
+	// and the ceiling is the one that costs money to get wrong: every card
+	// in a pod bills whether or not the model is placed on it.
+	//
+	// The floor is never absent once the filter is sent, because a bare
+	// ceiling pulls in the marketplace's CPU-only listings: `num_gpus` 0,
+	// `gpu_name` "N/A", and no `gpu_ram` at all. A live `--max-gpus 2` search
+	// returned 215 of them, each correctly rejected as shape drift and each
+	// printing a warning — a control that works while burying its own output
+	// in noise. Unfiltered searches never show them, so this is the filter's
+	// own doing rather than a market LARRI has to live with.
+	if c.GPUCount > 0 || c.MaxGPUCount > 0 {
+		floor := c.GPUCount
+		if floor < 1 {
+			floor = 1
+		}
+		f := &intFilter{Gte: &floor}
+		if c.MaxGPUCount > 0 {
+			f.Lte = &c.MaxGPUCount
+		}
+		req.NumGPUs = f
 	}
 	if c.VRAMPerGPUGB > 0 {
 		mb := c.VRAMPerGPUGB * mbPerGB
 		req.GPURAM = &intFilter{Gte: &mb}
+	}
+	// gpu_total_ram is the aggregate across the host's cards, which is what
+	// a model too large for any single card is actually shopping for.
+	if c.VRAMTotalGB > 0 {
+		mb := c.VRAMTotalGB * mbPerGB
+		req.GPUTotalRAM = &intFilter{Gte: &mb}
 	}
 	if c.MaxPriceHr > 0 {
 		req.DPHTotal = &floatFilter{Lte: &c.MaxPriceHr}

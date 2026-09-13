@@ -5,12 +5,14 @@ package llamacpp
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
 	"testing"
 
 	"go.sovrenix.com/larri/internal/core"
+	"go.sovrenix.com/larri/internal/errs"
 	"go.sovrenix.com/larri/internal/runtime"
 	"go.sovrenix.com/larri/internal/secret"
 )
@@ -195,5 +197,141 @@ func TestLaunchLeavesThePathAloneForAPathBinary(t *testing.T) {
 	}
 	if strings.Contains(cmd, "LD_LIBRARY_PATH") {
 		t.Errorf("needlessly rewrote the library path:\n%s", cmd)
+	}
+}
+
+// Every part has to arrive. A model large enough to need more than one card
+// is published in parts, so for this engine that is the case rather than an
+// edge case — and fetching only the first left the engine failing on a
+// missing tensor, which reads exactly like a corrupt download.
+func TestBootstrapFetchesEveryShard(t *testing.T) {
+	r := New()
+	r.SetGGUF("UD-Q4_K_XL/model-00001-of-00003.gguf")
+	sess := &recSession{out: "llama-server"}
+	if err := r.Bootstrap(context.Background(), sess, spec(), core.SizingPlan{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		part := fmt.Sprintf("model-%05d-of-00003.gguf", i)
+		var seen bool
+		for _, c := range sess.cmds {
+			if strings.Contains(c, part) {
+				seen = true
+			}
+		}
+		if !seen {
+			t.Errorf("part %d (%s) was never fetched", i, part)
+		}
+	}
+}
+
+// The URL keeps the repository's path and the destination does not: the
+// download created the model directory but never the quantisation directory
+// inside it, so curl failed to open its destination before a byte moved.
+func TestDownloadWritesBesideTheModelDirNotUnderIt(t *testing.T) {
+	r := New()
+	cmd := r.downloadCmd(spec(), "UD-Q4_K_XL/model-00001-of-00003.gguf")
+	if !strings.Contains(cmd, "resolve/main/UD-Q4_K_XL/model-00001-of-00003.gguf") {
+		t.Errorf("the URL lost the repository path: %s", cmd)
+	}
+	if strings.Contains(cmd, ModelDir+"/UD-Q4_K_XL/") {
+		t.Errorf("the destination is a directory nothing creates: %s", cmd)
+	}
+	if !strings.Contains(cmd, ModelDir+"/model-00001-of-00003.gguf") {
+		t.Errorf("the destination is not flattened into the model dir: %s", cmd)
+	}
+}
+
+// And the launch has to be pointed at the file that was actually written.
+func TestLaunchPointsAtTheFlattenedFile(t *testing.T) {
+	r := New()
+	r.launcher = "llama-server"
+	r.SetGGUF("UD-Q4_K_XL/model-00001-of-00003.gguf")
+	cmd, err := r.launchCommand(spec(), core.SizingPlan{ContextLen: 4096},
+		runtime.Endpoint{Host: runtime.Loopback, Port: RemotePort, Model: "m",
+			Key: secret.New("k")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cmd, ModelDir+"/model-00001-of-00003.gguf") {
+		t.Errorf("launch points somewhere nothing was downloaded: %s", cmd)
+	}
+}
+
+// scriptedSession answers each command by what it contains, so a test can
+// give the free-space probe one answer and the runtime probe another.
+type scriptedSession struct {
+	recSession
+	answers map[string]string
+}
+
+func (s *scriptedSession) Run(ctx context.Context, cmd string) ([]byte, error) {
+	s.recSession.Run(ctx, cmd)
+	for marker, out := range s.answers {
+		if strings.Contains(cmd, marker) {
+			return []byte(out), nil
+		}
+	}
+	return []byte(s.out), nil
+}
+
+// A disk that cannot hold the weights is found before the download, not
+// twenty gigabytes into it. On RunPod this is what catches a volume link the
+// start script was allowed not to make.
+func TestBootstrapRefusesADiskThatCannotHoldTheWeights(t *testing.T) {
+	r := New()
+	r.SetWeights(Weights{File: "m-00001-of-00002.gguf", Bytes: 100 << 30})
+	sess := &scriptedSession{
+		recSession: recSession{out: "llama-server"},
+		// 20 GiB free, nothing there yet: the container disk, not the volume.
+		answers: map[string]string{"df -Pk": "20971520\n0\n"},
+	}
+	err := r.Bootstrap(context.Background(), sess, spec(), core.SizingPlan{}, nil)
+	if err == nil {
+		t.Fatal("a 20 GB disk was accepted for 100 GB of weights")
+	}
+	if !errs.Is(err, errs.ClassHostFailure) {
+		t.Errorf("class = %s; the next host may have the space", errs.ClassOf(err))
+	}
+	for _, c := range sess.cmds {
+		if strings.Contains(c, "curl") {
+			t.Fatal("a download started on a disk that could not hold it")
+		}
+	}
+}
+
+// Space already used by the same weights counts as space: a retried
+// bootstrap pays only for what is missing.
+func TestBootstrapCountsWhatIsAlreadyDownloaded(t *testing.T) {
+	r := New()
+	r.SetWeights(Weights{File: "m.gguf", Bytes: 30 << 30})
+	sess := &scriptedSession{
+		recSession: recSession{out: "llama-server"},
+		// 10 GiB free, 25 GiB already down.
+		answers: map[string]string{"df -Pk": "10485760\n26214400\n"},
+	}
+	if err := r.Bootstrap(context.Background(), sess, spec(), core.SizingPlan{}, nil); err != nil {
+		t.Fatalf("refused a download that fits once what is already there counts: %v", err)
+	}
+}
+
+// A probe that cannot run proves nothing, and an unmeasured size gives it
+// nothing to compare against. Both pass (§4a).
+func TestFreeSpaceCheckPassesWhenItCannotMeasure(t *testing.T) {
+	for name, c := range map[string]struct {
+		bytes uint64
+		out   string
+	}{
+		"no df output":     {100 << 30, ""},
+		"garbage":          {100 << 30, "Filesystem\n"},
+		"no measured size": {0, "1\n0\n"},
+	} {
+		r := New()
+		r.SetWeights(Weights{File: "m.gguf", Bytes: c.bytes})
+		sess := &scriptedSession{recSession: recSession{out: "llama-server"},
+			answers: map[string]string{"df -Pk": c.out}}
+		if err := r.checkFreeSpace(context.Background(), sess); err != nil {
+			t.Errorf("%s: refused on no evidence: %v", name, err)
+		}
 	}
 }

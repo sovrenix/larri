@@ -37,12 +37,12 @@ bin/larri up --model Qwen/Qwen2.5-1.5B-Instruct --dry-run
 
 ```
   sizing     Qwen/Qwen2.5-1.5B-Instruct needs ~4.6 GB VRAM
-  search     1801 offers satisfy the criteria
-  excluded   608 offers: insufficient-vram
-  excluded   268 offers: verification-withdrawn
-  select     vastai RTX 3060 12GB $0.047/hr (reliability 0.98)
-  plan       ready in ~4m0s (2m0s bringup + 2m0s fetching 10.9 GB over a 918 Mbps link)
-  plan       cost: $0.00 to reach ready, $0.05 for 1h of use, $0.05 total
+  search     278 offers satisfy the criteria
+  excluded   62 offers: insufficient-vram
+  excluded   120 offers: verification-withdrawn
+  select     vastai RTX 4070S 11GB $0.090/hr (reliability 0.99)
+  plan       ready in ~9m0s (2m0s bringup + 7m0s fetching 10.9 GB over a 221 Mbps link)
+  plan       cost: $0.01 to reach ready, $0.09 for 1h of use, $0.10 total
 ```
 
 Read the `plan` lines before anything else. They are the whole decision: what
@@ -51,6 +51,20 @@ which is why LARRI ranks on time-to-ready rather than on the hourly rate. The
 cheapest listing is regularly the most expensive rig.
 
 `--dry-run` stops there. Nothing has been rented.
+
+A model too large for one card is not a dead end: LARRI ranks multi-GPU hosts
+alongside single-card ones, and says what it is doing with them.
+
+```
+  sizing     disk 138 GB to hold 103.7 GB of weights and the image
+  sizing     sharding across all 2 cards
+  sizing     per card: about 62.1 GB of 76.0 GB usable, 51.8 GB of it weights
+  select     runpod 2× A100 SXM 160GB $3.180/hr
+```
+
+`--max-gpus 1` opts out; `--gpus`, `--vram` and `--vram-per-gpu` narrow it
+further. With a layer-splitting engine such as llama.cpp, extra cards buy
+memory rather than speed on a single request, and the plan says so.
 
 ## 4. Bring it up
 
@@ -136,9 +150,9 @@ not afford to publish.
 **The cheap end of the market is rough.** Hosts fail: no internet, container
 runtimes that cannot attach GPUs, machines that drop off mid-pull. LARRI
 checks the local port before spending. Once connected, it verifies compute
-capability, CUDA version, VRAM across every card, and whether the host can
-reach Hugging Face before downloading weights, then falls back when a host
-fails anyway.
+capability, CUDA version, the VRAM on the cards the engine can actually use,
+free disk for the weights, and whether the host can reach Hugging Face before
+downloading them — then falls back when a host fails anyway.
 Expect an attempt or two to be discarded. That is the market, not a
 malfunction.
 

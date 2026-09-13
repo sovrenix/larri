@@ -6,8 +6,13 @@ package runpod
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -19,22 +24,45 @@ import (
 
 // The catalogue as RunPod actually returns it, including the entries with no
 // price — about ten at any time, hardware listed but not placeable.
+//
+// One entry per GPU count, because that is the shape of the query: RunPod
+// prices lowestPrice(gpuCount: N) separately for each N and reports stock
+// separately too. The two disagree, which is why both are read — a live
+// catalogue had H100 SXM at High for one card, Medium for two, Low for four,
+// and the A5000 below is priced at two cards while unpriced at one, which is
+// the case that would have made a whole type invisible.
 const catalogueJSON = `{"data":{"gpuTypes":[
  {"id":"NVIDIA GeForce RTX 4090","displayName":"RTX 4090","memoryInGb":24,
-  "secureCloud":true,"communityCloud":true,"maxGpuCount":8,
-  "lowestPrice":{"minimumBidPrice":0.34,"uninterruptablePrice":0.69,"stockStatus":"Medium"}},
+  "secureCloud":true,"communityCloud":true,"maxGpuCount":4,
+  "price1":{"minimumBidPrice":0.34,"uninterruptablePrice":0.69,"stockStatus":"Medium"},
+  "price2":{"minimumBidPrice":0.68,"uninterruptablePrice":1.38,"stockStatus":"Medium"},
+  "price4":{"minimumBidPrice":1.36,"uninterruptablePrice":2.76,"stockStatus":"Low"},
+  "price8":null},
  {"id":"NVIDIA A100 80GB PCIe","displayName":"A100 PCIe","memoryInGb":80,
   "secureCloud":true,"communityCloud":true,"maxGpuCount":8,
-  "lowestPrice":{"minimumBidPrice":1.19,"uninterruptablePrice":1.19,"stockStatus":"High"}},
+  "price1":{"minimumBidPrice":1.19,"uninterruptablePrice":1.19,"stockStatus":"High"},
+  "price2":{"minimumBidPrice":2.38,"uninterruptablePrice":2.38,"stockStatus":"High"},
+  "price3":{"minimumBidPrice":3.57,"uninterruptablePrice":3.57,"stockStatus":"High"},
+  "price4":{"minimumBidPrice":4.76,"uninterruptablePrice":4.76,"stockStatus":"Medium"},
+  "price8":{"minimumBidPrice":9.52,"uninterruptablePrice":9.52,"stockStatus":"Low"}},
  {"id":"NVIDIA RTX A5000","displayName":"RTX A5000","memoryInGb":24,
   "secureCloud":true,"communityCloud":true,"maxGpuCount":8,
-  "lowestPrice":{"minimumBidPrice":null,"uninterruptablePrice":null,"stockStatus":null}},
+  "price1":{"minimumBidPrice":null,"uninterruptablePrice":null,"stockStatus":null},
+  "price2":{"minimumBidPrice":null,"uninterruptablePrice":null,"stockStatus":null},
+  "price4":{"minimumBidPrice":null,"uninterruptablePrice":null,"stockStatus":null},
+  "price8":{"minimumBidPrice":null,"uninterruptablePrice":null,"stockStatus":null}},
  {"id":"NVIDIA GeForce RTX 3070","displayName":"RTX 3070","memoryInGb":8,
   "secureCloud":true,"communityCloud":true,"maxGpuCount":8,
-  "lowestPrice":{"minimumBidPrice":0.13,"uninterruptablePrice":0.13,"stockStatus":"Low"}},
+  "price1":{"minimumBidPrice":0.13,"uninterruptablePrice":0.13,"stockStatus":"Low"},
+  "price2":{"minimumBidPrice":0.26,"uninterruptablePrice":0.26,"stockStatus":"Low"},
+  "price4":{"minimumBidPrice":0.52,"uninterruptablePrice":0.52,"stockStatus":"Low"},
+  "price8":{"minimumBidPrice":1.04,"uninterruptablePrice":1.04,"stockStatus":"Low"}},
  {"id":"AMD Instinct MI300X OAM","displayName":"MI300X","memoryInGb":192,
   "secureCloud":true,"communityCloud":false,"maxGpuCount":8,
-  "lowestPrice":{"minimumBidPrice":0.5,"uninterruptablePrice":0.5,"stockStatus":"High"}}
+  "price1":{"minimumBidPrice":0.5,"uninterruptablePrice":0.5,"stockStatus":"High"},
+  "price2":{"minimumBidPrice":1.0,"uninterruptablePrice":1.0,"stockStatus":"High"},
+  "price4":{"minimumBidPrice":2.0,"uninterruptablePrice":2.0,"stockStatus":"High"},
+  "price8":{"minimumBidPrice":4.0,"uninterruptablePrice":4.0,"stockStatus":"High"}}
 ]}}`
 
 func testProvider(t *testing.T, h http.HandlerFunc) *Provider {
@@ -85,6 +113,11 @@ func TestUnpricedGpuTypesAreDropped(t *testing.T) {
 // The id must survive normalisation, because it is what POST /pods accepts.
 // Normalising to the pretty display name would produce offers that cannot be
 // bought.
+//
+// It now shares an offer id with the card count, because one catalogue entry
+// is several purchases and the conformance suite requires offer ids to be
+// unique. Both halves have to come back out: the type id is what the REST API
+// takes, and the count is what decides how much VRAM was bought.
 func TestOfferIDIsThePurchasableGpuTypeID(t *testing.T) {
 	offers, err := catalogueOnly(t).Search(context.Background(), core.Criteria{})
 	if err != nil {
@@ -92,7 +125,7 @@ func TestOfferIDIsThePurchasableGpuTypeID(t *testing.T) {
 	}
 	var found bool
 	for _, o := range offers {
-		if o.OfferID == "NVIDIA GeForce RTX 4090" {
+		if gpuTypeID(o.OfferID) == "NVIDIA GeForce RTX 4090" && o.GPUCount == 1 {
 			found = true
 			if o.GPUModel != "RTX 4090" {
 				t.Errorf("display name = %q", o.GPUModel)
@@ -101,6 +134,67 @@ func TestOfferIDIsThePurchasableGpuTypeID(t *testing.T) {
 	}
 	if !found {
 		t.Error("the purchasable id did not survive into the offer")
+	}
+}
+
+// A model too large for the biggest single card is the ordinary reason to
+// want a multi-GPU host, and RunPod sells pods of up to eight. Pricing only
+// the single-card size reported those models unsatisfiable on a provider that
+// had the hardware — the whole of issue #2.
+func TestMultiGPUOffersAreListedPerCount(t *testing.T) {
+	offers, err := catalogueOnly(t).Search(context.Background(), core.Criteria{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byCount := map[int]core.Offer{}
+	for _, o := range offers {
+		if gpuTypeID(o.OfferID) == "NVIDIA A100 80GB PCIe" {
+			byCount[o.GPUCount] = o
+		}
+	}
+	// 1, 2, 3 and 4 are in stock; 8 is Low and must not be offered. Three
+	// matters most: it is the size the powers-of-two list used to skip, and
+	// the cheapest fit for anything between two cards' VRAM and four.
+	for _, n := range []int{1, 2, 3, 4} {
+		o, ok := byCount[n]
+		if !ok {
+			t.Fatalf("no %d-GPU offer for a type RunPod places up to 8 at a time", n)
+		}
+		if want := 80 * n; o.VRAMTotalGB() != want {
+			t.Errorf("%d-GPU offer aggregates %dGB, want %dGB", n, o.VRAMTotalGB(), want)
+		}
+		if want := 1.19 * float64(n); o.PriceHr != want {
+			t.Errorf("%d-GPU offer priced $%.2f, want $%.2f", n, o.PriceHr, want)
+		}
+	}
+	if _, ok := byCount[8]; ok {
+		t.Error("an eight-card size with Low stock was offered; stock is per count, " +
+			"and a create at that size is refused")
+	}
+	// maxGpuCount is a real ceiling: the 4090 lists 4 and must not be offered
+	// at 8, however the catalogue prices it.
+	for _, o := range offers {
+		if gpuTypeID(o.OfferID) == "NVIDIA GeForce RTX 4090" && o.GPUCount > 4 {
+			t.Errorf("offered %d cards of a type RunPod caps at 4", o.GPUCount)
+		}
+	}
+}
+
+// A type unpriced at one card may still be priced at two. Reporting it as
+// "no price" and skipping the whole entry is how a rentable size goes
+// missing.
+func TestACountThatIsPricedSurvivesOneThatIsNot(t *testing.T) {
+	offers, err := catalogueOnly(t).Search(context.Background(), core.Criteria{
+		MaxGPUCount: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range offers {
+		if o.GPUCount > 2 {
+			t.Errorf("offer %s carries %d cards, above the ceiling of 2",
+				o.OfferID, o.GPUCount)
+		}
 	}
 }
 
@@ -137,7 +231,8 @@ func TestSpotPricingIsOptIn(t *testing.T) {
 		if o.Interruptible {
 			t.Errorf("offer %s is interruptible without being asked for", o.OfferID)
 		}
-		if o.OfferID == "NVIDIA GeForce RTX 4090" && o.PriceHr != 0.69 {
+		if gpuTypeID(o.OfferID) == "NVIDIA GeForce RTX 4090" && o.GPUCount == 1 &&
+			o.PriceHr != 0.69 {
 			t.Errorf("on-demand price = %v, want the uninterruptable 0.69", o.PriceHr)
 		}
 	}
@@ -148,6 +243,15 @@ func TestSpotPricingIsOptIn(t *testing.T) {
 	for _, o := range spot {
 		if o.OfferID == "NVIDIA GeForce RTX 4090" && o.PriceHr != 0.34 {
 			t.Errorf("spot price = %v, want the bid 0.34", o.PriceHr)
+		}
+	}
+	requireSpot, err := p.Search(context.Background(), core.Criteria{Interruptible: core.Require})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range requireSpot {
+		if !o.Interruptible {
+			t.Errorf("offer %s is on-demand under interruptible=require", o.OfferID)
 		}
 	}
 }
@@ -395,13 +499,26 @@ func TestOutOfStockTypesAreNotOffered(t *testing.T) {
 	if !strings.Contains(noticed, "out of stock") {
 		t.Errorf("the operator was not told why it vanished: %q", noticed)
 	}
-	// High and Medium both stay.
-	var kinds []string
+	// High and Medium both stay. Counted by type rather than by offer: one
+	// type is now several offers, one per card count it is in stock at.
+	kinds := map[string]bool{}
 	for _, o := range offers {
-		kinds = append(kinds, o.GPUModel)
+		kinds[o.GPUModel] = true
 	}
-	if len(offers) != 3 {
+	if len(kinds) != 3 {
 		t.Errorf("kept %v; want the High and Medium stock types", kinds)
+	}
+	// And stock is per count, not per type: the 4090 is Low at four cards
+	// while Medium at one and two, so only the first two sizes survive.
+	var sizes []int
+	for _, o := range offers {
+		if o.GPUModel == "RTX 4090" {
+			sizes = append(sizes, o.GPUCount)
+		}
+	}
+	sort.Ints(sizes)
+	if len(sizes) != 2 || sizes[0] != 1 || sizes[1] != 2 {
+		t.Errorf("4090 offered at %v cards; want 1 and 2, the sizes it is in stock at", sizes)
 	}
 }
 
@@ -430,7 +547,7 @@ func TestInStockAcceptsOnlyWhatCreates(t *testing.T) {
 func TestNothingRentableIsAnError(t *testing.T) {
 	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"data":{"gpuTypes":[{"id":"unknown","displayName":"x",
-		  "memoryInGb":0,"lowestPrice":{"uninterruptablePrice":null,"stockStatus":null}}]}}`))
+		  "memoryInGb":0,"price1":{"uninterruptablePrice":null,"stockStatus":null}}]}}`))
 	})
 	if _, err := p.Search(context.Background(), core.Criteria{}); err == nil {
 		t.Fatal("an empty catalogue read as a successful search")
@@ -548,5 +665,185 @@ func TestStartCommandHardensSSHBecauseItIsInternetFacing(t *testing.T) {
 	// served with the defaults.
 	if strings.Index(got, "PasswordAuthentication no") > strings.Index(got, "service ssh start") {
 		t.Error("the daemon starts before it is hardened")
+	}
+}
+
+// The disk the operator sizes is the volume at /workspace, while LARRI's data
+// directory was on the 20 GB container disk — so a 111 GB download died at
+// 20 GB whatever --disk said. The start script links LARRI's directory and
+// vLLM's Hugging Face cache onto the volume, first, and without any way to
+// stop the script before sshd starts.
+func TestStartScriptPutsLarriDataOnTheVolume(t *testing.T) {
+	s := startScript("")
+	sshd := strings.Index(s, "service ssh start")
+	if sshd < 0 {
+		t.Fatal("the start script no longer starts sshd")
+	}
+	for _, link := range []string{
+		"larri_link /workspace/.larri /root/.larri",
+		"larri_link /workspace/.cache/huggingface /root/.cache/huggingface",
+	} {
+		i := strings.Index(s, link)
+		if i < 0 {
+			t.Fatalf("the start script does not run %q", link)
+		}
+		if apt := strings.Index(s, "apt-get"); i > apt {
+			t.Errorf("%q runs after other setup; it must come first", link)
+		}
+	}
+	// Nothing before sshd may end the script. A pod whose start script exits
+	// here bills with nothing listening, until the stall limit notices.
+	if strings.Contains(s[:sshd], "exit") {
+		t.Error("the start script can exit before sshd starts")
+	}
+}
+
+// The link function run for real, against every state the target can be in.
+// It runs under set -e before sshd, so the property that matters is that it
+// never fails — a pod that cannot be linked still serves anything that fits in
+// 20 GB, and one whose script died here serves nothing and still bills.
+func TestVolumeLinkNeverStopsTheScript(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	run := func(t *testing.T, root string, setup func(target string)) (reached bool, target string) {
+		t.Helper()
+		vol, target := filepath.Join(root, "vol", "d"), filepath.Join(root, "home", "d")
+		if setup != nil {
+			setup(target)
+		}
+		script := "set -e\n" + volumeLink + "larri_link " + vol + " " + target + "\necho reached\n"
+		out, _ := exec.Command("bash", "-c", script).CombinedOutput()
+		return strings.Contains(string(out), "reached"), target
+	}
+	linksToVolume := func(t *testing.T, target string) bool {
+		t.Helper()
+		dest, err := os.Readlink(target)
+		return err == nil && strings.HasSuffix(dest, filepath.Join("vol", "d"))
+	}
+
+	t.Run("absent: linked", func(t *testing.T) {
+		reached, target := run(t, t.TempDir(), nil)
+		if !reached || !linksToVolume(t, target) {
+			t.Errorf("reached=%v linked=%v", reached, linksToVolume(t, target))
+		}
+	})
+	t.Run("existing link: re-pointed", func(t *testing.T) {
+		reached, target := run(t, t.TempDir(), func(target string) {
+			os.MkdirAll(filepath.Dir(target), 0o755)
+			os.Symlink("/nonexistent", target)
+		})
+		if !reached || !linksToVolume(t, target) {
+			t.Errorf("reached=%v linked=%v", reached, linksToVolume(t, target))
+		}
+	})
+	t.Run("empty directory: replaced", func(t *testing.T) {
+		reached, target := run(t, t.TempDir(), func(target string) { os.MkdirAll(target, 0o755) })
+		if !reached || !linksToVolume(t, target) {
+			t.Errorf("reached=%v linked=%v", reached, linksToVolume(t, target))
+		}
+	})
+	t.Run("directory with contents: left alone, script continues", func(t *testing.T) {
+		reached, target := run(t, t.TempDir(), func(target string) {
+			os.MkdirAll(target, 0o755)
+			os.WriteFile(filepath.Join(target, "keep"), []byte("x"), 0o644)
+		})
+		if !reached {
+			t.Fatal("an existing directory stopped the script before sshd")
+		}
+		if _, err := os.Stat(filepath.Join(target, "keep")); err != nil {
+			t.Error("the existing directory's contents were disturbed")
+		}
+	})
+	t.Run("volume cannot be created: script continues", func(t *testing.T) {
+		root := t.TempDir()
+		// A file where the volume's parent should be makes mkdir fail.
+		os.WriteFile(filepath.Join(root, "vol"), []byte("x"), 0o644)
+		reached, _ := run(t, root, nil)
+		if !reached {
+			t.Fatal("an unwritable volume stopped the script before sshd")
+		}
+	})
+}
+
+// Create rents Secure Cloud, so the catalogue must price Secure Cloud. Without
+// the filter lowestPrice answers across both clouds, and a pod quoted at
+// $2.78/hr billed $3.18/hr — above the figure it was ranked on and above the
+// --max-price meant to cap it.
+func TestCataloguePricesTheCloudCreateRentsFrom(t *testing.T) {
+	counts := countsTo(defaultSizes)
+	catalogueQuery := buildCatalogueQuery(counts)
+	if got := strings.Count(catalogueQuery, "secureCloud: true"); got != len(counts) {
+		t.Errorf("%d of %d price lookups filter on Secure Cloud; every one must, "+
+			"or that size is quoted at a rate it will not be billed at", got, len(counts))
+	}
+}
+
+// The query and the decoder share one list of sizes. A fixed field per size
+// is how the two drift: a size added to the query and not to the struct is
+// fetched, paid for in latency, and silently dropped.
+func TestEveryPricedSizeIsAskedForAndRead(t *testing.T) {
+	counts := countsTo(defaultSizes)
+	q := buildCatalogueQuery(counts)
+	for _, n := range counts {
+		if !strings.Contains(q, fmt.Sprintf("price%d: lowestPrice(input: {gpuCount: %d, secureCloud: true})", n, n)) {
+			t.Errorf("the query does not ask for %d cards", n)
+		}
+	}
+	var g gpuType
+	if err := json.Unmarshal([]byte(`{"id":"x","maxGpuCount":10,
+		"price1":{"uninterruptablePrice":1,"stockStatus":"High"},
+		"price7":{"uninterruptablePrice":7,"stockStatus":"High"},
+		"price10":null}`), &g); err != nil {
+		t.Fatal(err)
+	}
+	if g.priceAt(1) == nil || g.priceAt(7) == nil {
+		t.Error("a priced size was not read back")
+	}
+	if g.priceAt(10) != nil || g.priceAt(2) != nil {
+		t.Error("a size the catalogue did not price came back priced")
+	}
+	if g.ID != "x" || g.MaxGPUCount != 10 {
+		t.Errorf("the scalar fields were lost: %+v", g)
+	}
+}
+
+// Sizes above what RunPod will place for a type are not offered, however the
+// catalogue prices them.
+func TestNoOfferAboveWhatTheTypeAllows(t *testing.T) {
+	offers, err := catalogueOnly(t).Search(context.Background(), core.Criteria{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range offers {
+		if gpuTypeID(o.OfferID) == "NVIDIA GeForce RTX 4090" && o.GPUCount > 4 {
+			t.Errorf("offered %d cards of a type RunPod caps at 4", o.GPUCount)
+		}
+	}
+}
+
+// The ceiling comes from the catalogue, so a provider that starts placing
+// bigger pods is priced at the bigger size without anyone editing this file.
+func TestSizesFollowTheCatalogue(t *testing.T) {
+	for name, c := range map[string]struct {
+		types []gpuSize
+		want  int
+	}{
+		"the largest purchasable type wins": {
+			[]gpuSize{{ID: "NVIDIA A40", MaxGPUCount: 10}, {ID: "NVIDIA L4", MaxGPUCount: 9}}, 10},
+		"a bigger catalogue prices bigger": {
+			[]gpuSize{{ID: "NVIDIA A40", MaxGPUCount: 12}}, 12},
+		"types create will not take do not raise it": {
+			[]gpuSize{{ID: "NVIDIA A40", MaxGPUCount: 4},
+				{ID: "NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb", MaxGPUCount: 32}}, 4},
+		"an empty answer keeps the known ladder": {nil, defaultSizes},
+	} {
+		if got := sizeCeiling(c.types); got != c.want {
+			t.Errorf("%s: ceiling %d, want %d", name, got, c.want)
+		}
+	}
+	// The guard bounds the query, not the market: it only ever trims.
+	if got := countsTo(1000); len(got) != sizeGuard {
+		t.Errorf("a runaway catalogue built a query of %d sizes", len(got))
 	}
 }

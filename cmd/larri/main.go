@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -102,8 +103,12 @@ func renderCLI(out io.Writer, in io.Reader, events <-chan daemon.Event, prompts 
 					drained = true
 				}
 			}
-			fmt.Fprintf(out, "\n  rent %s %dGB at $%.3f/hr? [y/N] ",
-				p.Offer.GPUModel, p.Offer.VRAMTotalGB(), p.Offer.PriceHr)
+			// The card count belongs in the question that spends. "rent
+			// A40 192GB" leaves the operator unable to tell one very large
+			// card from four ordinary ones, which is the difference between
+			// the bill they expect and the one they get.
+			fmt.Fprintf(out, "\n  rent %s at $%.3f/hr? [y/N] ",
+				p.Offer.Hardware(), p.Offer.PriceHr)
 			var answer string
 			_, _ = fmt.Fscanln(in, &answer)
 			p.Result <- strings.EqualFold(strings.TrimSpace(answer), "y")
@@ -232,8 +237,20 @@ func cmdUp(ctx context.Context, args []string) error {
 	quant := fs.String("quantization", "", "fp16, Q4_K_M, awq, … (default: the runtime's)")
 	ctxLen := fs.Int("context", 8192, "context length")
 	gpu := fs.String("gpu", "", "GPU model filter, e.g. 'RTX 4090'")
+	// Multi-GPU hosts are in the ranked list by default, because a model too
+	// large for the biggest single card is the ordinary reason to want one
+	// and an opt-in flag would make the common case the one that fails.
+	// These narrow that list rather than open it: a floor for an operator who
+	// knows they want to shard, a ceiling for one who does not want to pay
+	// for eight cards to hold a model that fits on two.
+	gpus := fs.Int("gpus", 0, "minimum GPUs per host (0: any)")
+	maxGPUs := fs.Int("max-gpus", 0, "most GPUs per host (0: no ceiling)")
+	vramPerGPU := fs.Int("vram-per-gpu", 0, "minimum VRAM per card in GB (0: any)")
+	vramTotal := fs.Int("vram", 0, "minimum VRAM per host in GB, summed across cards (0: any)")
 	maxPrice := fs.Float64("max-price", 0, "ceiling in $/hr")
-	disk := fs.Int("disk", 60, "disk in GB")
+	// Zero sizes the disk to the model. A fixed default rented 60 GB for a
+	// 111 GB download, which filled it minutes in on a host already billing.
+	disk := fs.Int("disk", 0, "disk in GB (0: sized to the model's weights, at least 60)")
 	minRel := fs.Float64("min-reliability", 0.90, "reliability floor")
 	// Only about 3% of the market sits below this, and those are the hosts
 	// where a cold start runs into hours of billed downloading.
@@ -470,9 +487,17 @@ func cmdUp(ctx context.Context, args []string) error {
 	}
 
 	crit := core.Criteria{MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk,
-		MinNetMbps: *minNet, CertifiedOnly: *verifiedOnly, AllowDeverified: *allowDeverified}
+		MinNetMbps: *minNet, CertifiedOnly: *verifiedOnly, AllowDeverified: *allowDeverified,
+		GPUCount: *gpus, MaxGPUCount: *maxGPUs,
+		VRAMPerGPUGB: *vramPerGPU, VRAMTotalGB: *vramTotal}
 	if *gpu != "" {
 		crit.GPUModel = splitList(*gpu)
+	}
+	// Checked here as well as in the daemon, so a contradiction is refused
+	// before the model is resolved rather than after — one definition, two
+	// call sites.
+	if err := crit.Validate(); err != nil {
+		return err
 	}
 	req := daemon.UpRequest{
 		Criteria:  crit,
@@ -484,7 +509,7 @@ func cmdUp(ctx context.Context, args []string) error {
 	if *dryRun {
 		req.Confirm = func(o core.Offer, p core.SizingPlan) bool {
 			fmt.Printf("\n  dry run: would rent %s %s at $%.3f/hr — nothing spent\n",
-				o.Provider, o.GPUModel, o.PriceHr)
+				o.Provider, o.Hardware(), o.PriceHr)
 			return false
 		}
 	} else if mode.Interactive() {
@@ -511,7 +536,7 @@ func cmdUp(ctx context.Context, args []string) error {
 	fmt.Printf("\n  ✓ rig %s READY   %s   model: %s\n",
 		rig.ID, live.Endpoint, rig.Model.ServedName)
 	fmt.Printf("    %s %s at $%.3f/hr\n",
-		rig.Offer.Provider, rig.Offer.GPUModel, rig.Offer.PriceHr)
+		rig.Offer.Provider, rig.Offer.Hardware(), rig.Offer.PriceHr)
 	fmt.Printf("    key: %s\n", live.ClientToken.Reveal())
 	fmt.Printf("\n  %s\n", daemon.PrivacyNotice(rig))
 
@@ -628,29 +653,83 @@ func cmdStatus(ctx context.Context, args []string) error {
 			continue
 		}
 		shown++
-		c := state.CostFor(entries, r.ID, now)
-		fmt.Printf("  %s  %-13s $%.4f  ran %s\n",
-			r.ID, r.State, c.TotalUSD, c.Ran.Round(time.Second))
-		if r.Instance != nil {
-			fmt.Printf("      %s instance %s  $%.3f/hr\n",
-				r.Instance.Provider, r.Instance.InstanceID, r.Offer.PriceHr)
-		}
-		// §13.1: a rig that ended explains itself, long afterwards.
-		if r.End != nil {
-			fmt.Printf("      ended %s · %s: %s\n",
-				r.End.At.Format(time.RFC3339), r.End.Actor, r.End.Summary)
-			for k, v := range r.End.Evidence {
-				fmt.Printf("        %s: %s\n", k, v)
-			}
-		}
-		if r.State.Billable() {
-			fmt.Printf("      %s\n", notice.PrivacyShort())
-		}
+		printRig(os.Stdout, state.Summarise(r, entries, now))
 	}
 	if shown == 0 {
 		fmt.Println("  no rigs")
 	}
 	return nil
+}
+
+// printRig renders one rig for `larri status`.
+//
+// The detail lines answer what an operator otherwise opens a provider
+// dashboard for: where it is, what hardware, what the provider calls it, and
+// what it costs by the hour. The last is shown twice when the provider bills a
+// different rate from the one quoted at selection, because that difference is
+// money the ranking never saw.
+func printRig(w io.Writer, s state.Summary) {
+	fmt.Fprintf(w, "  %s  %-13s $%.4f  ran %s\n",
+		s.ID, s.State, s.Cost.TotalUSD, s.Cost.Ran.Round(time.Second))
+
+	hw := s.Provider
+	if s.Hardware != "" {
+		hw += " · " + s.Hardware
+	}
+	if s.Region != "" {
+		hw += " · " + s.Region
+	}
+	if s.PriceHr > 0 {
+		hw += fmt.Sprintf(" · $%.3f/hr", s.PriceHr)
+		if s.PriceDiffers() {
+			hw += fmt.Sprintf(" (quoted $%.3f)", s.QuotedHr)
+		}
+	}
+	fmt.Fprintf(w, "      hardware  %s\n", hw)
+
+	inst := s.Instance
+	if inst == "" {
+		// What LARRI knows, not a claim about the provider: a create whose
+		// answer was lost leaves no record and may still have a machine.
+		inst = "none recorded"
+	}
+	fmt.Fprintf(w, "      instance  %s\n", inst)
+
+	if s.Model != "" {
+		m := s.Model
+		if s.Quantization != "" {
+			m += " @ " + s.Quantization
+		}
+		if s.Runtime != "" {
+			m += " · " + string(s.Runtime)
+		}
+		if s.Served != "" {
+			m += " · served as " + s.Served
+		}
+		fmt.Fprintf(w, "      model     %s\n", m)
+	}
+	if s.Endpoint != "" {
+		fmt.Fprintf(w, "      endpoint  %s\n", s.Endpoint)
+	}
+	if !s.CreatedAt.IsZero() {
+		fmt.Fprintf(w, "      created   %s\n", s.CreatedAt.UTC().Format("2006-01-02 15:04 UTC"))
+	}
+	// §13.1: a rig that ended explains itself, long afterwards.
+	if s.End != nil {
+		fmt.Fprintf(w, "      ended     %s · %s: %s\n",
+			s.End.At.Format(time.RFC3339), s.End.Actor, s.End.Summary)
+		keys := make([]string, 0, len(s.End.Evidence))
+		for k := range s.End.Evidence {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(w, "        %s: %s\n", k, s.End.Evidence[k])
+		}
+	}
+	if s.State.Billable() {
+		fmt.Fprintf(w, "      %s\n", notice.PrivacyShort())
+	}
 }
 
 // cmdResume reconnects to a rig that is still running at the provider after

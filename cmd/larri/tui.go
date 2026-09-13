@@ -35,7 +35,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	ctxLen := fs.Int("context", 8192, "context length")
 	gpu := fs.String("gpu", "", "GPU model filter")
 	maxPrice := fs.Float64("max-price", 0, "ceiling in $/hr")
-	disk := fs.Int("disk", 60, "disk in GB")
+	disk := fs.Int("disk", 0, "disk in GB (0: sized to the model's weights, at least 60)")
 	minRel := fs.Float64("min-reliability", 0.90, "reliability floor")
 	port := fs.Int("port", 8000, "fixed local port clients are wired against")
 	engine := fs.String("runtime", "", "vllm, llamacpp or ollama")

@@ -24,6 +24,7 @@ package sshx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -216,15 +217,15 @@ func ScanHostKey(ctx context.Context, host string, port int, timeout time.Durati
 		Auth: []ssh.AuthMethod{},
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
 			found = key
-			return nil
+			return errors.New("sshx: host key captured")
 		},
 		// The same preference the dial will use. Scanning with different
 		// algorithms pins a key the connection will never be offered.
 		HostKeyAlgorithms: hostKeyAlgorithms,
 		Timeout:           timeout,
 	}
-	// The handshake is expected to fail at authentication; the host key is
-	// presented before that, which is all this needs.
+	// The callback aborts the handshake immediately after the host presents its
+	// key. Discovery never accepts an unverified SSH session.
 	sc, _, _, err := ssh.NewClientConn(conn, addr, conf)
 	if sc != nil {
 		sc.Close()

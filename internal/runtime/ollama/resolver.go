@@ -30,13 +30,14 @@ func (Resolver) Resolve(ctx context.Context, ref, _ string) (sizing.Facts, error
 // Facts renders an inspection as sizing facts.
 func (i Info) Facts() sizing.Facts {
 	return sizing.Facts{
-		Ref:           i.Ref,
-		Params:        i.Params(),
-		Layers:        i.Layers,
-		KVHeads:       i.KVHeads,
-		HeadDim:       i.HeadDim,
-		HiddenSize:    i.HiddenSize,
-		MaxContextLen: i.MaxContextLen,
+		Ref:            i.Ref,
+		Params:         i.Params(),
+		Layers:         i.Layers,
+		AttentionHeads: i.AttentionHeads,
+		KVHeads:        i.KVHeads,
+		HeadDim:        i.HeadDim,
+		HiddenSize:     i.HiddenSize,
+		MaxContextLen:  i.MaxContextLen,
 	}
 }
 

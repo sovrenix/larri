@@ -314,3 +314,43 @@ func TestPromptDefaultsToDeclining(t *testing.T) {
 		close(events)
 	}
 }
+
+// `larri status` answers what an operator otherwise opens a provider
+// dashboard for: where, what hardware, what the provider calls it, what it
+// costs by the hour — and both rates when the bill differs from the quote.
+func TestStatusShowsProviderHardwareInstanceAndRate(t *testing.T) {
+	var b strings.Builder
+	printRig(&b, state.Summary{
+		ID: "r1", State: core.StateReady, Provider: "runpod",
+		Hardware: "2× A100 SXM 160GB", Instance: "pod1",
+		PriceHr: 3.18, QuotedHr: 2.78, Model: "org/m", Quantization: "Q4_K_M",
+		Runtime: core.RuntimeLlamaCpp, Served: "m",
+		Endpoint: "http://127.0.0.1:8000/v1",
+	})
+	out := b.String()
+	for _, want := range []string{
+		"runpod · 2× A100 SXM 160GB · $3.180/hr (quoted $2.780)",
+		"instance  pod1",
+		"org/m @ Q4_K_M · llamacpp · served as m",
+		"endpoint  http://127.0.0.1:8000/v1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// With no instance on record the line says so, as a statement of what LARRI
+// knows rather than a claim that the provider has nothing.
+func TestStatusSaysWhenNoInstanceIsRecorded(t *testing.T) {
+	var b strings.Builder
+	printRig(&b, state.Summary{ID: "r1", State: core.StateSelected,
+		Provider: "runpod", Hardware: "A100 SXM 80GB", PriceHr: 1.39, QuotedHr: 1.39})
+	out := b.String()
+	if !strings.Contains(out, "instance  none recorded") {
+		t.Errorf("no-instance rig not labelled:\n%s", out)
+	}
+	if strings.Contains(out, "quoted") {
+		t.Errorf("a quote equal to the rate was shown as a difference:\n%s", out)
+	}
+}

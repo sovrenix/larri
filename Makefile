@@ -23,7 +23,7 @@ ifneq ($(TAG),)
 LDFLAGS += -X '$(PKG).version=$(TAG)'
 endif
 
-.PHONY: all build test race vet fmt headers check version version-check clean stale-check refresh-image site-extract site-embed
+.PHONY: all build test race vet vet-e2e fmt headers file-size check version version-check clean stale-check refresh-image site-extract site-embed
 
 all: check build
 
@@ -39,6 +39,12 @@ race:
 vet:
 	$(GO) vet $(PKGS)
 
+# vet-e2e compiles the build-tagged live suites without running them — nothing
+# is rented. `go build ./...` and `go test ./...` never see those files, so a
+# signature change once broke the e2e suite and passed every other gate here.
+vet-e2e:
+	$(GO) vet -tags e2e $(PKGS)
+
 # gofmt must print nothing.
 fmt:
 	@out=$$(gofmt -l . ); \
@@ -47,6 +53,9 @@ fmt:
 
 headers:
 	@./scripts/check-headers.sh
+
+file-size:
+	@bash ./scripts/check-file-sizes.sh
 
 # refresh-image re-reads the runtime image's digest and the hardware facts
 # derived from it. The floors are not free-standing numbers: they belong to
@@ -82,7 +91,7 @@ stale-check:
 		echo "bin/larri is up to date"; \
 	fi
 
-check: fmt vet headers test race version-check stale-check
+check: fmt vet vet-e2e headers file-size test race version-check stale-check
 
 clean:
 	rm -rf bin
