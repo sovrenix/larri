@@ -134,7 +134,28 @@ hold in code:
   that billed $3.18/hr — above what ranking chose it on and above `--max-price`. Ask the
   catalogue for the tier the create call uses, and read stock the same way, since they
   differ too. `larri status` shows the billed rate beside the quote, which is how this
-  surfaced.
+  surfaced. The same holds for disk: Vast prices eight gigabytes of storage into a quote
+  unless the search names the disk, and its `storage_cost` is per gigabyte per *month* —
+  read as per hour it added $0.20/hr to every rig. The journal carries the billed rate,
+  storage included, and cost counts storage once.
+- **Act on a rig through the provider that holds it.** Another provider answers "not
+  found" for an instance it never held, which is exactly what confirmed absence looks
+  like. `larri down` once opened the configured default, so a RunPod pod torn down on a
+  machine configured for Vast could be recorded destroyed while it billed. `Down` and
+  `Adopt` refuse the mismatch; do not route around it.
+- **A destroyed rig stays destroyed.** Two processes routinely hold one rig — `larri up`
+  serving it, `larri down` in another terminal ending it — and the one with a stale copy
+  once wrote DEGRADED over DESTROYED, which put a vanished pod back to billing in the
+  journal and would have refused the next `up`. The store refuses the move, supervision
+  re-reads the store and asks the provider when probes fail, and cost replay ignores
+  anything journalled after the end.
+- **A failed create must resolve itself.** Journal *and* snapshot the failure together —
+  `RecordIntent` writes only the journal, and the two disagreeing left a rig reading
+  SELECTED in `larri status` while the journal billed it at $1.39/hr for four days — then
+  settle what exists: a call that never left the client created nothing, an instance
+  carrying the rig's label is torn down rather than left for a sweep, and an unknown
+  outcome concludes nothing from one listing. Cost stops only on recorded evidence of
+  absence, never on an instance id that happens to be blank.
 - **A failed create must exclude something.** Falling back means excluding what failed:
   the machine where the provider names one, the listing where it does not. Excluding
   nothing re-ranks an unchanged market and buys the same failure until the attempts run

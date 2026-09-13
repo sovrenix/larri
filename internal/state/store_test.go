@@ -267,3 +267,52 @@ func TestListIsNewestFirst(t *testing.T) {
 		t.Error("List must return newest first")
 	}
 }
+
+// The journal is what cost is replayed from, so it has to carry the rate the
+// provider bills. It carried the quote, and `larri status` showed $0.821/hr
+// beside a total accrued at $0.802.
+func TestTheJournalRecordsTheBilledRate(t *testing.T) {
+	s := openStore(t)
+	rig := newRig(t)
+	if err := s.Transition(rig, core.StateCreating, "create intent"); err != nil {
+		t.Fatal(err)
+	}
+	rig.Instance = &core.Instance{Provider: "vastai", InstanceID: "1", PriceHr: 1.31, StorageHr: 0.02}
+	if err := s.Transition(rig, core.StateReady, "ready"); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := s.Entries()
+	e := EntriesFor(entries, rig.ID)
+	if len(e) != 2 {
+		t.Fatalf("entries = %d", len(e))
+	}
+	if e[0].PriceHr != 1.29 {
+		t.Errorf("before an instance reports a rate, the quote is all there is: got %v", e[0].PriceHr)
+	}
+	if e[1].Rates != RatesBilled {
+		t.Errorf("entry written without the rates marker; replay would read it by the old rules")
+	}
+	if e[1].PriceHr != 1.31 || e[1].StorageHr != 0.02 {
+		t.Errorf("journalled %v/hr with %v storage, want the billed 1.31 and 0.02", e[1].PriceHr, e[1].StorageHr)
+	}
+}
+
+// Two processes can hold one rig. The one with a stale copy must not undo
+// the other's teardown.
+func TestADestroyedRigCannotBeMovedBackToALiveState(t *testing.T) {
+	s := openStore(t)
+	rig := newRig(t)
+	if err := s.Transition(rig, core.StateReady, "ready"); err != nil {
+		t.Fatal(err)
+	}
+	stale := *rig
+	if err := s.Transition(rig, core.StateDestroyed, "down"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transition(&stale, core.StateDegraded, "health probes failing"); err == nil {
+		t.Fatal("a stale copy moved a destroyed rig to DEGRADED")
+	}
+	if got, _ := s.Load(rig.ID); got.State != core.StateDestroyed {
+		t.Errorf("stored state = %s", got.State)
+	}
+}

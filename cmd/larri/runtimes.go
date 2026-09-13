@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"go.sovrenix.com/larri/internal/config"
 	"os"
+	"regexp"
 	"strings"
-	"time"
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/provider"
@@ -34,7 +34,7 @@ func pickRuntime(name string, spec core.ModelSpec) (runtime.Runtime, error) {
 	case core.RuntimeVLLM:
 		return vllm.New(), nil
 	case core.RuntimeLlamaCpp:
-		return newLlamaCpp(spec)
+		return newLlamaCpp(), nil
 	case core.RuntimeOllama:
 		return ollama.New(), nil
 	case "":
@@ -44,7 +44,7 @@ func pickRuntime(name string, spec core.ModelSpec) (runtime.Runtime, error) {
 
 	switch runtime.Pick(spec, core.SizingPlan{FitsInVRAM: true}, 1) {
 	case core.RuntimeLlamaCpp:
-		return newLlamaCpp(spec)
+		return newLlamaCpp(), nil
 	case core.RuntimeOllama:
 		return ollama.New(), nil
 	default:
@@ -52,32 +52,35 @@ func pickRuntime(name string, spec core.ModelSpec) (runtime.Runtime, error) {
 	}
 }
 
-// newLlamaCpp resolves which GGUF to fetch before anything is rented.
+// newLlamaCpp builds the engine with the credential its weight listing needs.
 //
-// A repository holds one file per quantisation and downloading the wrong one
-// costs the entire transfer at rented-GPU prices, so this happens locally where
-// being wrong is free.
-func newLlamaCpp(spec core.ModelSpec) (runtime.Runtime, error) {
+// Which file to fetch is not decided here. The daemon resolves it while
+// sizing, after the quantisation is settled — doing it at construction ran
+// before the default applied and picked full precision, and the surfaces
+// that construct an engine before they know the model could not use this
+// one at all.
+func newLlamaCpp() runtime.Runtime {
 	r := llamacpp.New()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	w, err := llamacpp.ResolveGGUF(ctx, spec.Ref, spec.Quantization,
-		secret.New(os.Getenv("HF_TOKEN")))
-	if err != nil {
-		return nil, err
-	}
-	if w.Bytes > 0 {
-		// Said, because it is the number the rest of the run turns on: the
-		// VRAM to rent, the download to wait for, and the bill for both. A
-		// measured figure and an estimated one deserve to look different.
-		fmt.Printf("  weights     %s (%s)\n", w.File, sizing.HumanBytes(w.Bytes))
-	} else {
-		fmt.Printf("  weights     %s\n", w.File)
-	}
-	r.SetWeights(w)
-	return r, nil
+	r.SetHuggingFaceToken(secret.New(os.Getenv("HF_TOKEN")))
+	return r
 }
+
+// servedNameFor is the model name clients use when the operator names none.
+//
+// The last segment of the ref, lowercased — and for a ref naming a GGUF file,
+// that file without its extension or part number. "Qwen3-8B-Q8_0.gguf" as a
+// model name reads as a filename in every client's model picker, and a
+// multi-part one would be named after its first part.
+func servedNameFor(ref string) string {
+	name := ref[strings.LastIndex(ref, "/")+1:]
+	if _, file := sizing.SplitRef(ref); file != "" {
+		name = name[:len(name)-len(".gguf")] // SplitRef matched the suffix, in any case
+		name = shardSuffix.ReplaceAllString(name, "")
+	}
+	return strings.ToLower(name)
+}
+
+var shardSuffix = regexp.MustCompile(`-\d{5}-of-\d{5}$`)
 
 // isOllamaRef distinguishes "llama3.1:70b" from "org/repo".
 //
@@ -173,21 +176,4 @@ func openProvider(name string) (provider.Provider, error) {
 		last = fmt.Errorf("no providers are compiled in")
 	}
 	return nil, last
-}
-
-// quantFor resolves the weight format to ask for.
-//
-// An explicit flag always wins. Otherwise the engine decides, because which
-// format is sensible is a property of the engine rather than of LARRI: vLLM
-// serves full precision, while llama.cpp and Ollama exist to run weights that
-// have been made smaller, and asking them for fp16 requests the one format
-// that defeats the point.
-func quantFor(rt runtime.Runtime, flag string) string {
-	if flag != "" {
-		return flag
-	}
-	if d, ok := rt.(runtime.DefaultQuant); ok {
-		return d.DefaultQuantization()
-	}
-	return "fp16"
 }

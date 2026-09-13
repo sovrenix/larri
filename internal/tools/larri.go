@@ -26,7 +26,11 @@ type Deps struct {
 	// NewOrchestrator builds one configured for the current environment. It
 	// returns an error rather than a zero value so a missing API key is
 	// reported to the calling agent, not discovered as a nil dereference.
-	NewOrchestrator func(runtimeKind string) (*daemon.Orchestrator, error)
+	//
+	// providerName is the provider holding an existing rig, or "" for the
+	// configured default when there is no rig yet. Acting on a rig through
+	// any other provider reads "not found" as confirmed absence.
+	NewOrchestrator func(runtimeKind, providerName string) (*daemon.Orchestrator, error)
 
 	// Session is the rig this surface is holding, when it is long-running
 	// enough to hold one. An MCP server outlives its tool calls, so it can;
@@ -261,18 +265,17 @@ type planArgs struct {
 	Context      int    `json:"context"`
 }
 
+// spec leaves an unnamed quantisation empty: the daemon fills in the
+// runtime's own default while sizing, and an "fp16" filled in here asked a
+// GGUF engine for full precision.
 func (d planArgs) spec() core.ModelSpec {
-	q := d.Quantization
-	if q == "" {
-		q = "fp16"
-	}
 	c := d.Context
 	if c == 0 {
 		c = 8192
 	}
 	return core.ModelSpec{
 		Ref: d.Model, Source: core.SourceHuggingFace, ServedName: "planned",
-		Quantization: q, ContextLen: c,
+		Quantization: d.Quantization, ContextLen: c,
 	}
 }
 
@@ -284,7 +287,7 @@ func (d Deps) plan(ctx context.Context, raw json.RawMessage) (any, error) {
 	if a.Model == "" {
 		return nil, fmt.Errorf("model is required")
 	}
-	o, err := d.NewOrchestrator("")
+	o, err := d.NewOrchestrator("", "")
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +340,7 @@ func (d Deps) searchOffers(ctx context.Context, raw json.RawMessage) (any, error
 	if a.Top <= 0 {
 		a.Top = 10
 	}
-	o, err := d.NewOrchestrator("")
+	o, err := d.NewOrchestrator("", "")
 	if err != nil {
 		return nil, err
 	}

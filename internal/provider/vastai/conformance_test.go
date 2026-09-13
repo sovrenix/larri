@@ -45,7 +45,7 @@ func (s *stubAPI) handler(t *testing.T) http.HandlerFunc {
 			id := s.next
 			s.instances[strconv.FormatInt(id, 10)] = map[string]any{
 				"id": id, "actual_status": "running", "label": body.Label,
-				"dph_total": 1.29, "storage_cost": 0.01,
+				"dph_total": 1.29, "storage_cost": 0.2, "disk_space": 60.0,
 			}
 			fmt.Fprintf(w, `{"success":true,"new_contract":%d}`, id)
 

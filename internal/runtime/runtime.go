@@ -319,6 +319,35 @@ type DefaultQuant interface {
 	DefaultQuantization() string
 }
 
+// QuantizationFor is the weight format a runtime serves when nobody named one.
+func QuantizationFor(r Runtime) string {
+	if d, ok := r.(DefaultQuant); ok {
+		return d.DefaultQuantization()
+	}
+	return "fp16"
+}
+
+// Weights is the file a runtime settled on, before anything is rented.
+type Weights struct {
+	File         string // the first part; what the engine is pointed at
+	Bytes        uint64 // every part, summed; zero when the source publishes no sizes
+	Quantization string // what the file carries, in the operator's spelling where they gave one
+}
+
+// WeightResolver is implemented by runtimes that must choose which of a
+// repository's files to load, and that record the choice for Bootstrap.
+//
+// The daemon calls it while sizing, so every surface resolves the same way.
+// It used to happen in the CLI, where it ran before the quantisation default
+// was applied: `larri up` on a GGUF repository asked for no quantisation,
+// took full precision — 15.3 GB where Q4_K_M is 5 — and the MCP server and
+// the TUI, which resolved against an empty model, could not use llama.cpp at
+// all. A default belongs to the engine, so the resolver applies its own
+// rather than trusting a caller to have done it first.
+type WeightResolver interface {
+	ResolveWeights(ctx context.Context, spec core.ModelSpec) (Weights, error)
+}
+
 // HFEndpointSetter is implemented by runtimes that fetch weights from a
 // Hugging Face-compatible host and can be pointed at a different one.
 //

@@ -30,7 +30,7 @@ func (d Deps) logs(ctx context.Context, raw json.RawMessage) (any, error) {
 	if live == nil {
 		return nil, fmt.Errorf("no rig is being served by this process; logs need its ssh session")
 	}
-	o, err := d.NewOrchestrator(string(live.Rig.Runtime))
+	o, err := d.NewOrchestrator(string(live.Rig.Runtime), live.Rig.ProviderName())
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +54,7 @@ func (d Deps) live() *daemon.Live {
 }
 
 func (d Deps) orphans(ctx context.Context, _ json.RawMessage) (any, error) {
-	o, err := d.NewOrchestrator("")
+	o, err := d.NewOrchestrator("", "")
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +142,7 @@ func (d Deps) up(ctx context.Context, raw json.RawMessage) (any, error) {
 	spec.ServedName = "larri"
 
 	if a.DryRun {
-		o, err := d.NewOrchestrator(a.Runtime)
+		o, err := d.NewOrchestrator(a.Runtime, "")
 		if err != nil {
 			return nil, err
 		}
@@ -206,7 +206,7 @@ func (d Deps) policy(a upArgs) daemon.SupervisePolicy {
 func (d Deps) bringUp(ctx context.Context, crit core.Criteria, spec core.ModelSpec,
 	a upArgs, policy daemon.SupervisePolicy) {
 
-	o, err := d.NewOrchestrator(a.Runtime)
+	o, err := d.NewOrchestrator(a.Runtime, "")
 	if err != nil {
 		d.Session.Fail(err)
 		return
@@ -289,7 +289,7 @@ func (d Deps) down(ctx context.Context, raw json.RawMessage) (any, error) {
 	if d.Session != nil {
 		d.Session.Stop()
 	}
-	o, err := d.NewOrchestrator(string(target.Runtime))
+	o, err := d.NewOrchestrator(string(target.Runtime), target.ProviderName())
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +326,7 @@ func (d Deps) orphanDestroy(ctx context.Context, raw json.RawMessage) (any, erro
 	if a.InstanceID == "" {
 		return nil, fmt.Errorf("instance_id is required")
 	}
-	o, err := d.NewOrchestrator("")
+	o, err := d.NewOrchestrator("", "")
 	if err != nil {
 		return nil, err
 	}

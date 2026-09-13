@@ -307,6 +307,13 @@ Normalization rules:
 - **Placement** → for providers that place rather than let you pick, `OfferID` identifies
   the *class* requested and `Instance` carries what was actually placed. Ranking operates
   on the class; the sizing check re-runs against the placed instance before bootstrap.
+- **A failed create resolves itself.** The failure is journalled and snapshotted together,
+  then settled: `provider.NotSent` marks a call that never reached the provider, so nothing
+  can exist and the rig ends at once; otherwise the provider is asked by label, and anything
+  found is torn down. An unknown outcome stays FAILED and loud, because the instance can
+  still appear. `Cost` zeroes a rig only when a termination recorded `nothing_created` —
+  positive evidence, since inferring absence from a blank instance id would understate real
+  spend.
 - **A failed create excludes the listing, not a machine.** There is no machine to exclude
   when the provider does the placing, and the fallback that excluded only machines therefore
   excluded nothing here: it re-ranked the same market and chose the same offer on all three
@@ -316,8 +323,16 @@ Normalization rules:
   create anything — an invalid `cloudType` guarantees rejection — showed `NVIDIA A40`
   failing only on that field while a MIG id failed on `gpuTypeIds/items/enum`, so the
   refusal is the enum and not stock. Comparing that enum against the catalogue found four
-  such types, one of them a priced 32 GB card that ranking would pick. `purchasable` drops
-  what is unmistakably not a card; the rest fail at create and fall back.
+  such types, one of them a priced 32 GB card that ranking would pick. The enum is
+  published: `rest.runpod.io/v1/openapi.json` carries `PodCreateInput.gpuTypeIds`, needs no
+  key, and is what the endpoint validates against, so the adapter reads it once per process
+  and offers only types in it. That is what catches `NVIDIA RTX PRO 4500 Blackwell Server
+  Edition`, which the catalogue prices and stocks while the create call knows the card as
+  `NVIDIA RTX PRO 4500 Blackwell` — nothing in the name gives it away, and every run it
+  ranked cheapest spent an attempt finding out. It also keeps a MIG slice the enum does
+  list, which a name rule would drop. When the schema cannot be read, `purchasable` drops
+  only what is known not to be a card, the operator is told the check was weaker, and a
+  type that slips through fails at create and falls back.
 - **Card count is part of the class.** RunPod sells one GPU type at several sizes, so the
   adapter lists each type at every count it will place, and `OfferID` is `<gpuTypeId>#<count>`
   so it stays unique; `Create` splits it back. Stock is read per size, because it differs
@@ -327,12 +342,35 @@ Normalization rules:
   query reads `maxGpuCount` (350 ms, against 2 s for the priced one) and the largest a
   *purchasable* type advertises sets the range, so hardware RunPod adds is priced without an
   edit here. A guard bounds the query rather than the market, and a live conformance check
-  fails if anything purchasable ever passes it.
+  fails if anything the create schema accepts ever passes it.
 - **Quote the tier that is rented.** `Create` rents Secure Cloud, so the catalogue is
   priced with `secureCloud: true`. Unfiltered, `lowestPrice` answers across both tiers —
   in practice the Community rate — and a pod quoted at $2.78/hr billed $3.18/hr, above the
   figure ranking chose it on and above `--max-price`. `larri status` shows the billed rate
   beside the quote whenever they differ, which is how this was caught.
+- **Quote the disk that is rented.** Vast's `dph_total` includes storage, priced for eight
+  gigabytes unless the search names an `allocated_storage`; the instance then bills it for
+  the whole disk. An 86 GB rental ranked at $0.351/hr billed $0.394/hr, and a host with cheap
+  GPUs and dear storage ranked above one cheaper overall. The search names the disk it
+  filters on. `storage_cost` is dollars per gigabyte per *month* (Vast's CLI labels it so, and
+  its own `storage_total_cost` is `storage_cost × disk ÷ 720`); read as dollars an hour, it
+  added $0.20/hr to every rig. An instance's `PriceHr` is everything it bills while running,
+  storage included, and `StorageHr` is the part still billed while `STOPPED`.
+- **A rig is acted on through the provider that holds it.** Another provider answers "not
+  found" for an instance it never held, and not found is what confirmed absence looks like.
+  `Down` and `Adopt` refuse an orchestrator whose provider is not the rig's, because the
+  surfaces used to open the configured default — a RunPod rig torn down on a machine
+  configured for Vast would be recorded destroyed while it went on billing.
+- **RunPod's disk is priced beside the GPU.** Neither the catalogue nor a pod's `costPerHr`
+  includes it: a live A40 pod on 220 GB of disk reported `costPerHr` 0.49, the catalogue rate.
+  The quote and the instance rate add the container disk and volume at $0.10/GB/month, and a
+  stopped pod is costed at its volume's $0.20/GB/month, the container disk being free once
+  stopped. The rates are RunPod's published ones (billed per second, apart from the GPU);
+  the month length is not published, and 720 hours — Vast's — is assumed, a difference of
+  under 1.5% of the storage figure. Checked against `/billing/pods`: that A40 pod was
+  billed $0.0917 for 636 s, $0.0051 above its GPU rate — $0.029/hr of disk against the
+  $0.031/hr the published rate predicts for 220 GB. The report's `diskSpaceBilledGB` (40,
+  for that pod) is not the allocation and is not used.
 
 ### 5.3 The Ownership Marker Is Provider-Neutral
 
@@ -638,6 +676,29 @@ card that OOMs on load. The measurement also removes the requirement that a quan
 in the table at all, which matters because the naming schemes keep arriving. It is a fact
 about a *file*, not a model: it never reaches the revision-keyed facts cache, and it is never
 carried into a suggested alternative quantisation.
+
+Which file is a daemon decision, not a surface one. A runtime that picks a file from a
+repository answers `runtime.WeightResolver`, and `survey` calls it before sizing, so the CLI,
+the TUI, the MCP server and the e2e suite resolve identically. The engine's default
+quantisation is applied inside the resolver, before the listing is read: when the CLI
+resolved the file itself it did so before the default existed, and a GGUF repository asked for
+no quantisation took full precision — 15.3 GB where Q4_K_M is 4.7. A ref that names a file
+(`owner/repo/path/file.gguf`, split by `sizing.SplitRef`) is checked against the same listing:
+measured, sized by its repository's facts, refused when absent, auxiliary, or contradicting a
+quantisation named alongside it, and recorded under the quantisation the file carries. The
+resolved spec travels back in `Survey.Model`, and the rig records that one.
+
+A repository can publish one quantisation more than once — unsloth ships Llama-3.3-70B's
+Q6_K under two folders — so a quantisation's size is the smallest complete set carrying its
+tag, never the sum of every file that does, and advice compares against the file actually
+resolved at its measured size. Summing priced that Q6_K at 115.8 GB and recommended the
+larger Q8_0 as a saving.
+
+Download progress is the apparent size of what has arrived (`du -sb`), not the blocks
+allocated: XFS reserves space ahead of a growing file, which read 96% while the first of
+two parts was still arriving. On RunPod the Hugging Face cache is a symlink onto the volume,
+and `du` measures a link it is handed rather than its target, so vLLM's roots are measured
+with a trailing slash.
 
 The same weight figure sizes the **disk**, and before the search rather than after it,
 because the search filters on disk and a host that cannot hold the model is not a candidate.
@@ -1064,7 +1125,30 @@ Journal entry:
 ```
 
 Cost accounting is derived from the journal, not from a running counter, so it survives
-restarts and remains auditable (FR-STATE-03).
+restarts and remains auditable (FR-STATE-03). `price_hr` is the rate the rig bills while it
+runs — the provider's own once an instance reports one, the quote before — and `storage_hr`
+the part of it still billed while `STOPPED`, so a running hour costs `price_hr` once and a
+stopped hour `storage_hr`. The entry that ends a rig carries its `termination`: the field was
+declared from the start and never written, so the reason lived only in the snapshot and a
+`nothing_created` recorded at teardown never reached the cost it was meant to stop.
+
+A record made before failed creates settled themselves can be corrected by the operator
+(`larri down --nothing-created "<how you checked>" <rig>`). LARRI cannot establish the fact
+itself — a listing shows what exists now, not what existed then — so the entry records the
+operator's account as theirs, and is refused where the record or the provider proves it
+wrong: an instance id on record, or an instance carrying the rig's label now.
+
+Entries carry `"rates":"billed"` from this change on. The journal is never rewritten, so
+entries without it are read by the rules they were written under — the quote as the rate,
+storage on top, and storage as Vast's per-gigabyte-month figure over the 60 GB every rental
+of that period had at least — and, where the rig's snapshot kept the rate the provider
+billed, at that rate instead.
+
+Nothing follows the end of a rig. Two processes can hold one — `larri up` serving it and
+`larri down` ending it — and the stale one once journalled DEGRADED after DESTROYED. The
+store refuses to move a destroyed rig to any other state, supervision re-reads the store
+each cycle and adopts an ending it finds there, and replay ignores entries after the first
+DESTROYED, including a second record of the same end.
 
 ### 11.3 Reconciliation (FR-DEL-05)
 

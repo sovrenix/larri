@@ -81,12 +81,17 @@ func (s *Store) rigPath(id string) string {
 // spends that went well.
 func (s *Store) RecordIntent(rig *core.Rig, to core.LifecycleState, note string) error {
 	e := Entry{
-		At:      s.now(),
-		RigID:   rig.ID,
-		From:    rig.State,
-		To:      to,
-		Note:    note,
-		PriceHr: rig.Offer.PriceHr,
+		At:    s.now(),
+		RigID: rig.ID,
+		From:  rig.State,
+		To:    to,
+		Note:  note,
+		// The billed rate, not the quote. They differ — a RunPod pod quoted
+		// at $2.78/hr billed $3.18/hr — and a journal that kept the quote
+		// costed the rig at a rate nobody was charging, while status showed
+		// the real one beside it.
+		PriceHr: rig.BilledPriceHr(),
+		Rates:   RatesBilled,
 	}
 	if rig.Offer.Provider != "" {
 		e.Provider, e.Offer = rig.Offer.Provider, rig.Offer.OfferID
@@ -95,11 +100,28 @@ func (s *Store) RecordIntent(rig *core.Rig, to core.LifecycleState, note string)
 		e.Instance = rig.Instance.InstanceID
 		e.StorageHr = rig.Instance.StorageHr
 	}
+	// The entry that ends a rig says why. The field existed and nothing set
+	// it, so the reason lived only in the snapshot — and cost, which is
+	// replayed from the journal, never saw the evidence that a rig had
+	// created nothing: one confirmed absent at teardown was still costed
+	// at $2.09/hr for the minutes before it.
+	if to == core.StateDestroyed && rig.End != nil {
+		e.Termination = rig.End
+	}
 	return s.journal.Append(e)
 }
 
 // Transition journals a completed move and updates the snapshot.
 func (s *Store) Transition(rig *core.Rig, to core.LifecycleState, note string) error {
+	// A destroyed rig stays destroyed. Two processes can hold the same rig —
+	// one serving it, one running `larri down` — and the one holding a stale
+	// copy wrote DEGRADED over DESTROYED, which put a pod that no longer
+	// existed back to billing in the journal.
+	if to != core.StateDestroyed {
+		if cur, err := s.Load(rig.ID); err == nil && cur != nil && cur.State == core.StateDestroyed {
+			return fmt.Errorf("state: rig %s is already destroyed", rig.ID)
+		}
+	}
 	if err := s.RecordIntent(rig, to, note); err != nil {
 		return err
 	}

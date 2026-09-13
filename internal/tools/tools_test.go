@@ -6,6 +6,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -67,7 +68,7 @@ func TestEveryConsequentialToolStatesTheCost(t *testing.T) {
 	r := NewRegistry()
 	if err := Register(r, Deps{
 		Store:           st,
-		NewOrchestrator: func(string) (*daemon.Orchestrator, error) { return nil, nil },
+		NewOrchestrator: func(string, string) (*daemon.Orchestrator, error) { return nil, nil },
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestReadOnlyToolsAreNotConsequential(t *testing.T) {
 	defer st.Close()
 	r := NewRegistry()
 	if err := Register(r, Deps{Store: st,
-		NewOrchestrator: func(string) (*daemon.Orchestrator, error) { return nil, nil }}); err != nil {
+		NewOrchestrator: func(string, string) (*daemon.Orchestrator, error) { return nil, nil }}); err != nil {
 		t.Fatal(err)
 	}
 	readOnly := map[string]bool{
@@ -120,7 +121,7 @@ func TestUpRefusesWhileARigIsBilling(t *testing.T) {
 	defer st.Close()
 
 	rig := newRig(t, st)
-	d := Deps{Store: st, NewOrchestrator: func(string) (*daemon.Orchestrator, error) {
+	d := Deps{Store: st, NewOrchestrator: func(string, string) (*daemon.Orchestrator, error) {
 		t.Fatal("an orchestrator was built before the billing check")
 		return nil, nil
 	}}
@@ -144,4 +145,30 @@ func newRig(t *testing.T, st *state.Store) *core.Rig {
 		t.Fatal(err)
 	}
 	return rig
+}
+
+// larri_down tears a rig down through the provider holding it. The MCP server
+// opened the configured default for every call, and a provider that never
+// held an instance answers "not found" — which teardown reads as confirmed
+// absence of a machine still billing on the other one.
+func TestDownAsksForTheRigsOwnProvider(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	rig := newRig(t, st)
+	rig.Offer.Provider = "runpod"
+	if err := st.Save(rig); err != nil {
+		t.Fatal(err)
+	}
+	var asked string
+	d := Deps{Store: st, NewOrchestrator: func(_, prov string) (*daemon.Orchestrator, error) {
+		asked = prov
+		return nil, errors.New("stop here")
+	}}
+	_, _ = d.down(context.Background(), json.RawMessage(`{"rig":"`+rig.ID+`"}`))
+	if asked != "runpod" {
+		t.Errorf("orchestrator built for provider %q; the rig is on runpod", asked)
+	}
 }

@@ -55,6 +55,9 @@ func (o *Orchestrator) Adopt(ctx context.Context, rigID string) (*Live, error) {
 		return nil, errs.Newf(errs.ClassModelFailure, "daemon.Adopt",
 			"rig %s destroyed", rigID)
 	}
+	if err := o.holdsRig(rig, "daemon.Adopt"); err != nil {
+		return nil, err
+	}
 	if rig.Instance == nil {
 		return nil, errs.Newf(errs.ClassModelFailure, "daemon.Adopt",
 			"rig %s never provisioned", rigID)

@@ -531,16 +531,11 @@ func e2eRuntime(t *testing.T, model string) (runtime.Runtime, string) {
 	t.Helper()
 	switch os.Getenv("LARRI_E2E_RUNTIME") {
 	case "llamacpp":
+		// The file is resolved by the daemon while sizing, as it is for
+		// every surface; the suite resolving it itself is how it missed
+		// that `larri up` resolved before the quantisation default applied.
 		r := llamacpp.New()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		w, err := llamacpp.ResolveGGUF(ctx, model, e2eQuant(),
-			secret.New(os.Getenv("HF_TOKEN")))
-		if err != nil {
-			t.Fatalf("resolve gguf: %v", err)
-		}
-		t.Logf("weights: %s", w.File)
-		r.SetWeights(w)
+		r.SetHuggingFaceToken(secret.New(os.Getenv("HF_TOKEN")))
 		return r, "llamacpp"
 	case "ollama":
 		// The tag carries its own quantisation and architecture; nothing

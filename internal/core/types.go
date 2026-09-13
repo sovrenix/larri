@@ -174,8 +174,8 @@ type Instance struct {
 	Provider   string  `json:"provider"`
 	InstanceID string  `json:"instance_id"`
 	OfferID    string  `json:"offer_id"`
-	PriceHr    float64 `json:"price_hr"`
-	StorageHr  float64 `json:"storage_hr,omitempty"` // still charged while STOPPED
+	PriceHr    float64 `json:"price_hr"`             // billed while running, storage included
+	StorageHr  float64 `json:"storage_hr,omitempty"` // billed while STOPPED
 	Running    bool    `json:"running"`
 
 	// Status and StatusMsg are the provider's own account of what the
@@ -317,6 +317,18 @@ type Rig struct {
 
 // Billable reports whether this rig currently costs money.
 func (r *Rig) Billable() bool { return r.State.Billable() }
+
+// ProviderName is the provider holding this rig: the one it was selected
+// from, or the one its instance names when selection left no record.
+func (r *Rig) ProviderName() string {
+	if r.Offer.Provider != "" {
+		return r.Offer.Provider
+	}
+	if r.Instance != nil {
+		return r.Instance.Provider
+	}
+	return ""
+}
 
 // BilledPriceHr is what the rig costs by the hour: the provider's own rate
 // once an instance reports one, and the quote from selection until then.

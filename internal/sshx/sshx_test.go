@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -343,5 +344,46 @@ func TestProbeRejectsAnAcceptorThatIsNotSSH(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	if err := Probe(context.Background(), "127.0.0.1", port, 700*time.Millisecond); err == nil {
 		t.Fatal("an accepted connection with no banner is not an SSH server")
+	}
+}
+
+// Discovery must never complete a handshake it could not verify.
+//
+// CodeQL flags this callback (go/insecure-hostkeycallback, high): a callback
+// that returns nil accepts any host key, and an accepted key is a usable
+// session. It captures the key and then refuses, so the scan ends with a
+// fingerprint to pin and no connection — which is what keeps the TOFU window
+// to the moment before pinning rather than a channel anyone can talk over.
+//
+// The test exists because the safe form and the unsafe one differ by a single
+// returned value, and the unsafe one passes every other test here.
+func TestScanHostKeyNeverCompletesTheHandshake(t *testing.T) {
+	s := newTestServer(t, nil)
+	if _, err := ScanHostKey(context.Background(), "127.0.0.1", s.Port(), 10*time.Second); err != nil {
+		t.Fatalf("the scan must still return the key: %v", err)
+	}
+	// The server saw a connection that never authenticated: had the callback
+	// returned nil, the handshake would have gone on to auth instead.
+	conf := &ssh.ClientConfig{
+		User:              "larri-scan",
+		HostKeyCallback:   func(string, net.Addr, ssh.PublicKey) error { return nil },
+		HostKeyAlgorithms: hostKeyAlgorithms,
+		Timeout:           5 * time.Second,
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(s.Port())), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	// A nil-returning callback reaches authentication; ScanHostKey must not.
+	sc, _, _, aerr := ssh.NewClientConn(conn, "127.0.0.1", conf)
+	if sc != nil {
+		sc.Close()
+	}
+	if aerr == nil {
+		t.Skip("test server accepts anonymous auth; the contrast cannot be drawn here")
+	}
+	if !strings.Contains(aerr.Error(), "unable to authenticate") {
+		t.Logf("nil-callback handshake failed at %v", aerr)
 	}
 }

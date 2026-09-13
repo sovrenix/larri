@@ -216,7 +216,7 @@
   <div class="wrap">
 
     <header>
-      <h1>L.A.R.R.I. 🦞 Cookbook (As of Aug '26)</h1>
+      <h1>L.A.R.R.I. 🦞 Cookbook (As of Sep '26)</h1>
       <div style="font-weight:700">Commands that work, and what they land on.</div>
       <div class="dim" style="font-style:italic;margin:8px 0 0">
         Every command below was run before it was written down.
@@ -244,6 +244,11 @@
       <p style="margin:0 0 12px">Add <b>--dry-run</b> to any command to see the
         sizing, the hardware, the wait and the bill <em>without renting anything</em>.
         Do that first, every time.</p>
+      <p style="margin:0 0 12px">A <b>2×</b> or <b>4×</b> is that many cards in
+        one host. When a model is too big for one card, LARRI splits it across
+        several by default and picks whichever fits most cheaply — often an
+        older card doubled up beats one large one. <b>--max-gpus 1</b> keeps it
+        to a single card.</p>
       <div class="note">
         ⚠ These commands spend money. A rig bills from the moment it is created —
         including while it downloads. <b>Ctrl-C</b> tears it down;
@@ -257,9 +262,9 @@
       <h2>Start here</h2>
       <p class="dim" style="margin:0 0 16px">The cheapest thing that proves the whole path works.</p>
 
-      <h3>Smoke test — five cents</h3>
+      <h3>Smoke test — a few cents</h3>
       <div class="cmd"><button class="copy">copy</button><code>larri up --model Qwen/Qwen2.5-1.5B-Instruct</code></div>
-      <p class="lands">Lands on <b>RTX 3060 12GB · ~$0.05/hr</b> · needs 4.6 GB ·
+      <p class="lands">Lands on <b>RTX 3060 12GB · ~$0.04/hr</b> · needs 4.6 GB ·
         ready in ~4 min. This is the model LARRI's own end-to-end tests use, so a
         failure here is the host or LARRI, never the model.</p>
     </section>
@@ -272,12 +277,12 @@
 
       <h3>Qwen3 8B — the default recommendation</h3>
       <div class="cmd"><button class="copy">copy</button><code>larri up --model Qwen/Qwen3-8B</code></div>
-      <p class="lands">Lands on <b>RTX 2080 Ti 22GB · ~$0.07/hr</b> · needs 19.6 GB.
+      <p class="lands">Lands on <b>2× RTX 3060 24GB · ~$0.10/hr</b> · needs 19.6 GB.
         Text-only, tool-calling works out of the box.</p>
 
       <h3>Qwen3 14B — noticeably better, roughly double</h3>
       <div class="cmd"><button class="copy">copy</button><code>larri up --model Qwen/Qwen3-14B</code></div>
-      <p class="lands">Needs ~35 GB, so it lands on <b>RTX 3090 48GB · ~$0.17/hr</b>.</p>
+      <p class="lands">Needs ~35 GB, so it lands on <b>4× RTX 3060 48GB · ~$0.18/hr</b>.</p>
 
       <div class="note">
         Llama models on Hugging Face are <b>gated</b> — you must accept the licence
@@ -295,12 +300,13 @@
       <h3>Qwen2.5-Coder 7B — fits a cheap card</h3>
       <div class="cmd"><button class="copy">copy</button><code>larri up --model Qwen/Qwen2.5-Coder-7B-Instruct</code>
       </div>
-      <p class="lands">Lands on <b>RTX 2080 Ti 22GB · ~$0.07/hr</b> · needs 17.5 GB.</p>
+      <p class="lands">Lands on <b>2× RTX 3060 24GB · ~$0.10/hr</b> · needs 17.5 GB.</p>
 
       <h3>Qwen2.5-Coder 32B — the one worth renting a real GPU for</h3>
       <div class="cmd"><button
           class="copy">copy</button><code>larri up --model Qwen/Qwen2.5-Coder-32B-Instruct --context 32768</code></div>
-      <p class="lands">65 GB of weights, so expect an A100/3090-class multi-GPU box.
+      <p class="lands">Lands on <b>4× RTX 2080 Ti 88GB · ~$0.39/hr</b> · needs 82.7 GB ·
+        ready in ~13 min. 61 GB of weights, so LARRI rents an 86 GB disk to hold them.
         Try <b>--dry-run</b> first — this is where the download dominates the bill.</p>
 
       <div class="note">
@@ -321,7 +327,7 @@
       <h3>DeepSeek-R1 distilled into Qwen 14B</h3>
       <div class="cmd"><button
           class="copy">copy</button><code>larri up --model deepseek-ai/DeepSeek-R1-Distill-Qwen-14B</code></div>
-      <p class="lands">Lands on <b>RTX 3090 48GB · ~$0.17/hr</b> · needs 34.6 GB.
+      <p class="lands">Lands on <b>4× RTX 3060 48GB · ~$0.18/hr</b> · needs 34.6 GB.
         Reasoning models emit long chains of thought, so raise your client's
         max-tokens or answers will be cut off mid-thought.</p>
     </section>
@@ -356,7 +362,7 @@
 
       <h3>Qwen2.5-VL 7B</h3>
       <div class="cmd"><button class="copy">copy</button><code>larri up --model Qwen/Qwen2.5-VL-7B-Instruct</code></div>
-      <p class="lands">Lands on <b>RTX 2080 Ti 22GB · ~$0.07/hr</b> · needs 19.0 GB.
+      <p class="lands">Lands on <b>2× RTX 3060 24GB · ~$0.10/hr</b> · needs 19.0 GB.
         Send images as ordinary OpenAI <b>image_url</b> content parts.</p>
 
       <div class="note">
@@ -375,10 +381,13 @@
       <h3>Quantised weights, llama.cpp, old hardware</h3>
       <div class="cmd"><button
           class="copy">copy</button><code>larri up --model unsloth/Qwen3-8B-GGUF --runtime llamacpp</code></div>
-      <p class="lands">llama.cpp runs on cards vLLM refuses, and its image is a
+      <p class="lands">Lands on <b>RTX 3060 12GB · ~$0.04/hr</b> · 4.7 GB of weights.
+        llama.cpp runs on cards vLLM refuses, and its image is a
         fraction of vLLM's 8.6 GB. LARRI defaults GGUF engines to <b>Q4_K_M</b> —
         roughly a quarter the size of full precision — and names smaller
-        quantisations in the repo if you want to go further.</p>
+        quantisations in the repo if you want to go further. To pick one
+        yourself, name it with <b>--quantization</b> or name the file:
+        <b>unsloth/Qwen3-8B-GGUF/Qwen3-8B-Q8_0.gguf</b>.</p>
 
       <h3>Let LARRI find a smaller version of what you asked for</h3>
       <div class="cmd"><button class="copy">copy</button><code>larri up --model Qwen/Qwen3-14B --dry-run</code></div>
@@ -453,6 +462,10 @@
         <tr>
           <td><b>--gpu "RTX 3090"</b></td>
           <td>Restrict to hardware you trust.</td>
+        </tr>
+        <tr>
+          <td><b>--max-gpus 1</b></td>
+          <td>Keep the model on one card instead of splitting it across several.</td>
         </tr>
         <tr>
           <td><b>--verified-only</b></td>

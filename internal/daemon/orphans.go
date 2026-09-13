@@ -170,7 +170,7 @@ func (o *Orchestrator) recordReaped(orph Orphan) {
 			"instance": orph.Instance.InstanceID,
 			"reason":   orph.Reason,
 		},
-		Cost: state.CostFor(entries, rig.ID, time.Now().UTC()),
+		Cost: state.CostForRig(entries, rig, time.Now().UTC()),
 	}
 	_ = o.Store.Transition(rig, core.StateDestroyed, "orphan sweep")
 }

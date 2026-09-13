@@ -28,7 +28,7 @@ import (
 func cmdOffers(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("offers", flag.ExitOnError)
 	model := fs.String("model", "", "model reference, e.g. Qwen/Qwen3-Coder-30B")
-	quant := fs.String("quantization", "fp16", "fp16, q4_K_M, awq, ...")
+	quant := fs.String("quantization", "", "fp16, Q4_K_M, awq, … (default: the runtime's)")
 	ctxLen := fs.Int("context", 8192, "context length")
 	gpu := fs.String("gpu", "", "GPU model filter, e.g. 'RTX 4090'")
 	maxPrice := fs.Float64("max-price", 0, "ceiling in $/hr")

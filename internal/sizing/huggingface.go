@@ -117,8 +117,34 @@ type modelConfig struct {
 	} `json:"text_config"`
 }
 
+// SplitRef separates a reference into its repository and, when it names a
+// GGUF file inside one, that file's path within the repository.
+//
+// A repository id is exactly two segments, so everything after them is a
+// path — including any directory, since GGUF publishers put quantisations in
+// folders. One definition, because sizing and the engine each parsed the ref
+// their own way: the engine stripped the filename and sizing asked Hugging
+// Face for a repository called "owner/name/file.gguf", which does not exist.
+func SplitRef(ref string) (repo, file string) {
+	parts := strings.SplitN(ref, "/", 3)
+	if len(parts) < 3 || !strings.HasSuffix(strings.ToLower(ref), ".gguf") {
+		return ref, ""
+	}
+	return parts[0] + "/" + parts[1], parts[2]
+}
+
 // Resolve fetches facts for a model reference.
 func (h *HFResolver) Resolve(ctx context.Context, ref, revision string) (Facts, error) {
+	// Facts describe the repository, not one file in it, so a ref naming a
+	// file is sized by its repository and reported under the name given.
+	if repo, file := SplitRef(ref); file != "" {
+		f, err := h.Resolve(ctx, repo, revision)
+		if err != nil {
+			return Facts{}, err
+		}
+		f.Ref = ref
+		return f, nil
+	}
 	if revision == "" {
 		revision = "main"
 	}

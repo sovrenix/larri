@@ -342,6 +342,11 @@ type Survey struct {
 	// named one, the model's own requirement when they did not. The search
 	// filtered on it, so the create call must request the same number.
 	DiskGB int
+
+	// Model is the spec as sized: the quantisation settled and, for an
+	// engine that picks a file, the file chosen. The rig records this one,
+	// not the request, so status names what is actually being served.
+	Model core.ModelSpec
 }
 
 // survey sizes the model and ranks the market. It never spends.
@@ -350,6 +355,11 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 		return nil, errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.survey", "%v", err)
 	}
 	// ---- size before spending -------------------------------------------
+	model, err := o.resolveWeights(ctx, req.Model)
+	if err != nil {
+		return nil, err
+	}
+	req.Model = model
 	o.emit("sizing", "resolving %s", req.Model.Ref)
 	facts, err := o.Resolver.Resolve(ctx, req.Model.Ref, req.Model.Revision)
 	if err != nil {
@@ -531,7 +541,7 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 			o.warn("sizing", "%s", w)
 		}
 	}
-	return &Survey{Plan: placed, Selection: sel, Offers: len(offers), DiskGB: disk}, nil
+	return &Survey{Plan: placed, Selection: sel, Offers: len(offers), DiskGB: disk, Model: req.Model}, nil
 }
 
 // explainShards says what a multi-GPU placement actually is, card by card.
@@ -604,6 +614,33 @@ func (o *Orchestrator) moreCardsWouldFit(ctx context.Context, c core.Criteria,
 //
 // Zero from a runtime that cannot say, and zero from one that could not find
 // out — the same answer either way, because both mean the estimate stands.
+// resolveWeights settles the weight format, and the file for an engine that
+// loads one, before anything is sized.
+//
+// Every surface reaches sizing through here, which is the point: when the
+// CLI did this itself, it did it before the quantisation default existed,
+// and the surfaces that did not do it at all could not use llama.cpp.
+func (o *Orchestrator) resolveWeights(ctx context.Context, spec core.ModelSpec) (core.ModelSpec, error) {
+	if wr, ok := o.Runtime.(runtime.WeightResolver); ok {
+		w, err := wr.ResolveWeights(ctx, spec)
+		if err != nil {
+			return spec, err
+		}
+		if w.Bytes > 0 {
+			o.emit("weights", "%s (%s)", w.File, sizing.HumanBytes(w.Bytes))
+		} else {
+			o.emit("weights", "%s", w.File)
+		}
+		if w.Quantization != "" {
+			spec.Quantization = w.Quantization
+		}
+	}
+	if spec.Quantization == "" {
+		spec.Quantization = runtime.QuantizationFor(o.Runtime)
+	}
+	return spec, nil
+}
+
 func (o *Orchestrator) weightBytes() uint64 {
 	if ws, ok := o.Runtime.(runtime.WeightSizer); ok {
 		return ws.WeightBytes()
@@ -628,6 +665,7 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 	if err != nil {
 		return nil, err
 	}
+	req.Model = sv.Model
 	plan, sel := sv.Plan, sv.Selection
 	chosen := sel.Selected.Offer
 	o.reportExclusions(sel)
@@ -723,7 +761,7 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 		Ports: nil,
 	})
 	if err != nil {
-		_ = o.Store.RecordIntent(rig, core.StateFailed, "create failed: "+err.Error())
+		o.resolveFailedCreate(ctx, rig, err)
 		return rig, err
 	}
 	rig.Instance = inst
@@ -905,6 +943,96 @@ func (o *Orchestrator) explainDeadline(ctx context.Context, err error,
 	return errs.Newf(errs.ClassHostFailure, "daemon.attempt",
 		"bring-up hit the %s ceiling after %s, last: %s: raise it with --deadline",
 		deadline, elapsed, where)
+}
+
+// resolveFailedCreate closes out a create that returned no instance.
+//
+// Two things went wrong when this was a bare RecordIntent. The journal moved
+// to FAILED while the rig file stayed at SELECTED, because RecordIntent writes
+// only the journal — so `larri status` read the state from one and the cost
+// from the other, showing a rig that never rented anything accruing $1.39/hr
+// for two days. And nothing ever resolved it: FAILED bills by the journal's
+// reckoning, deliberately, since a create that fails may still have created
+// something, and the way out of that assumption is evidence.
+//
+// So this writes both, then asks the provider. An instance carrying the rig's
+// label means the create landed after all and is billing now: it is torn down
+// rather than left for reconciliation to find. Nothing carrying the label, and
+// the rig is closed then and there, which stops the accrual at the failure
+// instead of whenever somebody notices. A provider that cannot be reached
+// resolves nothing and is left as FAILED, loudly (§4).
+func (o *Orchestrator) resolveFailedCreate(ctx context.Context, rig *core.Rig, cause error) {
+	if err := o.Store.Transition(rig, core.StateFailed, "create failed: "+shortErr(cause)); err != nil {
+		o.warn("create", "could not journal the failed create: %v", err)
+	}
+	// A call that never left the client created nothing, and needs no
+	// confirming: the case that happens is a missing API key, and the
+	// confirming call needs the same key — so asking would fail too and leave
+	// the rig billing on an assumption nothing could ever lift.
+	if errors.Is(cause, provider.ErrNotSent) {
+		o.closeNeverCreated(rig, cause, "the create was never sent")
+		return
+	}
+	found, checked := o.instanceForRig(ctx, rig)
+	if !checked {
+		o.warn("create", "cannot confirm whether %s created anything — left as FAILED",
+			rig.Offer.OfferID)
+		return
+	}
+	if found != nil {
+		o.warn("create", "the create reported failure but left instance %s billing — tearing it down",
+			found.InstanceID)
+		rig.Instance = found
+		o.teardownAfterFailure(rig, core.ReasonHostFailure, cause)
+		return
+	}
+	// Absence now is not absence for a create whose outcome is unknown: the
+	// call timed out, the instance can appear seconds later, and closing the
+	// rig on one empty listing would record as destroyed something that is
+	// about to start billing (R-07). That case stays FAILED and loud, for
+	// reconciliation and the orphan sweep.
+	if errs.Is(cause, errs.ClassProviderUnknownOutcome) {
+		o.warn("create", "outcome unknown and nothing carries the rig's label yet — "+
+			"left as FAILED; run 'larri orphans' if it appears")
+		return
+	}
+	o.closeNeverCreated(rig, cause, "no instance carries this rig's label")
+}
+
+// closeNeverCreated ends a rig that demonstrably never had an instance, with
+// the evidence that says so — which is what stops the cost accruing.
+func (o *Orchestrator) closeNeverCreated(rig *core.Rig, cause error, why string) {
+	rig.End = &core.Termination{
+		Actor: core.ActorFault, Code: core.ReasonHostFailure, At: time.Now().UTC(),
+		Summary: "create failed before an instance existed: " + shortErr(cause),
+		Evidence: map[string]string{
+			"error":                     shortErr(cause),
+			"provider":                  rig.Offer.Provider,
+			"offer":                     rig.Offer.OfferID,
+			core.EvidenceNothingCreated: why,
+		},
+	}
+	if err := o.Store.Transition(rig, core.StateDestroyed, "no instance was created"); err != nil {
+		o.warn("create", "could not close the failed rig: %v", err)
+	}
+}
+
+// instanceForRig asks the provider whether anything carries this rig's label.
+//
+// The second return says whether the question was answered at all: a provider
+// that cannot be reached resolves nothing, and "no instances listed" from a
+// failed call is not absence (§4).
+func (o *Orchestrator) instanceForRig(ctx context.Context, rig *core.Rig) (*core.Instance, bool) {
+	live, err := o.Provider.List(ctx)
+	if err != nil {
+		return nil, false
+	}
+	for i := range live {
+		if id, ours := live[i].RigID(); ours && id == rig.ID {
+			return &live[i], true
+		}
+	}
+	return nil, true
 }
 
 // teardownAfterFailure destroys a rig whose bring-up failed, on a fresh
@@ -1346,6 +1474,14 @@ func (o *Orchestrator) reportExclusions(sel rank.Result) {
 // motive afterwards gets it wrong exactly when several conditions were true at
 // once (§13.1).
 func (o *Orchestrator) Down(ctx context.Context, rig *core.Rig, term *core.Termination) error {
+	if err := o.holdsRig(rig, "daemon.Down"); err != nil {
+		return err
+	}
+	// Already over, and the record says why. Teardown is idempotent
+	// (FR-DEL-02), and a second one would journal a second ending.
+	if rig.State == core.StateDestroyed {
+		return nil
+	}
 	if term == nil {
 		term = &core.Termination{
 			Actor: core.ActorOperator, Code: core.ReasonOperatorRequest,
@@ -1361,8 +1497,28 @@ func (o *Orchestrator) Down(ctx context.Context, rig *core.Rig, term *core.Termi
 		o.Proxy.SetUpstream(wire.Upstream{})
 	}
 	if rig.Instance == nil {
-		rig.End = term
-		return o.Store.Transition(rig, core.StateDestroyed, "no instance was ever created")
+		// "No instance" is what local state holds, not what the provider
+		// holds. A create whose answer was lost leaves exactly this, with a
+		// machine billing behind it, so the claim is checked before it is
+		// recorded — and the check is also what lets cost stop pretending the
+		// rig ever billed.
+		found, checked := o.instanceForRig(ctx, rig)
+		if found != nil {
+			o.warn("destroy", "local state knew of no instance; the provider has %s",
+				found.InstanceID)
+			rig.Instance = found
+		} else {
+			if checked {
+				if term.Evidence == nil {
+					term.Evidence = map[string]string{}
+				}
+				term.Evidence[core.EvidenceNothingCreated] = "no instance carries this rig's label"
+			} else {
+				o.warn("destroy", "could not reach the provider to confirm nothing was created")
+			}
+			rig.End = term
+			return o.Store.Transition(rig, core.StateDestroyed, "no instance was ever created")
+		}
 	}
 
 	o.emit("destroy", "destroying %s", rig.Instance.InstanceID)
@@ -1383,10 +1539,26 @@ func (o *Orchestrator) Down(ctx context.Context, rig *core.Rig, term *core.Termi
 			"instance %s not confirmed absent", rig.Instance.InstanceID)
 	}
 	entries, _ := o.Store.Entries()
-	term.Cost = state.CostFor(entries, rig.ID, time.Now().UTC())
+	term.Cost = state.CostForRig(entries, rig, time.Now().UTC())
 	rig.End = term
 	o.emit("destroy", "confirmed absent")
 	return o.Store.Transition(rig, core.StateDestroyed, term.Summary)
+}
+
+// holdsRig refuses to act on a rig through a provider that does not hold it.
+//
+// Every question about an instance goes to one provider, and a different one
+// answers "not found" — which is exactly what absence looks like. `larri down`
+// opened whichever provider the configuration listed first, so a RunPod rig
+// torn down on a machine configured for Vast would ask Vast to destroy the
+// pod, hear 404, and record it confirmed absent while it went on billing.
+func (o *Orchestrator) holdsRig(rig *core.Rig, op string) error {
+	want := rig.ProviderName()
+	if want == "" || o.Provider == nil || o.Provider.Name() == want {
+		return nil
+	}
+	return errs.Newf(errs.ClassModelFailure, op, "rig %s is on %s, not %s",
+		rig.ID, want, o.Provider.Name())
 }
 
 func (o *Orchestrator) confirmAbsent(ctx context.Context, instanceID string) (bool, error) {

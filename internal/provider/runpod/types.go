@@ -63,10 +63,10 @@ func countsTo(n int) []int {
 
 // sizeCeiling is the largest pod the catalogue will place from a type LARRI
 // can actually buy.
-func sizeCeiling(types []gpuSize) int {
+func sizeCeiling(types []gpuSize, rentable func(string) bool) int {
 	max := 0
 	for _, g := range types {
-		if purchasable(g.ID) && g.MaxGPUCount > max {
+		if rentable(g.ID) && g.MaxGPUCount > max {
 			max = g.MaxGPUCount
 		}
 	}
@@ -239,8 +239,9 @@ func gpuTypeID(offer string) string {
 //     refused outright. Stock is re-read on every search, so this is current
 //     reality rather than a permanent exclusion — a type that comes back into
 //     stock comes back into the list.
-//   - **Not purchasable.** The catalogue advertises types POST /pods rejects.
-func (g gpuType) normalise(count int, mode core.Tristate) (core.Offer, dropReason, bool) {
+//   - **Not purchasable.** The catalogue advertises types POST /pods rejects;
+//     rentable is the create call's own list of the ones it accepts.
+func (g gpuType) normalise(count int, mode core.Tristate, rentable func(string) bool) (core.Offer, dropReason, bool) {
 	if count > 1 && g.MaxGPUCount > 0 && count > g.MaxGPUCount {
 		return core.Offer{}, dropTooManyGPUs, false
 	}
@@ -277,7 +278,7 @@ func (g gpuType) normalise(count int, mode core.Tristate) (core.Offer, dropReaso
 	if price <= 0 || g.MemoryInGb <= 0 || g.ID == "" {
 		return core.Offer{}, dropUnpriced, false
 	}
-	if !purchasable(g.ID) {
+	if !rentable(g.ID) {
 		return core.Offer{}, dropUnpurchasable, false
 	}
 	if !inStock(lowest.StockStatus) {
@@ -382,6 +383,29 @@ type pod struct {
 	} `json:"gpu"`
 }
 
+// RunPod bills disk apart from the GPU, and neither the catalogue price nor a
+// pod's costPerHr includes it: a pod with 220 GB of disk reported costPerHr
+// 0.49, the catalogue's A40 rate exactly. Dollars per gigabyte per month, as
+// RunPod publishes them; the month length it does not publish, and Vast's 720
+// hours is assumed. The same pod's bill agreed: $0.0051 above the GPU rate for
+// 636 s, $0.029/hr of disk against the $0.031/hr these predict.
+const (
+	runningDiskPerGBMonth = 0.10 // container disk and volume, while the pod runs
+	stoppedDiskPerGBMonth = 0.20 // the volume, while the pod is stopped
+	hoursPerMonth         = 720
+)
+
+// runningDiskHr is what a pod's disks bill by the hour while it runs.
+func runningDiskHr(containerGB, volumeGB int) float64 {
+	return float64(containerGB+volumeGB) * runningDiskPerGBMonth / hoursPerMonth
+}
+
+// stoppedDiskHr is what a stopped pod bills by the hour: its volume. The
+// container disk is discarded when a pod stops.
+func stoppedDiskHr(volumeGB int) float64 {
+	return float64(volumeGB) * stoppedDiskPerGBMonth / hoursPerMonth
+}
+
 // normalise turns a pod into an Instance.
 //
 // Running is derived from desiredStatus rather than from the presence of an
@@ -419,6 +443,13 @@ func (p pod) normalise() (core.Instance, error) {
 	if p.AdjustedCostPerHr != nil && *p.AdjustedCostPerHr > 0 {
 		inst.PriceHr = *p.AdjustedCostPerHr
 	}
+	// costPerHr is the GPU alone. The disks bill beside it, so the rate the
+	// pod costs while it runs is both, and what it costs stopped is the
+	// volume at the stopped rate.
+	if inst.PriceHr > 0 {
+		inst.PriceHr += runningDiskHr(p.ContainerDiskInGb, p.VolumeInGb)
+	}
+	inst.StorageHr = stoppedDiskHr(p.VolumeInGb)
 	if p.Machine != nil {
 		inst.OfferID = p.Machine.GPUTypeID
 	} else if p.GPU != nil {
@@ -446,17 +477,15 @@ func labelRigID(name string) string {
 	return ""
 }
 
-// purchasable rejects catalogue entries POST /pods will not accept.
+// purchasable is the fallback when the create schema cannot be read: it
+// rejects only catalogue entries known not to be rentable.
 //
-// The two APIs are not kept in sync. The catalogue currently lists a literal
-// "unknown" type, and several MIG partitions and Blackwell server editions
-// that the create enum does not carry — three of them priced, and one of those
-// ($0.50/hr for 32 GB) would rank well enough to be chosen.
-//
-// Matching the enum exactly would mean embedding 45 strings that go stale the
-// week RunPod adds hardware, so this drops only what is unmistakably not a
-// rentable type and leaves the rest to fail at create — which now falls back
-// to the next offer rather than aborting the run (see createClass).
+// The two APIs are not kept in sync. The catalogue lists a literal "unknown"
+// type and MIG partitions the create enum does not carry — priced, and one
+// ($0.50/hr for 32 GB) would rank well enough to be chosen. It also lists
+// "NVIDIA RTX PRO 4500 Blackwell Server Edition", which nothing here can tell
+// from a real type by its name; that is what reading the schema is for, and
+// without it the type costs one failed create before falling back.
 func purchasable(id string) bool {
 	if id == "" || strings.EqualFold(id, "unknown") {
 		return false
