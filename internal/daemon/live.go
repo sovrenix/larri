@@ -179,7 +179,7 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 		for p := range progress {
 			if p.BytesTotal > 0 {
 				o.emit("boot", "%s %.0f%% (%s of %s)", p.Phase, p.Percent,
-					sizing.HumanBytes(uint64(p.BytesDone)), sizing.HumanBytes(uint64(p.BytesTotal)))
+					sizing.HumanBytes(p.BytesDone), sizing.HumanBytes(p.BytesTotal))
 			} else if p.Message != "" {
 				o.emit("boot", "%s %s", p.Phase, p.Message)
 			}

@@ -62,11 +62,16 @@ const (
 // Progress carries bootstrap progress so a multi-GB download does not look
 // like a hang (FR-RT-06). Bytes are reported because the operator is paying
 // for the time they take.
+//
+// Unsigned, like every other byte count here. They were int64, which put a
+// conversion between a host's du output and the display, and a host is not
+// trusted to keep what it prints inside an int64 (CodeQL go/incorrect-integer-
+// conversion, alert 2).
 type Progress struct {
 	Phase       Phase
 	Percent     float64
-	BytesDone   int64
-	BytesTotal  int64
+	BytesDone   uint64
+	BytesTotal  uint64
 	BytesPerSec float64
 	Message     string
 }

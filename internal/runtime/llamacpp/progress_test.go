@@ -11,6 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"go.sovrenix.com/larri/internal/core"
+	"go.sovrenix.com/larri/internal/runtime"
 )
 
 // bashSession runs the measuring command in a local bash, rooted at a
@@ -49,5 +53,42 @@ func TestProgressCountsBytesWrittenNotSpaceReserved(t *testing.T) {
 	}
 	if got > 2<<20 {
 		t.Errorf("measured %d bytes; 1 MB was written and the rest is only reserved", got)
+	}
+}
+
+// The size is what the host prints, and the host is not trusted. An answer
+// past the whole download — past what an int64 holds, even — is reported as
+// the whole download and no more.
+func TestProgressIsBoundedByTheDownload(t *testing.T) {
+	downloadPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { downloadPollInterval = 10 * time.Second })
+
+	r := New()
+	r.SetWeights(Weights{File: "m.gguf", Bytes: 10 << 30})
+	sess := &scriptedSession{
+		recSession: recSession{out: "llama-server"},
+		slow:       60 * time.Millisecond,
+		answers: map[string]string{
+			"df -Pk": "999999999\n0\n",
+			"du -sb": "18446744073709551615\n", // 2^64-1
+		},
+	}
+	seen := make(chan runtime.Progress, 64)
+	if err := r.Bootstrap(context.Background(), sess, spec(), core.SizingPlan{}, seen); err != nil {
+		t.Fatal(err)
+	}
+	close(seen)
+	var reported bool
+	for p := range seen {
+		if p.BytesTotal == 0 {
+			continue
+		}
+		reported = true
+		if p.BytesDone != p.BytesTotal || p.Percent != 100 {
+			t.Errorf("progress %d of %d bytes (%.0f%%); bounded by the download", p.BytesDone, p.BytesTotal, p.Percent)
+		}
+	}
+	if !reported {
+		t.Error("no progress reported")
 	}
 }

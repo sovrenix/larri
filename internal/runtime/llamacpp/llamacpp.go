@@ -222,13 +222,15 @@ func (r *Runtime) reportDownload(ctx context.Context, sess runtime.Session,
 				continue
 			}
 			last = got
-			pct := float64(got) / float64(total) * 100
-			if pct > 100 {
-				pct = 100
+			// Measured on the host, so bounded here: more than the whole
+			// download is other files in the directory, or a host making
+			// things up, and neither is progress.
+			if got > total {
+				got = total
 			}
 			send(runtime.Progress{
-				Phase: "weights.download", Percent: pct,
-				BytesDone: int64(got), BytesTotal: int64(total),
+				Phase: "weights.download", Percent: float64(got) / float64(total) * 100,
+				BytesDone: got, BytesTotal: total,
 			})
 		}
 	}()
