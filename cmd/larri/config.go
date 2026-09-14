@@ -210,6 +210,7 @@ func previewFunc(ctx context.Context) func(config.Profile) term.Cmd {
 				rows = append(rows, tui.PreviewRow{
 					GPU: c.Offer.GPUModel, VRAMGB: c.Offer.VRAMTotalGB(),
 					PriceHr: c.Offer.PriceHr, Reliability: c.Offer.Reliability,
+					LowStock: c.Offer.LowStock,
 					Selected: sv.Selection.Selected != nil &&
 						c.Offer.OfferID == sv.Selection.Selected.Offer.OfferID,
 				})
@@ -260,7 +261,7 @@ func showConfig(file string, cfg config.Config) error {
 // override a saved ceiling.
 func applyProfile(p config.Profile, set map[string]bool,
 	model, quant *string, ctxLen *int, gpu *string, maxPrice *float64,
-	disk *int, minRel *float64, port *int, engine *string) {
+	disk *int, minRel *float64, port *int, engine *string, allowLowStock *bool) {
 
 	if !set["model"] && p.Model != "" {
 		*model = p.Model
@@ -288,6 +289,9 @@ func applyProfile(p config.Profile, set map[string]bool,
 	}
 	if !set["runtime"] && p.Runtime != "" {
 		*engine = p.Runtime
+	}
+	if !set["allow-low-stock"] && p.AllowLowStock {
+		*allowLowStock = true
 	}
 }
 

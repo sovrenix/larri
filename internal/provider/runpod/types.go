@@ -231,16 +231,23 @@ func gpuTypeID(offer string) string {
 
 // normalise turns a catalogue entry into an offer LARRI can rank.
 //
-// Entries are dropped for three reasons and all three are the same reason: an
-// offer LARRI cannot actually rent is worse than no offer, because selection
-// will choose it and the operator will watch it fail.
+// Entries are dropped for the reasons below, and they come to the same thing:
+// an offer LARRI cannot rent, or could rent and not use, is worse than no
+// offer, because selection will choose it and the operator will watch it fail.
+//
+//   - **More cards than the type places.** Not a size RunPod sells.
+//
+//   - **More than one MIG slice.** A CUDA process sees one MIG device however
+//     many a pod holds, so extra slices add nothing an engine can use.
 //
 //   - **No price.** Selection cannot rank it, no ceiling applies to it, and
 //     cost accounting cannot follow it. "No price" means unavailable, not
 //     free.
+//
 //   - **Out of stock.** No stock status at all. Stock is re-read on every
 //     search, so this is current reality rather than a permanent exclusion —
 //     a type that comes back into stock comes back into the list.
+//
 //   - **Low stock, unless allowed.** Low is not unplaceable: five of six
 //     Low-stock Secure Cloud pods probed on 2026-09-14 — RTX 2000 Ada, RTX
 //     A4000, A100 80GB PCIe, H100 NVL, B200 — were placed on a machine at
@@ -248,6 +255,7 @@ func gpuTypeID(offer string) string {
 //     available" and nothing created. An RTX 3070 had been refused the same
 //     way earlier. A refusal costs an attempt, not money, so whether to spend
 //     attempts on it is the operator's call; allowed, the offer is marked.
+//
 //   - **Not purchasable.** The catalogue advertises types POST /pods rejects;
 //     rentable is the create call's own list of the ones it accepts.
 func (g gpuType) normalise(count int, mode core.Tristate, rentable func(string) bool, allowLow bool) (core.Offer, dropReason, bool) {
@@ -526,6 +534,14 @@ func labelRigID(name string) string {
 
 // purchasable is the fallback when the create schema cannot be read: it
 // rejects only catalogue entries known not to be rentable.
+//
+// Every MIG type is rejected here, though the schema does accept one (a B300
+// MIG 1g.34gb, which the catalogue does not currently list). Without the
+// schema LARRI cannot tell the one from the PRO 6000 slices the create call
+// refuses, and a list of refused ids goes stale the week RunPod adds more.
+// Dropping a MIG type while degraded loses one-slice offers; offering them
+// spends an attempt per refusal. The schema is served by the host that takes
+// creates, so a search that cannot read it is unlikely to rent anyway.
 //
 // The two APIs are not kept in sync. The catalogue lists a literal "unknown"
 // type and MIG partitions the create enum does not carry — priced, and one

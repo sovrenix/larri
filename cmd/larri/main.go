@@ -322,7 +322,7 @@ func cmdUp(ctx context.Context, args []string) error {
 		fmt.Printf("  config      created %s with the built-in defaults\n", config.Path())
 		fmt.Printf("              edit it with: larri config\n")
 	}
-	applyProfile(res.Profile, set, model, quant, ctxLen, gpu, maxPrice, disk, minRel, port, engine)
+	applyProfile(res.Profile, set, model, quant, ctxLen, gpu, maxPrice, disk, minRel, port, engine, allowLowStock)
 	if res.Name != "" {
 		// FR-CRIT-05 forbids *silently* reusing criteria. A named default
 		// profile may apply to a bare `larri up` only because this line makes

@@ -28,6 +28,10 @@ import (
 
 // Behaviour configures how the fake misbehaves.
 type Behaviour struct {
+	// RefuseLowStock refuses creates for offers at low stock the way RunPod
+	// refuses one it cannot place: an error, and nothing created.
+	RefuseLowStock bool
+
 	// RefuseEmptySearch makes a search that matches nothing an unsatisfiable
 	// criteria error, the way RunPod's catalogue answers, rather than an
 	// empty list.
@@ -206,7 +210,7 @@ func (p *Provider) Create(ctx context.Context, o core.Offer, spec provider.Creat
 		return nil, provider.NotSent(errs.Newf(errs.ClassModelFailure, p.name+".Create",
 			"set %s_API_KEY: renting needs a key, searching does not", strings.ToUpper(p.name)))
 	}
-	if p.behaviour.CreateRefused {
+	if p.behaviour.CreateRefused || (p.behaviour.RefuseLowStock && o.LowStock) {
 		return nil, errs.Newf(errs.ClassHostFailure, p.name+".Create",
 			"this gpu type could not be placed: no instances currently available")
 	}

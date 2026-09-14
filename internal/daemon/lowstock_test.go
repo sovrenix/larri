@@ -149,3 +149,58 @@ func TestAProviderRefusalStillNamesWhatWouldFit(t *testing.T) {
 		t.Errorf("class = %s; still an unsatisfiable request", errs.ClassOf(err))
 	}
 }
+
+// The guarantee the flag rests on: a low-stock create the provider refuses
+// creates nothing, costs nothing, and moves on — to a different listing, not
+// the refused one again — leaving nothing billing.
+func TestARefusedLowStockCreateFallsBackAndLeavesNothing(t *testing.T) {
+	market := []core.Offer{
+		{Provider: "fake", OfferID: "low", GPUModel: "A40", GPUCount: 1, VRAMPerGPUGB: 48,
+			PriceHr: 0.49, NetDownMbps: 1000, LowStock: true},
+		{Provider: "fake", OfferID: "instock", GPUModel: "L40S", GPUCount: 1, VRAMPerGPUGB: 48,
+			PriceHr: 1.09, NetDownMbps: 1000},
+	}
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	p := pfake.New("fake", market, pfake.Behaviour{RefuseLowStock: true})
+	o := &Orchestrator{
+		Store: st, Provider: p, Runtime: rfake.New(rfake.Behaviour{}),
+		Resolver: sizing.StaticResolver{"test/m": sizing.Facts{
+			Ref: "test/m", Params: 8, Layers: 32, AttentionHeads: 32, KVHeads: 8,
+			HeadDim: 128, HiddenSize: 4096, MaxContextLen: 32768}},
+		Policy: rank.DefaultPolicy(), Deadline: 2 * time.Second, MaxHostAttempts: 2,
+	}
+	// The fake's hosts never serve, so the bring-up fails overall; what is
+	// under test is what the refusal did on the way.
+	_, _ = o.UpAndServe(context.Background(), UpRequest{
+		Criteria: core.Criteria{AllowLowStock: true},
+		Model:    core.ModelSpec{Ref: "test/m", ServedName: "m", Quantization: "q4_K_M", ContextLen: 4096},
+	})
+
+	rigs, err := st.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := st.Entries()
+	byOffer := map[string]*core.Rig{}
+	for _, r := range rigs {
+		byOffer[r.Offer.OfferID] = r
+	}
+	refused, next := byOffer["low"], byOffer["instock"]
+	if refused == nil || next == nil {
+		t.Fatalf("attempted %v; want the low-stock listing, then the in-stock one", byOffer)
+	}
+	if refused.State != core.StateDestroyed || refused.End == nil ||
+		refused.End.Evidence[core.EvidenceNothingCreated] == "" {
+		t.Errorf("refused rig: state %s, end %+v; want closed as never created", refused.State, refused.End)
+	}
+	if c := state.CostForRig(entries, refused, time.Now().UTC().Add(time.Hour)); c.TotalUSD != 0 {
+		t.Errorf("the refused create accrued $%.4f", c.TotalUSD)
+	}
+	if p.Count() != 0 {
+		t.Errorf("%d instance(s) left billing", p.Count())
+	}
+}

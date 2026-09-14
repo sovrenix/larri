@@ -87,10 +87,14 @@ func (e Editor) previewView() string {
 		if r.Selected {
 			mark = title.Render(" → ")
 		}
-		b.WriteString(fmt.Sprintf("%s%-18s %-6s %s  %s\n",
+		stock := ""
+		if r.LowStock {
+			stock = dim.Render("  low stock")
+		}
+		b.WriteString(fmt.Sprintf("%s%-18s %-6s %s  %s%s\n",
 			mark, r.GPU, fmt.Sprintf("%dGB", r.VRAMGB),
 			money.Render(fmt.Sprintf("$%.3f/hr", r.PriceHr)),
-			dim.Render(fmt.Sprintf("rel %.2f", r.Reliability))))
+			dim.Render(fmt.Sprintf("rel %.2f", r.Reliability)), stock))
 	}
 	return b.String()
 }
