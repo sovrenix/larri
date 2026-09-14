@@ -54,29 +54,43 @@ func (d Deps) live() *daemon.Live {
 }
 
 func (d Deps) orphans(ctx context.Context, _ json.RawMessage) (any, error) {
-	o, err := d.NewOrchestrator("", "", core.ModelSpec{})
-	if err != nil {
-		return nil, err
-	}
-	orphans, err := o.Orphans(ctx)
-	if err != nil {
-		return nil, err
+	names := []string{""}
+	if d.Providers != nil {
+		names = d.Providers()
 	}
 	rows := []map[string]any{}
+	notChecked := map[string]string{}
 	var hourly float64
-	for _, orph := range orphans {
-		rows = append(rows, map[string]any{
-			"instance_id": orph.Instance.InstanceID,
-			"running":     orph.Instance.Running,
-			"price_hr":    orph.Instance.PriceHr,
-			"status":      orph.Instance.Status,
-			"reason":      orph.Reason,
-			"describe":    orph.Describe(),
-		})
-		hourly += orph.Instance.PriceHr
+	for _, name := range names {
+		o, err := d.NewOrchestrator("", name, core.ModelSpec{})
+		if err == nil {
+			var orphans []daemon.Orphan
+			if orphans, err = o.Orphans(ctx); err == nil {
+				for _, orph := range orphans {
+					rows = append(rows, map[string]any{
+						"provider":    orph.Instance.Provider,
+						"instance_id": orph.Instance.InstanceID,
+						"running":     orph.Instance.Running,
+						"price_hr":    orph.Instance.PriceHr,
+						"status":      orph.Instance.Status,
+						"reason":      orph.Reason,
+						"describe":    orph.Describe(),
+					})
+					hourly += orph.Instance.PriceHr
+				}
+				continue
+			}
+		}
+		// One provider that cannot be listed does not hide the others, and
+		// the agent is told it was not checked rather than left to read
+		// silence as absence.
+		if len(names) == 1 {
+			return nil, err
+		}
+		notChecked[name] = err.Error()
 	}
 	return map[string]any{
-		"orphans": rows, "count": len(rows),
+		"orphans": rows, "count": len(rows), "not_checked": notChecked,
 		"total_price_hr": round4(hourly),
 		"note":           "nothing was destroyed; larri_orphan_destroy removes one",
 	}, nil
@@ -316,6 +330,7 @@ func (d Deps) down(ctx context.Context, raw json.RawMessage) (any, error) {
 
 type orphanDestroyArgs struct {
 	InstanceID string `json:"instance_id"`
+	Provider   string `json:"provider"`
 }
 
 func (d Deps) orphanDestroy(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -326,7 +341,12 @@ func (d Deps) orphanDestroy(ctx context.Context, raw json.RawMessage) (any, erro
 	if a.InstanceID == "" {
 		return nil, fmt.Errorf("instance_id is required")
 	}
-	o, err := d.NewOrchestrator("", "", core.ModelSpec{})
+	// Required, never defaulted: the default provider answers "not found"
+	// for another provider's instance, which reads as confirmed absence.
+	if a.Provider == "" {
+		return nil, fmt.Errorf("provider is required: larri_orphans names it")
+	}
+	o, err := d.NewOrchestrator("", a.Provider, core.ModelSpec{})
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +354,7 @@ func (d Deps) orphanDestroy(ctx context.Context, raw json.RawMessage) (any, erro
 		return nil, err
 	}
 	return map[string]any{
-		"destroyed": true, "instance_id": a.InstanceID,
+		"destroyed": true, "instance_id": a.InstanceID, "provider": a.Provider,
 		"note": "absence confirmed at the provider",
 	}, nil
 }

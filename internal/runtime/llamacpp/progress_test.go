@@ -92,3 +92,41 @@ func TestProgressIsBoundedByTheDownload(t *testing.T) {
 		t.Error("no progress reported")
 	}
 }
+
+// wedgedSession never answers a progress measurement until its context ends,
+// the way an SSH exec to a host that has stopped responding behaves.
+type wedgedSession struct{ scriptedSession }
+
+func (s *wedgedSession) Run(ctx context.Context, cmd string) ([]byte, error) {
+	if strings.Contains(cmd, "du -sb") {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return s.scriptedSession.Run(ctx, cmd)
+}
+
+// Progress is best-effort and must not be what a bring-up waits on. Stopping
+// the sampler waited for it to exit while its du hung on the bootstrap's own
+// context, which holds until the attempt deadline — up to 75 billed minutes.
+func TestAWedgedProgressProbeDoesNotHoldBootstrap(t *testing.T) {
+	downloadPollInterval, downloadProbeTimeout = 5*time.Millisecond, time.Hour
+	t.Cleanup(func() { downloadPollInterval, downloadProbeTimeout = 10*time.Second, 15*time.Second })
+
+	r := New()
+	r.SetWeights(Weights{File: "m.gguf", Bytes: 10 << 30})
+	sess := &wedgedSession{scriptedSession{
+		recSession: recSession{out: "llama-server"},
+		slow:       50 * time.Millisecond,
+		answers:    map[string]string{"df -Pk": "999999999\n0\n"},
+	}}
+	done := make(chan error, 1)
+	go func() { done <- r.Bootstrap(context.Background(), sess, spec(), core.SizingPlan{}, nil) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("bootstrap is still waiting on a progress probe the host never answered")
+	}
+}

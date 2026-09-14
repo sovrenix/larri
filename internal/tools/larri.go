@@ -36,6 +36,11 @@ type Deps struct {
 	// or a Q4_K_M request got vLLM, which cannot load either.
 	NewOrchestrator func(runtimeKind, providerName string, model core.ModelSpec) (*daemon.Orchestrator, error)
 
+	// Providers names every provider an orphan could be at. An orphan is
+	// something LARRI lost track of, so which provider holds it is not known
+	// in advance, and listing only the default hid the rest.
+	Providers func() []string
+
 	// Session is the rig this surface is holding, when it is long-running
 	// enough to hold one. An MCP server outlives its tool calls, so it can;
 	// a one-shot CLI invocation cannot, and leaves this nil.
@@ -110,7 +115,7 @@ func larriTools(d Deps) []Tool {
 		},
 		{
 			Name: "larri_orphans",
-			Description: "List provider resources that local state does not account for, and what they cost per hour. " +
+			Description: "List provider resources that local state does not account for, at every provider, and what they cost per hour. " +
 				"Read-only; destroys nothing.",
 			Schema:  Object(nil),
 			Handler: d.orphans,
@@ -158,7 +163,8 @@ func larriTools(d Deps) []Tool {
 				"THIS DESTROYS RENTED HARDWARE. Split from larri_orphans so listing is always safe.",
 			Schema: Object(map[string]Property{
 				"instance_id": {Type: "string", Description: "provider instance id, from larri_orphans"},
-			}, "instance_id"),
+				"provider":    {Type: "string", Description: "the provider holding it, from larri_orphans"},
+			}, "instance_id", "provider"),
 			Consequential: true,
 			Exposure:      ExposeMCPOnly,
 			Handler:       d.orphanDestroy,

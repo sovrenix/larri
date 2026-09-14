@@ -76,11 +76,22 @@ func (o *Orchestrator) Adopt(ctx context.Context, rigID string) (*Live, error) {
 	if inst == nil {
 		// Gone at the provider. Recording that closes the rig honestly and,
 		// more to the point, stops the cost accountant from accruing against
-		// a machine that is not billing.
+		// a machine that is not billing — with the reason, since every ending
+		// says why (FR-DEL-08) and this one was otherwise written without it.
+		rig.End = &core.Termination{
+			Actor: core.ActorProvider, Code: core.ReasonInstanceGone, At: time.Now().UTC(),
+			Summary:  "the provider no longer has instance " + rig.Instance.InstanceID,
+			Evidence: map[string]string{"instance": rig.Instance.InstanceID, "found": "on adopt"},
+		}
 		_ = o.Store.Transition(rig, core.StateDestroyed, "absent at provider on adopt")
 		return nil, errs.Newf(errs.ClassModelFailure, "daemon.Adopt",
 			"instance %s absent at provider", rig.Instance.InstanceID)
 	}
+	// The provider's answer replaces the snapshot's before anything is
+	// journalled: a snapshot from before rates were journalled in dollars an
+	// hour carries Vast's per-month storage figure, and a STOPPED entry
+	// written from it would bill every stopped hour at that.
+	rig.Instance = inst
 	if !inst.Running {
 		// STOPPED is billable for storage and is a decision, not a state to
 		// paper over by silently restarting something the operator may want
@@ -90,7 +101,6 @@ func (o *Orchestrator) Adopt(ctx context.Context, rigID string) (*Live, error) {
 			"instance %s stopped, still billing storage: destroy or start it",
 			rig.Instance.InstanceID)
 	}
-	rig.Instance = inst
 	_ = o.Store.Save(rig)
 
 	// ---- a new identity, installed through the provider ------------------

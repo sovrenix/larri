@@ -166,3 +166,28 @@ func TestACorrectionToARigWithNoEndingIsDated(t *testing.T) {
 		t.Errorf("ending = %+v; the correction is dated when it was made", saved.End)
 	}
 }
+
+// An orphan id sent to a provider that never held it must not come back
+// destroyed: that provider's "not found" is exactly what confirmed absence
+// looks like, and the instance goes on billing where it is.
+func TestAnOrphanIsNeverDestroyedThroughAnotherProvider(t *testing.T) {
+	o, p, _ := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	inst, err := p.Create(context.Background(), offers()[0], provider.CreateSpec{Label: core.LabelKey + ":lost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := pfake.New("elsewhere", nil, pfake.Behaviour{})
+	wrong := &Orchestrator{Store: o.Store, Provider: other, Runtime: o.Runtime}
+	err = wrong.DestroyOrphan(context.Background(), inst.InstanceID)
+	if err == nil || !strings.Contains(err.Error(), "is not at elsewhere") {
+		t.Fatalf("err = %v; an instance this provider does not hold was reported destroyed", err)
+	}
+	for _, c := range other.Calls {
+		if c == "Destroy" {
+			t.Error("issued a destroy for an instance the provider does not hold")
+		}
+	}
+	if p.Count() != 1 {
+		t.Error("the real instance changed")
+	}
+}

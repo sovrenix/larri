@@ -818,9 +818,16 @@ func cmdResume(ctx context.Context, args []string) error {
 	}()
 	defer close(events)
 
+	// The engine the rig was brought up with, not vLLM for everything: each
+	// engine finds its own server process and port, and a llama.cpp rig
+	// adopted as vLLM could never be reconnected to.
+	eng, err := pickRuntime(string(target.Runtime), target.Model)
+	if err != nil {
+		return err
+	}
 	o := &daemon.Orchestrator{
 		Store: st, Provider: prov,
-		Runtime: vllm.New(), Events: events,
+		Runtime: eng, Events: events,
 	}
 	live, err := o.Adopt(ctx, target.ID)
 	if err != nil {

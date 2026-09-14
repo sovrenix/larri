@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"syscall"
 	"time"
 
 	"go.sovrenix.com/larri/internal/core"
@@ -119,6 +120,14 @@ var ErrAlreadyDestroyed = errors.New("rig already destroyed")
 
 // Transition journals a completed move and updates the snapshot.
 func (s *Store) Transition(rig *core.Rig, to core.LifecycleState, note string) error {
+	if !ValidID(rig.ID) {
+		return fmt.Errorf("state: malformed rig id %q", rig.ID)
+	}
+	unlock, err := s.lockRig(rig.ID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := s.guardDestroyed(rig, to); err != nil {
 		return err
 	}
@@ -129,7 +138,29 @@ func (s *Store) Transition(rig *core.Rig, to core.LifecycleState, note string) e
 		At: s.now(), From: rig.State, To: to, Note: note,
 	})
 	rig.State = to
-	return s.Save(rig)
+	return s.write(rig)
+}
+
+// lockRig holds an exclusive lock on one rig, across processes, for as long
+// as a check of its stored state and the write that depends on it take.
+//
+// Checking and then writing is not enough on its own: two processes can both
+// check before either writes, and the stale one's write lands last. flock is
+// advisory, released by the kernel if the process dies, and present on both
+// platforms the binary supports (NFR-06).
+func (s *Store) lockRig(id string) (func(), error) {
+	f, err := os.OpenFile(filepath.Join(s.dir, "rigs", "."+id+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("state: lock rig %s: %w", id, err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("state: lock rig %s: %w", id, err)
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 // guardDestroyed keeps a destroyed rig destroyed.
@@ -167,10 +198,28 @@ func (s *Store) guardDestroyed(rig *core.Rig, to core.LifecycleState) error {
 // The rename is atomic on POSIX, so a crash at any point leaves either the
 // previous complete snapshot or the new complete one — never a half-written
 // file that parses into a rig with no instance ID (FR-STATE-02).
+//
+// Every snapshot write passes the destroyed-rig guard, under the rig's lock.
+// Serving and adoption save the rig directly, and a bring-up that saved its
+// endpoint after `larri down` in another terminal had finished wrote a live
+// state back over DESTROYED.
 func (s *Store) Save(rig *core.Rig) error {
 	if !ValidID(rig.ID) {
 		return fmt.Errorf("state: malformed rig id %q", rig.ID)
 	}
+	unlock, err := s.lockRig(rig.ID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := s.guardDestroyed(rig, rig.State); err != nil {
+		return err
+	}
+	return s.write(rig)
+}
+
+// write is Save without the lock or the guard, for callers holding both.
+func (s *Store) write(rig *core.Rig) error {
 	b, err := json.MarshalIndent(rig, "", "  ")
 	if err != nil {
 		return fmt.Errorf("state: marshal rig %s: %w", rig.ID, err)

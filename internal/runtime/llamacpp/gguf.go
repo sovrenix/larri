@@ -167,7 +167,14 @@ func namedFile(repo, file, quant string, ggufs []string, sizes map[string]uint64
 		return Weights{}, errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
 			"%s carries %s, not %s", file, tag, quant)
 	}
+	// A file whose name carries no quantisation says nothing about its
+	// format, and the engine default would record and size it as Q4_K_M on
+	// no evidence at all. The operator names it, or it is not rented.
 	if tag == "" {
+		if strings.TrimSpace(quant) == "" {
+			return Weights{}, errs.Newf(errs.ClassModelFailure, "llamacpp.ResolveGGUF",
+				"%s names no quantisation: quantization required", file)
+		}
 		tag = quant
 	}
 	return Weights{File: first, Bytes: shardBytes(first, sizes), Quantization: tag}, nil
@@ -585,7 +592,11 @@ func (r *Runtime) AdviseModel(ctx context.Context, spec core.ModelSpec) []string
 
 // shardPattern matches llama.cpp's split-file naming: a 1-based index, the
 // literal "-of-", and the total, both zero-padded to five digits.
-var shardPattern = regexp.MustCompile(`^(.*)-(\d{5})-of-(\d{5})\.gguf$`)
+//
+// Case-insensitive, like every other test of the extension here, with the
+// extension kept as listed: a set published as ".GGUF" matched nothing, so
+// its parts were neither checked nor downloaded.
+var shardPattern = regexp.MustCompile(`(?i)^(.*)-(\d{5})-of-(\d{5})(\.gguf)$`)
 
 // ShardFiles lists every part of a multi-part GGUF, in order.
 //
@@ -613,7 +624,7 @@ func ShardFiles(first string) []string {
 	}
 	out := make([]string, 0, total)
 	for i := 1; i <= total; i++ {
-		out = append(out, fmt.Sprintf("%s-%05d-of-%s.gguf", m[1], i, m[3]))
+		out = append(out, fmt.Sprintf("%s-%05d-of-%s%s", m[1], i, m[3], m[4]))
 	}
 	return out
 }

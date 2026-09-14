@@ -72,6 +72,17 @@ func cmdMCP(ctx context.Context, args []string) error {
 		NewOrchestrator: func(kind, prov string, model core.ModelSpec) (*daemon.Orchestrator, error) {
 			return newOrchestrator(st, kind, prov, model, events)
 		},
+		Providers: func() []string {
+			provs, err := providersToSweep("")
+			if err != nil {
+				return []string{""}
+			}
+			names := make([]string, len(provs))
+			for i, p := range provs {
+				names[i] = p.Name()
+			}
+			return names
+		},
 	}
 	reg := tools.NewRegistry()
 	if err := tools.Register(reg, deps); err != nil {

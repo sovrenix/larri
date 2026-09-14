@@ -368,3 +368,18 @@ func TestServedNameForAFileRefIsTheModelNotTheFile(t *testing.T) {
 		}
 	}
 }
+
+// `larri resume` reconnects with the engine the rig was brought up with. It
+// used vLLM for every rig, and each engine finds its own server process and
+// port, so a llama.cpp or Ollama rig could not be reconnected to.
+func TestAResumedRigGetsItsOwnEngine(t *testing.T) {
+	for _, kind := range []core.RuntimeKind{core.RuntimeLlamaCpp, core.RuntimeOllama, core.RuntimeVLLM} {
+		eng, err := pickRuntime(string(kind), core.ModelSpec{Ref: "org/model"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if eng.Kind() != kind {
+			t.Errorf("rig on %s resumed with %s", kind, eng.Kind())
+		}
+	}
+}

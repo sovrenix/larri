@@ -364,3 +364,58 @@ func TestAnUnreadableRigFileFailsClosedExceptForTeardown(t *testing.T) {
 		t.Errorf("teardown was blocked by an unreadable file: %v", err)
 	}
 }
+
+// Serving and adoption write the snapshot directly. A bring-up that saved its
+// endpoint after `larri down` in another terminal had finished wrote a live
+// state back over DESTROYED.
+func TestAStaleSnapshotWriteCannotUndoAnEnding(t *testing.T) {
+	s := openStore(t)
+	rig := newRig(t)
+	if err := s.Transition(rig, core.StateBootstrapping, "bootstrap"); err != nil {
+		t.Fatal(err)
+	}
+	stale := *rig
+	if err := s.Transition(rig, core.StateDestroyed, "down"); err != nil {
+		t.Fatal(err)
+	}
+	stale.HostKeyFingerprint = "SHA256:late"
+	if err := s.Save(&stale); !errors.Is(err, ErrAlreadyDestroyed) {
+		t.Fatalf("err = %v, want ErrAlreadyDestroyed", err)
+	}
+	if got, _ := s.Load(rig.ID); got.State != core.StateDestroyed {
+		t.Errorf("stored state = %s after a stale save", got.State)
+	}
+}
+
+// Checking and then writing is not enough: two processes can both check
+// before either writes. The check has to happen under the same lock as the
+// write, so a writer that was waiting sees what the holder wrote.
+func TestTheDestroyedCheckRunsUnderTheWriteLock(t *testing.T) {
+	s := openStore(t)
+	rig := newRig(t)
+	if err := s.Transition(rig, core.StateReady, "ready"); err != nil {
+		t.Fatal(err)
+	}
+	stale := *rig
+
+	unlock, err := s.lockRig(rig.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() { result <- s.Save(&stale) }()
+	select {
+	case err := <-result:
+		t.Fatalf("a save went ahead while another writer held the rig: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	// The holder ends the rig, as `larri down` in another process would.
+	rig.State = core.StateDestroyed
+	if err := s.write(rig); err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	if err := <-result; !errors.Is(err, ErrAlreadyDestroyed) {
+		t.Errorf("waiting save returned %v; it must see the ending written while it waited", err)
+	}
+}

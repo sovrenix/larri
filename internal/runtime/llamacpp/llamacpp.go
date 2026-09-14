@@ -181,6 +181,11 @@ func (r *Runtime) Bootstrap(ctx context.Context, sess runtime.Session,
 // rarely enough that it is not the thing making noise.
 var downloadPollInterval = 10 * time.Second
 
+// downloadProbeTimeout bounds one progress measurement. A du over a handful
+// of large files takes milliseconds; one that has not answered in this long
+// is not going to, and the next tick asks again.
+var downloadProbeTimeout = 15 * time.Second
+
 // reportDownload publishes download progress until the returned stop is
 // called.
 //
@@ -202,7 +207,11 @@ func (r *Runtime) reportDownload(ctx context.Context, sess runtime.Session,
 	if total == 0 {
 		return func() {}
 	}
-	done := make(chan struct{})
+	// Its own context, cancelled before stop waits: stop waits for the
+	// sampler to exit, and a du wedged on the host would otherwise hold
+	// Bootstrap until the attempt deadline — progress is best-effort, and
+	// must not be what a bring-up waits on.
+	sctx, cancel := context.WithCancel(ctx)
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
@@ -211,13 +220,13 @@ func (r *Runtime) reportDownload(ctx context.Context, sess runtime.Session,
 		var last uint64
 		for {
 			select {
-			case <-done:
-				return
-			case <-ctx.Done():
+			case <-sctx.Done():
 				return
 			case <-t.C:
 			}
-			got, err := r.WeightsOnDisk(ctx, sess)
+			pctx, pcancel := context.WithTimeout(sctx, downloadProbeTimeout)
+			got, err := r.WeightsOnDisk(pctx, sess)
+			pcancel()
 			if err != nil || got == 0 || got == last {
 				continue
 			}
@@ -234,7 +243,7 @@ func (r *Runtime) reportDownload(ctx context.Context, sess runtime.Session,
 			})
 		}
 	}()
-	return func() { close(done); <-stopped }
+	return func() { cancel(); <-stopped }
 }
 
 // WeightsOnDisk reports how many bytes of the model have arrived.

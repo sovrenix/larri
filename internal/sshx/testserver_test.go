@@ -34,6 +34,28 @@ type testServer struct {
 	pushErr  error
 	pushDone chan struct{}
 	ln       net.Listener
+
+	// authAttempts counts authentication requests of any method, "none"
+	// included; handshakes counts connections whose handshake has ended,
+	// either way. Together they show whether a client went past host-key
+	// verification.
+	authAttempts int
+	handshakes   int
+}
+
+// AuthAttempts reports how many authentication requests the server has seen.
+func (s *testServer) AuthAttempts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.authAttempts
+}
+
+// Handshakes reports how many connections have finished their handshake,
+// successfully or not.
+func (s *testServer) Handshakes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.handshakes
 }
 
 func newTestServer(t *testing.T, cfg func(*testServer)) *testServer {
@@ -76,6 +98,11 @@ func (s *testServer) handle(t *testing.T, nConn net.Conn, signer ssh.Signer) {
 		PublicKeyCallback: func(ssh.ConnMetadata, ssh.PublicKey) (*ssh.Permissions, error) {
 			return &ssh.Permissions{}, nil
 		},
+		AuthLogCallback: func(ssh.ConnMetadata, string, error) {
+			s.mu.Lock()
+			s.authAttempts++
+			s.mu.Unlock()
+		},
 	}
 	if s.AllowPassword {
 		conf.PasswordCallback = func(ssh.ConnMetadata, []byte) (*ssh.Permissions, error) {
@@ -85,6 +112,9 @@ func (s *testServer) handle(t *testing.T, nConn net.Conn, signer ssh.Signer) {
 	conf.AddHostKey(signer)
 
 	sc, chans, reqs, err := ssh.NewServerConn(nConn, conf)
+	s.mu.Lock()
+	s.handshakes++
+	s.mu.Unlock()
 	if err != nil {
 		nConn.Close()
 		return

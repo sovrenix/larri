@@ -145,7 +145,7 @@ func cmdOrphans(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("orphans", flag.ExitOnError)
 	destroy := fs.Bool("destroy", false, "destroy every orphan found, confirming absence")
 	yes := fs.Bool("yes", false, "do not prompt")
-	orphanProvider := fs.String("provider", "", "which provider to sweep (default: the only one compiled in)")
+	orphanProvider := fs.String("provider", "", "which provider to sweep (default: every provider that opens)")
 	_ = fs.Parse(args)
 
 	st, err := openStore()
@@ -154,7 +154,7 @@ func cmdOrphans(ctx context.Context, args []string) error {
 	}
 	defer st.Close()
 
-	prov, err := openProvider(*orphanProvider)
+	provs, err := providersToSweep(*orphanProvider)
 	if err != nil {
 		return err
 	}
@@ -181,27 +181,51 @@ func cmdOrphans(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	o := &daemon.Orchestrator{
-		Store: st, Provider: prov,
-		LabelSealer: sealer, Events: events,
+	// One orchestrator per provider, so each orphan is listed, and destroyed,
+	// by the provider that holds it.
+	type sweep struct {
+		o       *daemon.Orchestrator
+		orphans []daemon.Orphan
 	}
-
-	orphans, err := o.Orphans(ctx)
-	if err != nil {
-		return err
+	var sweeps []sweep
+	var total, unchecked int
+	for _, p := range provs {
+		o := &daemon.Orchestrator{
+			Store: st, Provider: p,
+			LabelSealer: sealer, Events: events,
+		}
+		orphans, err := o.Orphans(ctx)
+		o.Sync(ctx)
+		if err != nil {
+			// One provider that cannot be listed does not hide the others,
+			// and is said, since it was not checked.
+			fmt.Printf("  ! %-10s not checked: %v\n", p.Name(), err)
+			unchecked++
+			continue
+		}
+		if len(orphans) > 0 {
+			sweeps = append(sweeps, sweep{o, orphans})
+			total += len(orphans)
+		}
 	}
-	if len(orphans) == 0 {
+	if total == 0 {
+		// Only as much as was asked: silence from a provider that could not
+		// be listed is not an account of what it holds.
+		if unchecked > 0 {
+			fmt.Println("  no orphans at the providers checked")
+			return nil
+		}
 		fmt.Println("  no orphans — every larri resource is accounted for")
 		return nil
 	}
 
 	var hourly float64
-	// The scan's progress is queued; let it land before the findings.
-	o.Sync(ctx)
-	fmt.Printf("\n  %d resource(s) local state does not account for:\n\n", len(orphans))
-	for _, orph := range orphans {
-		fmt.Printf("    %s\n", orph.Describe())
-		hourly += orph.Instance.PriceHr
+	fmt.Printf("\n  %d resource(s) local state does not account for:\n\n", total)
+	for _, sw := range sweeps {
+		for _, orph := range sw.orphans {
+			fmt.Printf("    %s\n", orph.Describe())
+			hourly += orph.Instance.PriceHr
+		}
 	}
 	fmt.Printf("\n  costing $%.3f/hr in total\n", hourly)
 
@@ -211,7 +235,7 @@ func cmdOrphans(ctx context.Context, args []string) error {
 	}
 	mode := config.DetectMode(config.Invocation{ForceNonInteractive: *yes}, os.Getenv)
 	if mode.Interactive() && !*yes {
-		fmt.Printf("\n  destroy all %d? [y/N] ", len(orphans))
+		fmt.Printf("\n  destroy all %d? [y/N] ", total)
 		var in string
 		fmt.Scanln(&in)
 		if !strings.EqualFold(strings.TrimSpace(in), "y") {
@@ -221,9 +245,17 @@ func cmdOrphans(ctx context.Context, args []string) error {
 	}
 	dctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	n, err := o.SweepOrphans(dctx)
-	fmt.Printf("\n  destroyed %d of %d, absence confirmed\n", n, len(orphans))
-	return err
+	var destroyed int
+	var firstErr error
+	for _, sw := range sweeps {
+		n, err := sw.o.SweepOrphans(dctx)
+		destroyed += n
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	fmt.Printf("\n  destroyed %d of %d, absence confirmed\n", destroyed, total)
+	return firstErr
 }
 
 // eligibleTop returns the offers worth showing, cheapest first.

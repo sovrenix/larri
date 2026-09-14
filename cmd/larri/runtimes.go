@@ -177,3 +177,46 @@ func openProvider(name string) (provider.Provider, error) {
 	}
 	return nil, last
 }
+
+// providersToSweep is every provider an orphan could be at: the one named, or
+// every provider that opens, the configured ones first.
+//
+// An orphan is by definition something LARRI lost track of, so the provider it
+// is at is not known in advance. Sweeping only the default left a RunPod pod
+// invisible — and billing — on a machine configured for Vast.
+func providersToSweep(name string) ([]provider.Provider, error) {
+	if name != "" {
+		p, err := provider.Open(name)
+		if err != nil {
+			return nil, err
+		}
+		return []provider.Provider{p}, nil
+	}
+	var order []string
+	if res, err := config.Resolve(config.Request{}); err == nil && res != nil {
+		order = append(order, res.Config.Providers...)
+	}
+	order = append(order, provider.Names()...)
+	seen := map[string]bool{}
+	var out []provider.Provider
+	var last error
+	for _, n := range order {
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		p, err := provider.Open(n)
+		if err != nil {
+			last = err
+			continue
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		if last == nil {
+			last = fmt.Errorf("no providers are compiled in")
+		}
+		return nil, last
+	}
+	return out, nil
+}

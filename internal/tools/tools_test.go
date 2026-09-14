@@ -13,6 +13,8 @@ import (
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
+	"go.sovrenix.com/larri/internal/provider"
+	pfake "go.sovrenix.com/larri/internal/provider/fake"
 	"go.sovrenix.com/larri/internal/state"
 )
 
@@ -196,5 +198,59 @@ func TestTheEngineIsChosenFromTheModelTheAgentNamed(t *testing.T) {
 		if got.Ref != "unsloth/Qwen3-8B-GGUF/Qwen3-8B-Q8_0.gguf" || got.Quantization != "Q8_0" {
 			t.Errorf("%s built its orchestrator from %+v, not the model asked for", name, got)
 		}
+	}
+}
+
+// An orphan is something LARRI lost track of, so the provider holding it is
+// not known in advance. Listing only the default hid a RunPod pod on a machine
+// configured for Vast; destroying by id alone sent it to the wrong provider.
+func TestOrphansAreFoundAndDestroyedAtTheProviderHoldingThem(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	held := pfake.New("runpod", nil, pfake.Behaviour{})
+	lost, err := held.Create(context.Background(), core.Offer{OfferID: "o", PriceHr: 0.5},
+		provider.CreateSpec{Label: core.LabelKey + ":lost-rig"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakes := map[string]*pfake.Provider{
+		"vastai": pfake.New("vastai", nil, pfake.Behaviour{Unreachable: true}),
+		"runpod": held,
+	}
+	var built []string
+	d := Deps{
+		Store:     st,
+		Providers: func() []string { return []string{"vastai", "runpod"} },
+		NewOrchestrator: func(_, prov string, _ core.ModelSpec) (*daemon.Orchestrator, error) {
+			built = append(built, prov)
+			return &daemon.Orchestrator{Store: st, Provider: fakes[prov]}, nil
+		},
+	}
+	out, err := d.orphans(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := out.(map[string]any)
+	rows := res["orphans"].([]map[string]any)
+	if len(rows) != 1 || rows[0]["provider"] != "runpod" || rows[0]["instance_id"] != lost.InstanceID {
+		t.Errorf("orphans = %v; the pod on the second provider must be listed with its provider", rows)
+	}
+	if _, ok := res["not_checked"].(map[string]string)["vastai"]; !ok {
+		t.Errorf("not_checked = %v; an unreachable provider is reported, not read as empty", res["not_checked"])
+	}
+
+	if _, err := d.orphanDestroy(context.Background(), json.RawMessage(`{"instance_id":"`+lost.InstanceID+`"}`)); err == nil {
+		t.Error("destroyed an orphan without being told which provider holds it")
+	}
+	built = nil
+	if _, err := d.orphanDestroy(context.Background(),
+		json.RawMessage(`{"instance_id":"`+lost.InstanceID+`","provider":"runpod"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if len(built) != 1 || built[0] != "runpod" || held.Count() != 0 {
+		t.Errorf("destroy went through %v; want runpod, and the pod gone", built)
 	}
 }

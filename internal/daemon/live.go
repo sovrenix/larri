@@ -6,6 +6,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -23,6 +24,7 @@ import (
 	"go.sovrenix.com/larri/internal/secret"
 	"go.sovrenix.com/larri/internal/sizing"
 	"go.sovrenix.com/larri/internal/sshx"
+	"go.sovrenix.com/larri/internal/state"
 	"go.sovrenix.com/larri/internal/wire"
 )
 
@@ -97,7 +99,11 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 		return live, err
 	}
 	rig.Instance = inst
-	_ = o.Store.Save(rig)
+	// Refused only if the rig was ended elsewhere while booting — `larri down`
+	// in another terminal — and then there is nothing left to bring up.
+	if err := o.Store.Save(rig); errors.Is(err, state.ErrAlreadyDestroyed) {
+		return live, err
+	}
 	o.emit("boot", "endpoint %s:%d — settling the host key", inst.SSHHost, inst.SSHPort)
 
 	// ---- pin the host key ------------------------------------------------
@@ -106,10 +112,12 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 		return live, err
 	}
 	rig.HostKeyFingerprint = sshx.Fingerprint(hostKey)
-	_ = o.Store.Save(rig)
+	live.ssh = client // owned by live from here, so every return below closes it
+	if err := o.Store.Save(rig); errors.Is(err, state.ErrAlreadyDestroyed) {
+		return live, err
+	}
 	o.emit("boot", "host key pinned %s", rig.HostKeyFingerprint)
 
-	live.ssh = client
 	sess := client.Session()
 
 	// ---- arm the dead-man switch ----------------------------------------

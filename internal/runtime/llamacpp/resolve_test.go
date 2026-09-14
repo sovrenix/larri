@@ -236,3 +236,40 @@ func TestResolutionReadsTheRevisionItWillDownload(t *testing.T) {
 		t.Errorf("file = %q", w.File)
 	}
 }
+
+// A file whose name carries no quantisation says nothing about its format.
+// Left to the engine default it was recorded, and without published sizes
+// sized, as Q4_K_M on no evidence.
+func TestAnUntaggedNamedFileNeedsItsQuantisationNamed(t *testing.T) {
+	serveListing(t, "org/Plain-GGUF", map[string]uint64{"model.gguf": 5 << 30})
+	_, err := New().ResolveWeights(context.Background(), core.ModelSpec{Ref: "org/Plain-GGUF/model.gguf"})
+	if err == nil || !strings.Contains(err.Error(), "quantization required") {
+		t.Errorf("err = %v; an untagged file must not take the default", err)
+	}
+	w, err := New().ResolveWeights(context.Background(),
+		core.ModelSpec{Ref: "org/Plain-GGUF/model.gguf", Quantization: "Q8_0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Quantization != "Q8_0" {
+		t.Errorf("quantization = %q, want the one named", w.Quantization)
+	}
+}
+
+// ".GGUF" is a spelling like any other. Part names are derived with the
+// extension as listed, or the parts of an uppercase set were neither checked
+// nor downloaded.
+func TestAnUppercaseSetIsStillASet(t *testing.T) {
+	parts := ShardFiles("Q4/Big-Q4_K_M-00001-of-00002.GGUF")
+	if len(parts) != 2 || parts[1] != "Q4/Big-Q4_K_M-00002-of-00002.GGUF" {
+		t.Fatalf("parts = %v", parts)
+	}
+	serveListing(t, "org/Big-GGUF", map[string]uint64{
+		"Q4/Big-Q4_K_M-00001-of-00002.GGUF": 40 << 30,
+	})
+	_, err := New().ResolveWeights(context.Background(),
+		core.ModelSpec{Ref: "org/Big-GGUF/Q4/Big-Q4_K_M-00001-of-00002.GGUF"})
+	if err == nil || !strings.Contains(err.Error(), "Big-Q4_K_M-00002-of-00002.GGUF") {
+		t.Errorf("err = %v; the missing second part of an uppercase set must be found", err)
+	}
+}
