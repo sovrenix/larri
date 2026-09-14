@@ -25,7 +25,7 @@ and "shown to work" are different claims and are recorded as such.
 | Area | Reqs | ✅ live | ☑️ done | 🟡 part | ⬜ plan | Complete |
 |---|---:|---:|---:|---:|---:|---:|
 | Criteria | 6 | 3 | 3 | 0 | 0 | **100%** |
-| Provisioning | 11 | 10 | 1 | 0 | 0 | **100%** |
+| Provisioning | 12 | 11 | 1 | 0 | 0 | **100%** |
 | State | 5 | 4 | 1 | 0 | 0 | **100%** |
 | Search & selection | 14 | 10 | 3 | 0 | 1 | **93%** |
 | Runtimes | 22 | 17 | 2 | 3 | 0 | 86% |
@@ -37,7 +37,7 @@ and "shown to work" are different claims and are recorded as such.
 | Surfaces | 13 | 1 | 2 | 3 | 7 | 23% |
 | Endpoint & client wiring | 14 | 3 | 0 | 1 | 10 | 21% |
 | Observability | 10 | 0 | 1 | 0 | 9 | 10% |
-| **Total** | **180** | **79** | **44** | **18** | **39** | **68%** |
+| **Total** | **181** | **80** | **44** | **18** | **39** | **68%** |
 
 Sixty-eight per cent of requirements are implemented, and **the lifecycle is the part
 that is done.** Criteria, provisioning and state are at 100%; search, selection and the

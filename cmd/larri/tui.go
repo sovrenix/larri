@@ -34,6 +34,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 	ctxLen := fs.Int("context", 8192, "context length")
 	gpu := fs.String("gpu", "", "GPU model filter")
 	maxPrice := fs.Float64("max-price", 0, "ceiling in $/hr")
+	allowLowStock := fs.Bool("allow-low-stock", false,
+		"consider offers the provider reports at low stock; a create against one may be refused")
 	disk := fs.Int("disk", 0, "disk in GB (0: sized to the model's weights, at least 60)")
 	minRel := fs.Float64("min-reliability", 0.90, "reliability floor")
 	port := fs.Int("port", 8000, "fixed local port clients are wired against")
@@ -128,7 +130,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	crit := core.Criteria{MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk}
+	crit := core.Criteria{MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk,
+		AllowLowStock: *allowLowStock}
 	if *gpu != "" {
 		crit.GPUModel = splitList(*gpu)
 	}

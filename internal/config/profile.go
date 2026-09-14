@@ -43,6 +43,11 @@ type Profile struct {
 	// rather than a configuration one.
 	MaxPriceHr float64 `yaml:"max_price_hr,omitempty"`
 
+	// AllowLowStock considers offers the provider reports at low stock. A
+	// choice to spend attempts on creates that may be refused, so a profile
+	// that makes it says so on every run, like a spending limit.
+	AllowLowStock bool `yaml:"allow_low_stock,omitempty"`
+
 	LocalPort int `yaml:"local_port,omitempty"`
 }
 
@@ -55,6 +60,7 @@ func (p Profile) Criteria() core.Criteria {
 		Regions:        p.Regions,
 		MaxPriceHr:     p.MaxPriceHr,
 		MinReliability: p.MinReliability,
+		AllowLowStock:  p.AllowLowStock,
 	}
 }
 
@@ -77,6 +83,9 @@ func (p Profile) Summary() string {
 	}
 	if p.MinReliability > 0 {
 		parts = append(parts, fmt.Sprintf("rel ≥%.2f", p.MinReliability))
+	}
+	if p.AllowLowStock {
+		parts = append(parts, "low stock allowed")
 	}
 	if len(parts) == 0 {
 		return "(empty)"

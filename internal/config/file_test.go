@@ -265,3 +265,24 @@ func TestAbsentDefaultProfileIsNotAnError(t *testing.T) {
 		t.Errorf("applied profile %q that does not exist", res.Name)
 	}
 }
+
+// Allowing low stock spends attempts on creates that may be refused, so a
+// profile that allows it is saved, applied and disclosed like a limit.
+func TestAProfileCarriesLowStockAndSaysSo(t *testing.T) {
+	p := tmpPath(t)
+	cfg := Default()
+	cfg.Profiles = map[string]Profile{DefaultProfile: {Model: "org/m", AllowLowStock: true}}
+	if err := Save(p, cfg); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Resolve(Request{Path: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Profile.Criteria().AllowLowStock {
+		t.Error("the saved profile's low-stock choice did not reach its criteria")
+	}
+	if !strings.Contains(res.Profile.Summary(), "low stock allowed") {
+		t.Errorf("summary %q does not disclose it", res.Profile.Summary())
+	}
+}

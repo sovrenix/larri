@@ -37,7 +37,14 @@ type Criteria struct {
 	// the wrong buy — interconnect, one CUDA context per card, and a shard
 	// degree the engine may refuse — so an operator who wants at most two
 	// says so and is not talked out of it by the ranking.
-	MaxGPUCount    int      `json:"max_gpu_count,omitempty"`
+	MaxGPUCount int `json:"max_gpu_count,omitempty"`
+
+	// AllowLowStock admits offers the provider reports as nearly out of
+	// stock. Off by default: a create against one can be refused, and an
+	// operator should choose to spend attempts on that. On, they are ranked
+	// like any other offer — a refusal creates nothing and falls back.
+	AllowLowStock bool `json:"allow_low_stock,omitempty"`
+
 	CPUCores       int      `json:"cpu_cores,omitempty"`
 	RAMGB          int      `json:"ram_gb,omitempty"`
 	DiskGB         int      `json:"disk_gb,omitempty"`
@@ -141,8 +148,18 @@ type Offer struct {
 	// MachineID identifies the physical host. A marketplace lists several
 	// offers per machine, so falling back on offer ID alone can land on the
 	// same box that just failed — which a live run did, twice.
-	MachineID string          `json:"machine_id,omitempty"`
-	Raw       json.RawMessage `json:"-"` // provider payload, for debugging only
+	MachineID string `json:"machine_id,omitempty"`
+
+	// LowStock marks an offer the provider reports as nearly out of stock.
+	// Only offered when the criteria allow it, and said wherever the offer is
+	// shown, because a create against it may be refused.
+	LowStock bool `json:"low_stock,omitempty"`
+
+	// GPUVendor is who makes the card — "nvidia", "amd" — or "" when the
+	// provider does not say. Runtime images are built for one vendor.
+	GPUVendor string `json:"gpu_vendor,omitempty"`
+
+	Raw json.RawMessage `json:"-"` // provider payload, for debugging only
 }
 
 // VRAMTotalGB is the aggregate VRAM an offer provides.

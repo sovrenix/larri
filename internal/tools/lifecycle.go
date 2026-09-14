@@ -146,6 +146,7 @@ func (d Deps) up(ctx context.Context, raw json.RawMessage) (any, error) {
 		MinReliability: 0.90,
 		GPUCount:       a.GPUCount,
 		MaxGPUCount:    a.MaxGPU,
+		AllowLowStock:  a.LowStock,
 		VRAMTotalGB:    a.VRAMTotal,
 		VRAMPerGPUGB:   a.VRAMPerGPU,
 	}
@@ -167,8 +168,9 @@ func (d Deps) up(ctx context.Context, raw json.RawMessage) (any, error) {
 		res := map[string]any{"dry_run": true, "spent": 0.0, "offers_considered": sv.Offers}
 		if sv.Selection.Selected != nil {
 			res["would_rent"] = map[string]any{
-				"gpu":      sv.Selection.Selected.Offer.GPUModel,
-				"price_hr": round4(sv.Selection.Selected.Offer.PriceHr),
+				"gpu":       sv.Selection.Selected.Offer.GPUModel,
+				"price_hr":  round4(sv.Selection.Selected.Offer.PriceHr),
+				"low_stock": sv.Selection.Selected.Offer.LowStock,
 			}
 		}
 		return res, nil

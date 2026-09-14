@@ -56,6 +56,7 @@ type PreviewRow struct {
 	PriceHr     float64
 	Reliability float64
 	Selected    bool
+	LowStock    bool
 }
 
 // PreviewMsg carries a completed preview.
@@ -155,6 +156,26 @@ func profileFields() []field {
 					return err
 				}
 				p.DiskGB = n
+				return nil
+			},
+		},
+		{
+			label: "low stock", help: "yes to also consider offers at low stock; a create against one may be refused",
+			get: func(p *config.Profile) string {
+				if p.AllowLowStock {
+					return "yes"
+				}
+				return ""
+			},
+			set: func(p *config.Profile, v string) error {
+				switch strings.ToLower(strings.TrimSpace(v)) {
+				case "yes", "y", "true":
+					p.AllowLowStock = true
+				case "", "no", "n", "false":
+					p.AllowLowStock = false
+				default:
+					return fmt.Errorf("want yes or no")
+				}
 				return nil
 			},
 		},

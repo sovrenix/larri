@@ -40,7 +40,7 @@ func (r *Runtime) Kind() core.RuntimeKind { return core.RuntimeOllama }
 
 // Requires reports the same low floor as llama.cpp, which is what Ollama runs.
 func (r *Runtime) Requires() runtime.Requirements {
-	return runtime.Requirements{MinComputeCapability: 500}
+	return runtime.Requirements{MinComputeCapability: 500, Vendor: "nvidia", Why: "Ollama"}
 }
 
 func (r *Runtime) Image(core.ModelSpec, core.SizingPlan) string {

@@ -37,6 +37,9 @@ type Behaviour struct {
 	// Zero means it cannot say, which is the case that falls back to the
 	// estimate.
 	WeightBytes int64
+
+	// Vendor is the GPU vendor the fake engine's image requires, "" for any.
+	Vendor string
 	// BindHost overrides the bind address, to prove a non-loopback bind is
 	// rejected rather than merely warned about.
 	BindHost string
@@ -210,7 +213,7 @@ func (r *Runtime) WeightBytes() uint64 {
 }
 
 func (r *Runtime) Requires() runtime.Requirements {
-	return runtime.Requirements{TensorParallel: r.behaviour.TensorParallel, Why: "the engine"}
+	return runtime.Requirements{TensorParallel: r.behaviour.TensorParallel, Vendor: r.behaviour.Vendor, Why: "the engine"}
 }
 
 // Alive reports whether the fake server process would still exist.

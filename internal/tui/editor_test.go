@@ -173,3 +173,28 @@ func TestOpeningAFieldPreFillsItsCurrentValue(t *testing.T) {
 		t.Errorf("model = %q after opening and closing a field", e.Result().Model)
 	}
 }
+
+// The editor offers every setting a profile can hold that changes what is
+// rented, low stock included, and refuses anything but a yes or a no.
+func TestTheEditorTogglesLowStock(t *testing.T) {
+	idx := -1
+	for i, f := range profileFields() {
+		if f.label == "low stock" {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		t.Fatal("no low stock field in the editor")
+	}
+	f := profileFields()[idx]
+	var p config.Profile
+	if err := f.set(&p, "yes"); err != nil || !p.AllowLowStock || f.get(&p) != "yes" {
+		t.Errorf("yes: allow=%v get=%q err=%v", p.AllowLowStock, f.get(&p), err)
+	}
+	if err := f.set(&p, ""); err != nil || p.AllowLowStock {
+		t.Errorf("empty left it allowed: err=%v", err)
+	}
+	if err := f.set(&p, "maybe"); err == nil {
+		t.Error("accepted a value that is neither yes nor no")
+	}
+}

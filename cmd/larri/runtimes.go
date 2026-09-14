@@ -220,3 +220,12 @@ func providersToSweep(name string) ([]provider.Provider, error) {
 	}
 	return out, nil
 }
+
+// lowStockNote marks an offer the provider reports at low stock, wherever it
+// is shown before money is spent: a create against it may be refused.
+func lowStockNote(o core.Offer) string {
+	if o.LowStock {
+		return " (low stock)"
+	}
+	return ""
+}

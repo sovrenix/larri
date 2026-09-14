@@ -383,3 +383,23 @@ func TestAResumedRigGetsItsOwnEngine(t *testing.T) {
 		}
 	}
 }
+
+// A profile's low-stock choice applies unless the command line says
+// otherwise, the rule every other profile setting follows.
+func TestAProfileAllowsLowStockUnlessTheFlagWasGiven(t *testing.T) {
+	var model, quant, gpu, engine string
+	var ctxLen, disk, port int
+	var maxPrice, minRel float64
+	prof := config.Profile{AllowLowStock: true}
+
+	allow := false
+	applyProfile(prof, map[string]bool{}, &model, &quant, &ctxLen, &gpu, &maxPrice, &disk, &minRel, &port, &engine, &allow)
+	if !allow {
+		t.Error("the profile's low-stock choice was not applied")
+	}
+	allow = false
+	applyProfile(prof, map[string]bool{"allow-low-stock": true}, &model, &quant, &ctxLen, &gpu, &maxPrice, &disk, &minRel, &port, &engine, &allow)
+	if allow {
+		t.Error("the profile overrode --allow-low-stock=false given on the command line")
+	}
+}

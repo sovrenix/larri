@@ -32,6 +32,9 @@ func cmdOffers(ctx context.Context, args []string) error {
 	ctxLen := fs.Int("context", 8192, "context length")
 	gpu := fs.String("gpu", "", "GPU model filter, e.g. 'RTX 4090'")
 	maxPrice := fs.Float64("max-price", 0, "ceiling in $/hr")
+	// The same as `up`'s, so the preview ranks the market `up` would rent from.
+	allowLowStock := fs.Bool("allow-low-stock", false,
+		"consider offers the provider reports at low stock; a create against one may be refused")
 	// Zero, exactly as `up` does it: this command exists so the preview and
 	// the rental cannot disagree, and a disk named here but not there is a
 	// disagreement. A fixed 60 made the preview refuse — "disk 60 GB cannot
@@ -99,7 +102,8 @@ func cmdOffers(ctx context.Context, args []string) error {
 		},
 		Events: events,
 	}
-	crit := core.Criteria{MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk}
+	crit := core.Criteria{MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk,
+		AllowLowStock: *allowLowStock}
 	if *gpu != "" {
 		crit.GPUModel = splitList(*gpu)
 	}
@@ -123,10 +127,10 @@ func cmdOffers(ctx context.Context, args []string) error {
 		if c.Offer.HasReliability() {
 			rel = fmt.Sprintf("%.2f", c.Offer.Reliability)
 		}
-		fmt.Printf("  %s%-2d %-18s %-6s $%-9.3f %-6s %s\n",
+		fmt.Printf("  %s%-2d %-18s %-6s $%-9.3f %-6s %s%s\n",
 			mark, i+1, c.Offer.GPULabel(),
 			fmt.Sprintf("%dGB", c.Offer.VRAMTotalGB()),
-			c.Offer.PriceHr, rel, c.Offer.Provider)
+			c.Offer.PriceHr, rel, c.Offer.Provider, lowStockNote(c.Offer))
 	}
 	if len(rows) == 0 {
 		fmt.Println("\n  no offer satisfies the criteria")

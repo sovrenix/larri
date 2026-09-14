@@ -107,8 +107,8 @@ func renderCLI(out io.Writer, in io.Reader, events <-chan daemon.Event, prompts 
 			// A40 192GB" leaves the operator unable to tell one very large
 			// card from four ordinary ones, which is the difference between
 			// the bill they expect and the one they get.
-			fmt.Fprintf(out, "\n  rent %s at $%.3f/hr? [y/N] ",
-				p.Offer.Hardware(), p.Offer.PriceHr)
+			fmt.Fprintf(out, "\n  rent %s at $%.3f/hr%s? [y/N] ",
+				p.Offer.Hardware(), p.Offer.PriceHr, lowStockNote(p.Offer))
 			var answer string
 			_, _ = fmt.Fscanln(in, &answer)
 			p.Result <- strings.EqualFold(strings.TrimSpace(answer), "y")
@@ -245,6 +245,8 @@ func cmdUp(ctx context.Context, args []string) error {
 	// for eight cards to hold a model that fits on two.
 	gpus := fs.Int("gpus", 0, "minimum GPUs per host (0: any)")
 	maxGPUs := fs.Int("max-gpus", 0, "most GPUs per host (0: no ceiling)")
+	allowLowStock := fs.Bool("allow-low-stock", false,
+		"consider offers the provider reports at low stock; a create against one may be refused")
 	vramPerGPU := fs.Int("vram-per-gpu", 0, "minimum VRAM per card in GB (0: any)")
 	vramTotal := fs.Int("vram", 0, "minimum VRAM per host in GB, summed across cards (0: any)")
 	maxPrice := fs.Float64("max-price", 0, "ceiling in $/hr")
@@ -320,7 +322,7 @@ func cmdUp(ctx context.Context, args []string) error {
 		fmt.Printf("  config      created %s with the built-in defaults\n", config.Path())
 		fmt.Printf("              edit it with: larri config\n")
 	}
-	applyProfile(res.Profile, set, model, quant, ctxLen, gpu, maxPrice, disk, minRel, port, engine)
+	applyProfile(res.Profile, set, model, quant, ctxLen, gpu, maxPrice, disk, minRel, port, engine, allowLowStock)
 	if res.Name != "" {
 		// FR-CRIT-05 forbids *silently* reusing criteria. A named default
 		// profile may apply to a bare `larri up` only because this line makes
@@ -485,7 +487,7 @@ func cmdUp(ctx context.Context, args []string) error {
 
 	crit := core.Criteria{MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk,
 		MinNetMbps: *minNet, CertifiedOnly: *verifiedOnly, AllowDeverified: *allowDeverified,
-		GPUCount: *gpus, MaxGPUCount: *maxGPUs,
+		GPUCount: *gpus, MaxGPUCount: *maxGPUs, AllowLowStock: *allowLowStock,
 		VRAMPerGPUGB: *vramPerGPU, VRAMTotalGB: *vramTotal}
 	if *gpu != "" {
 		crit.GPUModel = splitList(*gpu)
@@ -505,8 +507,8 @@ func cmdUp(ctx context.Context, args []string) error {
 	}
 	if *dryRun {
 		req.Confirm = func(o core.Offer, p core.SizingPlan) bool {
-			fmt.Printf("\n  dry run: would rent %s %s at $%.3f/hr — nothing spent\n",
-				o.Provider, o.Hardware(), o.PriceHr)
+			fmt.Printf("\n  dry run: would rent %s %s at $%.3f/hr%s — nothing spent\n",
+				o.Provider, o.Hardware(), o.PriceHr, lowStockNote(o))
 			return false
 		}
 	} else if mode.Interactive() {

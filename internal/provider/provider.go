@@ -87,6 +87,17 @@ type KeyAttacher interface {
 	AttachSSHKey(ctx context.Context, instanceID, publicKey string) error
 }
 
+// StockReporter is implemented by providers that report offers at low stock
+// and withhold them unless the criteria allow it.
+//
+// It exists so a search that failed is repeated with low stock allowed only
+// where that could change the answer. A marketplace listing only rentable
+// machines has no low stock to withhold, and asking it twice costs a round
+// trip to learn nothing.
+type StockReporter interface {
+	ReportsStock() bool
+}
+
 // CreateSpec is what to make of a purchased offer.
 type CreateSpec struct {
 	Image        string

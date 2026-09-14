@@ -37,6 +37,12 @@ func NewWithClient(c *Client) *Provider { return &Provider{c: c} }
 
 func (p *Provider) Name() string { return "runpod" }
 
+// ReportsStock is true: the catalogue reports stock per size, and low stock is
+// withheld unless the criteria allow it.
+func (p *Provider) ReportsStock() bool { return true }
+
+var _ provider.StockReporter = (*Provider)(nil)
+
 func (p *Provider) SetOnDrift(f func(error))   { p.OnDrift = f }
 func (p *Provider) SetOnNotice(f func(string)) { p.OnNotice = f }
 
@@ -82,7 +88,7 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 		var offered bool
 		var why dropReason
 		for _, n := range counts {
-			o, reason, ok := g.normalise(n, c.Interruptible, rentable)
+			o, reason, ok := g.normalise(n, c.Interruptible, rentable, c.AllowLowStock)
 			if !ok {
 				if why == "" {
 					why = reason
@@ -109,7 +115,7 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 	// RunPod lists at $0.13 should hear that it is out of stock, rather than
 	// conclude LARRI does not know about it — and "out of stock" is a
 	// different fact from "too expensive" or "not real hardware".
-	for _, why := range []dropReason{dropOutOfStock, dropUnpriced, dropUnpurchasable} {
+	for _, why := range []dropReason{dropOutOfStock, dropLowStock, dropUnpriced, dropUnpurchasable} {
 		if n := dropped[why]; n > 0 {
 			p.notice("runpod: %d gpu types skipped (%s)", n, why)
 		}

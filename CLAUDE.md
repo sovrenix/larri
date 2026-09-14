@@ -195,7 +195,9 @@ enough to be an invariant rather than a habit:
 - **Hardware floors come from the pinned image, not the engine's docs.** vLLM's support
   matrix says compute capability 7.0; `vllm/vllm-openai` ships no Volta kernels and
   requires CUDA 13.0. The gap rented three V100 boxes that could never have loaded one.
-  `make refresh-image` re-reads the digest and both floors together.
+  `make refresh-image` re-reads the digest and both floors together. The image also
+  fixes the vendor: every image here is CUDA, and an AMD card that reports no compute
+  capability passed the floor — the cheapest large card RunPod lists is one.
 - **VRAM is summed across every card the engine can reach — which is not always every
   card.** `nvidia-smi --query-gpu=memory.total` prints one line per GPU; reading the first
   rejects exactly the multi-GPU hosts that are the only affordable way to hold a large

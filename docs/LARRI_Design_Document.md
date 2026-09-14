@@ -1292,15 +1292,32 @@ the same way.
 
 **Two things the live run measured that no stub could.**
 
-*Stock status decides whether a create succeeds.* The catalogue publishes a price for
-hardware it cannot currently place, and the cheapest listing is usually one of those. Tested
-directly: an A40 (`High`) and an RTX 4090 (`Medium`) both created on request, while an RTX
-3070 (`Low`) — the cheapest thing RunPod lists — was refused with *"there are no instances
-currently available"*. Low-stock types are therefore not offered at all. Twenty-six of the
-forty-eight listed types were skipped on that basis, which sounds drastic until you notice
-the alternative: selection choosing the cheapest option and watching it fail, every time.
-Stock is re-read on every search, so a type that comes back into stock comes back into the
-list.
+*Stock status predicts whether a create succeeds — less than it first appeared.* The
+catalogue publishes a price for hardware it cannot currently place, and the cheapest listing
+is usually one of those. The first test: an A40 (`High`) and an RTX 4090 (`Medium`) created
+on request, while an RTX 3070 (`Low`) — the cheapest thing RunPod lists — was refused with
+*"there are no instances currently available"*. Low-stock types were therefore not offered at
+all, which by 2026-09 meant 49 of 74 priced Secure Cloud sizes, and every size of the B200,
+the H100 NVL and the A100 80GB PCIe: a model needing one of those was told no offer existed
+(issue #3).
+
+A probe on 2026-09-14 measured it properly: one-card Secure Cloud pods on six Low-stock types,
+each created, watched for twenty seconds and deleted. Five — RTX 2000 Ada, RTX A4000, A100
+80GB PCIe, H100 NVL, B200 — were placed on a machine at once and billed from that moment; the
+sixth, RTX 4000 Ada, was refused with the same message and HTTP 500, and nothing was created.
+None was accepted and left unplaced. So Low means *may be refused*, and a refusal costs an
+attempt, not money: the create classifier reads the message as a host failure, the failed
+create finds nothing carrying the rig's label and records it at $0, and fallback excludes the
+listing. Low stock is offered when the operator asks (`--allow-low-stock`) — ranked like any
+other offer, marked wherever it is shown before spending — and otherwise named in the skip
+notice and, when it is the only thing that would fit, in the refusal. Stock is re-read on every
+search, so a type that comes back into stock comes back into the list.
+
+*A listing is not always a card an engine can use.* Two more exclusions follow from what the
+catalogue carries. A MIG slice is part of a card, and a CUDA process sees one MIG device however
+many a pod holds, so a MIG type is offered as one slice — the PRO 6000 MIG 1g.24gb is priced up
+to 22. And AMD's Instinct MI300X is listed beside NVIDIA's cards; every runtime image is CUDA,
+so offers carry a vendor and runtime requirements name theirs.
 
 *The unavailability message was not the one guessed.* The fallback matched `"no longer any
 instances available"`; RunPod says `"no instances currently available"`. Close enough to
