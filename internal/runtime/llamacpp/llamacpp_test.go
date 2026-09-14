@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/errs"
@@ -263,10 +264,17 @@ func TestLaunchPointsAtTheFlattenedFile(t *testing.T) {
 type scriptedSession struct {
 	recSession
 	answers map[string]string
+	// slow is how long a download takes, so a test can watch something that
+	// is still running. A real pull takes minutes; one that returns instantly
+	// would let the poller be stopped before it ever sampled.
+	slow time.Duration
 }
 
 func (s *scriptedSession) Run(ctx context.Context, cmd string) ([]byte, error) {
 	s.recSession.Run(ctx, cmd)
+	if s.slow > 0 && strings.Contains(cmd, "curl") {
+		time.Sleep(s.slow)
+	}
 	for marker, out := range s.answers {
 		if strings.Contains(cmd, marker) {
 			return []byte(out), nil
@@ -332,6 +340,72 @@ func TestFreeSpaceCheckPassesWhenItCannotMeasure(t *testing.T) {
 			answers: map[string]string{"df -Pk": c.out}}
 		if err := r.checkFreeSpace(context.Background(), sess); err != nil {
 			t.Errorf("%s: refused on no evidence: %v", name, err)
+		}
+	}
+}
+
+// FR-RT-06: a multi-GB download must not look like a hang. It did — one
+// "fetching" line, then three quarters of an hour of silence, because the
+// sampler that reports progress runs during the readiness wait and this
+// engine downloads earlier, inside Bootstrap.
+func TestDownloadReportsProgress(t *testing.T) {
+	downloadPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { downloadPollInterval = 10 * time.Second })
+
+	r := New()
+	r.SetWeights(Weights{File: "m.gguf", Bytes: 100 << 30})
+	sess := &scriptedSession{
+		recSession: recSession{out: "llama-server"},
+		slow:       60 * time.Millisecond,
+		answers: map[string]string{
+			"df -Pk": "999999999\n0\n",
+			"du -sb": fmt.Sprintf("%d\n", 40<<30), // 40 GiB arrived
+		},
+	}
+	seen := make(chan runtime.Progress, 64)
+	done := make(chan error, 1)
+	go func() { done <- r.Bootstrap(context.Background(), sess, spec(), core.SizingPlan{}, seen) }()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	close(seen)
+
+	var withBytes int
+	for p := range seen {
+		if p.BytesTotal > 0 {
+			withBytes++
+			if p.BytesDone != 40<<30 || p.BytesTotal != 100<<30 {
+				t.Errorf("progress %d of %d bytes", p.BytesDone, p.BytesTotal)
+			}
+			if p.Percent < 39 || p.Percent > 41 {
+				t.Errorf("percent = %.1f, want ~40", p.Percent)
+			}
+		}
+	}
+	if withBytes == 0 {
+		t.Error("the download reported no measured progress at all")
+	}
+}
+
+// Nothing measured, nothing published: a progress line is not worth inventing.
+func TestDownloadReportsNothingWithoutAMeasuredSize(t *testing.T) {
+	downloadPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { downloadPollInterval = 10 * time.Second })
+
+	r := New()
+	r.SetGGUF("m.gguf") // no measured total
+	sess := &scriptedSession{
+		recSession: recSession{out: "llama-server"},
+		answers:    map[string]string{"du -sb": "12345\n"},
+	}
+	seen := make(chan runtime.Progress, 64)
+	if err := r.Bootstrap(context.Background(), sess, spec(), core.SizingPlan{}, seen); err != nil {
+		t.Fatal(err)
+	}
+	close(seen)
+	for p := range seen {
+		if p.BytesTotal > 0 {
+			t.Errorf("published %d of %d bytes with nothing measured", p.BytesDone, p.BytesTotal)
 		}
 	}
 }

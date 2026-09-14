@@ -89,6 +89,17 @@ func (o *Orchestrator) Supervise(ctx context.Context, live *Live, p SupervisePol
 
 		now := time.Now()
 
+		// ---- ended elsewhere -----------------------------------------
+		//
+		// `larri down` from another terminal is the ordinary way to stop a
+		// rig, and it writes to the same store. This loop held its own copy
+		// and never looked: three failed probes later it wrote DEGRADED over
+		// DESTROYED, and the journal went on costing a pod that no longer
+		// existed while `larri status` showed it serving.
+		if term := o.endedElsewhere(live.Rig); term != nil {
+			return term
+		}
+
 		// ---- budget --------------------------------------------------
 		//
 		// Checked before idle, because a rig can breach a ceiling while
@@ -171,6 +182,13 @@ func (o *Orchestrator) Supervise(ctx context.Context, live *Live, p SupervisePol
 			if err := o.probe(ctx, live); err != nil {
 				failures++
 				o.warn("health", "probe failed (%d in a row): %s", failures, shortErr(err))
+				// A rig that stopped answering may have stopped existing.
+				// Asked of the provider, since only it can say (FR-SUP-02).
+				if failures >= 3 {
+					if term := o.instanceGone(ctx, live.Rig, failures); term != nil {
+						return term
+					}
+				}
 				// Three consecutive failures is a rig that has stopped
 				// serving. It is not automatically a rig to destroy — that is
 				// FR-SUP-02's taxonomy and the operator's call — so the
@@ -188,6 +206,43 @@ func (o *Orchestrator) Supervise(ctx context.Context, live *Live, p SupervisePol
 				failures = 0
 			}
 		}
+	}
+}
+
+// endedElsewhere reports a rig another process has already ended, adopting
+// that record so the caller tears down nothing twice.
+func (o *Orchestrator) endedElsewhere(rig *core.Rig) *core.Termination {
+	stored, err := o.Store.Load(rig.ID)
+	if err != nil || stored == nil || stored.State != core.StateDestroyed {
+		return nil
+	}
+	if stored.End == nil {
+		stored.End = &core.Termination{Actor: core.ActorOperator, Code: core.ReasonOperatorRequest,
+			At: time.Now().UTC(), Summary: "ended by another larri process"}
+	}
+	*rig = *stored
+	o.emit("supervise", "rig %s was ended elsewhere: %s", rig.ID, rig.End.Summary)
+	return rig.End
+}
+
+// instanceGone asks the provider whether a rig that has stopped answering
+// still exists. Only a clean "not found" ends it: a provider that cannot be
+// reached concludes nothing (§4), and a stopped instance still bills.
+func (o *Orchestrator) instanceGone(ctx context.Context, rig *core.Rig, failures int) *core.Termination {
+	if rig.Instance == nil || o.Provider == nil {
+		return nil
+	}
+	inst, err := o.Provider.Get(ctx, rig.Instance.InstanceID)
+	if err != nil || inst != nil {
+		return nil
+	}
+	return &core.Termination{
+		Actor: core.ActorProvider, Code: core.ReasonInstanceGone, At: time.Now().UTC(),
+		Summary: "the provider no longer has instance " + rig.Instance.InstanceID,
+		Evidence: map[string]string{
+			"instance":       rig.Instance.InstanceID,
+			"probe_failures": fmt.Sprint(failures),
+		},
 	}
 }
 
@@ -213,7 +268,7 @@ func (o *Orchestrator) accrued(rig *core.Rig, now time.Time) core.CostSummary {
 	if err != nil {
 		return core.CostSummary{}
 	}
-	return state.CostFor(entries, rig.ID, now)
+	return state.CostForRig(entries, rig, now)
 }
 
 // spendLead converts the warning lead time into money, so a ceiling warning

@@ -38,6 +38,7 @@ import (
 
 	"go.sovrenix.com/larri/internal/buildinfo"
 	"go.sovrenix.com/larri/internal/errs"
+	"go.sovrenix.com/larri/internal/provider"
 	"go.sovrenix.com/larri/internal/secret"
 )
 
@@ -101,8 +102,8 @@ func (c *Client) redactBody(body []byte) string {
 // depth the operator cannot place.
 func (c *Client) rest(ctx context.Context, method, path string, body, out any) error {
 	if c.Key.Empty() {
-		return errs.Newf(errs.ClassModelFailure, "runpod."+method,
-			"set RUNPOD_API_KEY: renting needs a key, searching does not")
+		return provider.NotSent(errs.Newf(errs.ClassModelFailure, "runpod."+method,
+			"set RUNPOD_API_KEY: renting needs a key, searching does not"))
 	}
 	var rdr io.Reader
 	if body != nil {
@@ -150,6 +151,69 @@ func (c *Client) rest(ctx context.Context, method, path string, body, out any) e
 		return errs.Newf(errs.ClassProviderTransient, "runpod."+method, "decode: %v", err)
 	}
 	return nil
+}
+
+// schemaPath is RunPod's published REST schema, relative to the REST base.
+const schemaPath = "/openapi.json"
+
+// rentableTypes reads the GPU type ids POST /pods accepts, from the schema
+// the REST API publishes and validates against.
+//
+// The catalogue is a different API and does not agree with it: it advertises
+// "NVIDIA RTX PRO 4500 Blackwell Server Edition" where the create call takes
+// "NVIDIA RTX PRO 4500 Blackwell", and MIG slices no create will place. Public,
+// like the catalogue, so a search without a key still reads it.
+func (c *Client) rentableTypes(ctx context.Context) (map[string]bool, error) {
+	base := c.RESTURL
+	if base == "" {
+		base = DefaultRESTURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+schemaPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", buildinfo.UserAgent())
+	cl := c.HTTP
+	if cl == nil {
+		cl = http.DefaultClient
+	}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return nil, errs.Newf(errs.ClassProviderTransient, "runpod.schema", "%v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, errs.Newf(errs.ClassProviderTransient, "runpod.schema", "http %d", resp.StatusCode)
+	}
+	var doc struct {
+		Components struct {
+			Schemas struct {
+				PodCreateInput struct {
+					Properties struct {
+						GPUTypeIDs struct {
+							Items struct {
+								Enum []string `json:"enum"`
+							} `json:"items"`
+						} `json:"gpuTypeIds"`
+					} `json:"properties"`
+				} `json:"PodCreateInput"`
+			} `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&doc); err != nil {
+		return nil, errs.Newf(errs.ClassProviderTransient, "runpod.schema", "decode: %v", err)
+	}
+	enum := doc.Components.Schemas.PodCreateInput.Properties.GPUTypeIDs.Items.Enum
+	if len(enum) == 0 {
+		return nil, errs.Newf(errs.ClassProviderTransient, "runpod.schema",
+			"schema lists no gpuTypeIds for pod create")
+	}
+	set := make(map[string]bool, len(enum))
+	for _, id := range enum {
+		set[id] = true
+	}
+	return set, nil
 }
 
 // graphql issues a catalogue query.

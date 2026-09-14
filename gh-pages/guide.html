@@ -191,7 +191,7 @@ export LARRI_LABEL_KEY=...</code></div>
   <div class="out">  labels      <b>environment</b> — provider-side labels are sealed
   sizing      Qwen/Qwen2.5-1.5B-Instruct needs ~4.6 GB VRAM
   select      vastai RTX 3060 12GB $0.047/hr (reliability 0.98)
-  plan        ready in ~4m0s (2m0s bringup + 2m0s fetching 10.9 GB)
+  plan        ready in ~4m0s (2m0s bringup + 2m0s fetching 10.9 GB over a 918 Mbps link)
   plan        cost: $0.00 to reach ready, $0.05 for 1h of use, <b>$0.05 total</b></div>
   <p style="margin:0">The <b>labels</b> line tells you whether the key was found.
   <b>--dry-run</b> stops there — nothing has been rented.</p>
@@ -209,7 +209,7 @@ export LARRI_LABEL_KEY=...</code></div>
   runtime, and waits for a <em>real completion</em> to come back — not a health check,
   an actual generated token.</p>
   <div class="out">  ✓ rig 01M0ZXE8… <b>READY</b>   http://127.0.0.1:8000/v1   model: <i>qwen2.5-1.5b-instruct</i>
-    vastai RTX 3060 at $0.047/hr
+    vastai RTX 3060 12GB at $0.047/hr
     key: <i>fKLtIo4OscEe1W7a0TYJasIlaH6Q0tc530Vi-n5n7Ow</i>
 
   policy: idle 30m0s → destroy · no budget ceiling
@@ -288,7 +288,7 @@ bin/larri orphans --destroy</code></div>
   <table>
     <tr><th>Command</th><th>Does</th></tr>
     <tr><td><b>larri up</b></td><td>Search, rank, provision, serve, supervise</td></tr>
-    <tr><td><b>larri status</b></td><td>State, price, elapsed, accrued cost — and why a past rig ended</td></tr>
+    <tr><td><b>larri status</b></td><td>State, provider, hardware and card count, instance, the billed rate beside the quoted one, accrued cost — and why a past rig ended</td></tr>
     <tr><td><b>larri down</b></td><td>Destroy, confirm absence, report total cost</td></tr>
     <tr><td><b>larri resume</b></td><td>Rebuild the tunnel to a rig that outlived the last process</td></tr>
     <tr><td><b>larri offers</b></td><td>Search and rank without spending anything</td></tr>
@@ -309,6 +309,9 @@ bin/larri orphans --destroy</code></div>
     <tr><td><b>--verified-only</b></td><td>Only hosts the provider has verified. Costs more, fails less.</td></tr>
     <tr><td><b>--min-netspeed 200</b></td><td>Floor the host's link, in Mbps. The download is billed at the rig's rate.</td></tr>
     <tr><td><b>--context 32768</b></td><td>Bigger window, bigger KV cache, bigger GPU.</td></tr>
+    <tr><td><b>--max-gpus 1</b></td><td>Cap the cards on one host. A model too big for one card is split across several by default; this keeps it to one — or to however many you name.</td></tr>
+    <tr><td><b>--gpus 2</b> · <b>--vram-per-gpu 24</b> · <b>--vram 80</b></td><td>Floors: at least this many cards, this much per card, this much across all of them.</td></tr>
+    <tr><td><b>--disk 120</b></td><td>Disk in GB. Sized from the weights when omitted; a figure too small for them is refused before renting, never quietly raised.</td></tr>
     <tr><td><b>--hf-endpoint URL</b></td><td>A Hugging Face mirror, for hosts whose region cannot route to it.</td></tr>
     <tr><td><b>--tool-parser</b></td><td>Override the parser derived from the model, or <b>none</b> to disable tool calling.</td></tr>
     <tr><td><b>--deadline 75m</b> · <b>--ssh-timeout 3m</b></td><td>Ceilings for a slow host. Stall detection ends a bad attempt sooner.</td></tr>
@@ -344,6 +347,22 @@ bin/larri orphans --destroy</code></div>
     <tr><td><b>local port 8000 is already in use</b></td>
         <td>Something else holds the port. Use <b>--port 8080</b>. Checked before
         renting, so it costs nothing.</td></tr>
+    <tr><td><b>With more cards: … raise --max-gpus to 4</b></td>
+        <td>No host within your card cap has enough VRAM, but a bigger one does. It names the
+        host and its price; raise <b>--max-gpus</b> to take it. Costs nothing to see.</td></tr>
+    <tr><td><b>disk 40 GB cannot hold … of weights</b></td>
+        <td>The <b>--disk</b> you named is too small for this model, and it says how much is
+        needed. Refused before renting. Leave <b>--disk</b> off and LARRI sizes it.</td></tr>
+    <tr><td><b>disk … free under … cannot hold … of weights</b></td>
+        <td>The host has less free disk than it advertised. Checked on the rented host before a
+        byte downloads; LARRI abandons it and takes the next offer.</td></tr>
+    <tr><td><b>this gpu type could not be placed</b></td>
+        <td>RunPod listed stock it could not actually rent. LARRI rules that listing out and
+        tries the next one rather than asking for the same card again.</td></tr>
+    <tr><td><b>… has no Q4_K_M weights: … is a multi-token-prediction draft head, not the model</b></td>
+        <td>The only file matching that quantisation is a helper — a draft head, projector or
+        adapter — not the model. Refused before renting; the message lists the quantisations
+        the repository does carry.</td></tr>
     <tr><td><b>bring-up hit the … ceiling</b></td>
         <td>A slow host ran past the attempt limit. Raise it with <b>--deadline</b>.</td></tr>
     <tr><td><b>400 "auto" tool choice requires…</b></td>

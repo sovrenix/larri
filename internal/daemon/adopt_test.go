@@ -89,3 +89,39 @@ func TestAdoptRefusesADestroyedRig(t *testing.T) {
 		t.Fatal("adopted a destroyed rig")
 	}
 }
+
+// The ending that adoption writes says why, like every other: the journal
+// entry had no termination, so status and replay could not explain it.
+func TestAdoptOfAVanishedInstanceRecordsWhy(t *testing.T) {
+	o, p, rig := upRig(t)
+	p.Vanish(rig.Instance.InstanceID)
+	_, _ = o.Adopt(context.Background(), rig.ID)
+
+	entries, _ := o.Store.Entries()
+	last := entries[len(entries)-1]
+	if last.To != core.StateDestroyed || last.Termination == nil ||
+		last.Termination.Code != core.ReasonInstanceGone || last.Termination.At.IsZero() {
+		t.Errorf("ending entry = %+v; want a dated instance-gone termination", last.Termination)
+	}
+}
+
+// A snapshot from before rates were journalled in dollars an hour holds Vast's
+// per-month storage figure. The STOPPED entry adoption writes must carry the
+// provider's current figure, or every stopped hour bills at the monthly one.
+func TestAdoptJournalsTheProvidersRateNotTheSnapshots(t *testing.T) {
+	o, p, rig := upRig(t)
+	p.Stop(rig.Instance.InstanceID)
+	stale, _ := o.Store.Load(rig.ID)
+	stale.Instance.StorageHr = 0.20 // $/GB/month, as old snapshots hold it
+	if err := o.Store.Save(stale); err != nil {
+		t.Fatal(err)
+	}
+	fresh, _ := p.Get(context.Background(), rig.Instance.InstanceID)
+
+	_, _ = o.Adopt(context.Background(), rig.ID)
+	entries, _ := o.Store.Entries()
+	last := entries[len(entries)-1]
+	if last.To != core.StateStopped || last.StorageHr != fresh.StorageHr {
+		t.Errorf("STOPPED entry storage = %v, want the provider's %v", last.StorageHr, fresh.StorageHr)
+	}
+}

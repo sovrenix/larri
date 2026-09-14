@@ -4,11 +4,8 @@
 package llamacpp
 
 import (
-	"context"
 	"strings"
 	"testing"
-
-	"go.sovrenix.com/larri/internal/secret"
 )
 
 // Splitting a GGUF filename on its last dot assumes "model.Q4_K_M.gguf" and
@@ -245,23 +242,6 @@ func TestShardBytesRefusesAPartialTotal(t *testing.T) {
 	sizes["m-00002-of-00003.gguf"] = 0
 	if got := shardBytes("m-00001-of-00003.gguf", sizes); got != 0 {
 		t.Errorf("reported %d from a listing with a zero size", got)
-	}
-}
-
-// A ref naming a file outright has no listing to take a size from, and must
-// still resolve — sizing falls back to the estimate, as it did for every model
-// before sizes were read at all.
-func TestExplicitRefResolvesWithoutASize(t *testing.T) {
-	w, err := ResolveGGUF(context.Background(),
-		"org/repo/model-Q4_K_M.gguf", "Q4_K_M", secret.Secret{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if w.File != "model-Q4_K_M.gguf" {
-		t.Errorf("file = %q", w.File)
-	}
-	if w.Bytes != 0 {
-		t.Errorf("bytes = %d; nothing measured it, so it must say so", w.Bytes)
 	}
 }
 

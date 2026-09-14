@@ -30,12 +30,20 @@ type Entry struct {
 	Provider string              `json:"provider,omitempty"`
 	Offer    string              `json:"offer,omitempty"`
 	Instance string              `json:"instance,omitempty"`
-	PriceHr  float64             `json:"price_hr,omitempty"`
+	// PriceHr is what the rig bills by the hour while it runs, storage
+	// included: the provider's own rate once an instance reports one, the
+	// quote before that.
+	PriceHr float64 `json:"price_hr,omitempty"`
 
-	// StorageHr is charged for as long as the resource exists, including
-	// while STOPPED, so cost derived from this journal must account for it
-	// separately from compute.
+	// StorageHr is what the rig bills while STOPPED. It is carried because
+	// storage outlives compute, not because it is billed on top of PriceHr:
+	// a running hour costs PriceHr and a stopped hour StorageHr.
 	StorageHr float64 `json:"storage_hr,omitempty"`
+
+	// Rates says which rules PriceHr and StorageHr were written under. The
+	// journal is never rewritten, so entries from before a change keep
+	// their meaning and are read by the rules they were written with.
+	Rates string `json:"rates,omitempty"`
 
 	// Trace correlation. Written from M1 even though the SDK is wired in M5:
 	// the journal format is durable, and adding fields later means migrating
@@ -48,6 +56,14 @@ type Entry struct {
 	// pruned (§13.1).
 	Termination *core.Termination `json:"termination,omitempty"`
 }
+
+// RatesBilled marks an entry whose PriceHr is the billed rate with storage
+// included, and whose StorageHr is dollars an hour.
+//
+// Entries without it were written with the quote as PriceHr and storage on
+// top of it, and the only adapter that reported storage passed Vast's price
+// through unconverted — dollars per gigabyte per month.
+const RatesBilled = "billed"
 
 // Journal is an append-only record. It is never rewritten, never compacted,
 // and never truncated: the one file that must survive every failure mode is

@@ -549,3 +549,103 @@ func TestFallbackMovesOnWhenThereIsNoMachineToExclude(t *testing.T) {
 			"fallback back to one already tried", tried)
 	}
 }
+
+// hourly makes every journal entry an hour after the last, so a rig that
+// passes through FAILED is costed for real time there. With transitions a
+// millisecond apart, a rig accrues nothing whether or not the evidence that
+// it created nothing reaches the journal — and it did not, for a while,
+// without any test noticing.
+func hourly(st *state.Store) {
+	at := time.Date(2026, 9, 8, 20, 5, 0, 0, time.UTC)
+	st.SetClock(func() time.Time {
+		at = at.Add(time.Hour)
+		return at
+	})
+}
+
+// A create the provider never accepted leaves nothing behind, and the rig has
+// to say so. It did not: the journal moved to FAILED while the rig file stayed
+// at SELECTED, so `larri status` read the state from one and the cost from the
+// other and showed a rig that rented nothing accruing $1.39/hr for two days,
+// with no command able to clear it.
+func TestACreateThatNeverLandedClosesTheRig(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	hourly(st)
+	p := pfake.New("fake", multiGPUMarket(), pfake.Behaviour{CreateRefusedOutright: true})
+	o := &Orchestrator{
+		Store: st, Provider: p, Runtime: rfake.New(rfake.Behaviour{}),
+		Resolver: sizing.StaticResolver{"test/big": bigModel},
+		Policy:   rank.DefaultPolicy(), Deadline: time.Minute,
+	}
+	rig, err := o.Up(context.Background(), bigModelReq())
+	if err == nil {
+		t.Fatal("a refused create produced a rig")
+	}
+	if rig == nil {
+		t.Fatal("no rig to inspect")
+	}
+	// The snapshot and the journal agree, and both say it is over.
+	if rig.State != core.StateDestroyed {
+		t.Errorf("state = %s, want DESTROYED: nothing was created", rig.State)
+	}
+	saved, err := st.Load(rig.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.State != rig.State {
+		t.Errorf("the rig file says %s and memory says %s", saved.State, rig.State)
+	}
+	if saved.End == nil {
+		t.Fatal("a rig that ended must say why")
+	}
+	// And it stops accruing: cost is frozen at the failure, not billed on.
+	entries, _ := st.Entries()
+	now := entries[len(entries)-1].At.Add(2 * time.Hour)
+	if c := state.CostFor(entries, rig.ID, now); c.TotalUSD > 0.01 {
+		t.Errorf("accrued $%.4f two hours after a create that rented nothing", c.TotalUSD)
+	}
+	if p.Count() != 0 {
+		t.Fatal("nothing may exist at the provider")
+	}
+}
+
+// The case that produced the bug: no API key, so the create never leaves the
+// client — and the call that would confirm nothing was created needs the same
+// key. Without the not-sent marker the rig could never be resolved at all, and
+// it billed on an assumption nothing could lift.
+func TestARefusedCreateNeedsNoProviderToConfirmIt(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	hourly(st)
+	p := pfake.New("fake", multiGPUMarket(), pfake.Behaviour{CreateRefusedOutright: true})
+	o := &Orchestrator{
+		Store: st, Provider: p, Runtime: rfake.New(rfake.Behaviour{}),
+		Resolver: sizing.StaticResolver{"test/big": bigModel},
+		Policy:   rank.DefaultPolicy(), Deadline: time.Minute,
+	}
+	rig, err := o.Up(context.Background(), bigModelReq())
+	if err == nil {
+		t.Fatal("a refused create produced a rig")
+	}
+	if rig.State != core.StateDestroyed {
+		t.Fatalf("state = %s; a create that never left the client created nothing", rig.State)
+	}
+	entries, _ := st.Entries()
+	if c := state.CostFor(entries, rig.ID, entries[len(entries)-1].At.Add(48*time.Hour)); c.TotalUSD > 0.01 {
+		t.Errorf("accrued $%.4f two days after a create that was never sent", c.TotalUSD)
+	}
+	// And it took no provider call to establish: with no key, the call that
+	// would confirm absence fails for the same reason the create did.
+	for _, c := range p.Calls {
+		if c == "List" {
+			t.Error("asked the provider to confirm a request it never received")
+		}
+	}
+}

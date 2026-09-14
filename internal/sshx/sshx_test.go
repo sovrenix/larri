@@ -4,6 +4,7 @@
 package sshx
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -343,5 +344,34 @@ func TestProbeRejectsAnAcceptorThatIsNotSSH(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	if err := Probe(context.Background(), "127.0.0.1", port, 700*time.Millisecond); err == nil {
 		t.Fatal("an accepted connection with no banner is not an SSH server")
+	}
+}
+
+// Discovery reads the host key and stops. The scan's own callback refuses
+// every key, so the handshake ends at host-key verification and never reaches
+// authentication — a scan that accepted the key would go on to authenticate
+// with a host it has not verified (CodeQL go/insecure-hostkeycallback).
+//
+// Observed on the scan's connection itself, at the server: an earlier version
+// of this test opened a second connection of its own and passed even with the
+// callback returning nil.
+func TestScanHostKeyNeverCompletesTheHandshake(t *testing.T) {
+	s := newTestServer(t, nil)
+	key, err := ScanHostKey(context.Background(), "127.0.0.1", s.Port(), 10*time.Second)
+	if err != nil {
+		t.Fatalf("the scan must still return the key: %v", err)
+	}
+	if !bytes.Equal(key.Marshal(), s.HostKey.Marshal()) {
+		t.Error("the scan returned a key the server does not hold")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for s.Handshakes() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if s.Handshakes() == 0 {
+		t.Fatal("the server never saw the scan's handshake end")
+	}
+	if n := s.AuthAttempts(); n != 0 {
+		t.Errorf("the scan reached authentication %d time(s); it must stop at the host key", n)
 	}
 }

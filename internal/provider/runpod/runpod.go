@@ -24,8 +24,9 @@ type Provider struct {
 	OnDrift  func(error)
 	OnNotice func(string)
 
-	mu     sync.Mutex
-	counts []int // pod sizes to price, read once from the catalogue
+	mu       sync.Mutex
+	counts   []int           // pod sizes to price, read once from the catalogue
+	rentable map[string]bool // gpu types POST /pods accepts, read once from its schema
 }
 
 // New builds a provider.
@@ -52,7 +53,8 @@ func (p *Provider) notice(format string, a ...any) {
 // applies criteria again and is authoritative; this pass exists to keep the
 // obviously-unusable out of the ranked list an operator reads.
 func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, error) {
-	counts := p.priceCounts(ctx)
+	rentable := p.rentableCheck(ctx)
+	counts := p.priceCounts(ctx, rentable)
 	var data struct {
 		GPUTypes []gpuType `json:"gpuTypes"`
 	}
@@ -80,7 +82,7 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 		var offered bool
 		var why dropReason
 		for _, n := range counts {
-			o, reason, ok := g.normalise(n, c.Interruptible)
+			o, reason, ok := g.normalise(n, c.Interruptible, rentable)
 			if !ok {
 				if why == "" {
 					why = reason
@@ -88,6 +90,12 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 				continue
 			}
 			offered = true
+			// Quote the disk being rented: it bills beside the GPU rate the
+			// catalogue carries, and a ceiling or a ranking that leaves it
+			// out compares a price nobody is charged.
+			if c.DiskGB > 0 {
+				o.PriceHr += runningDiskHr(containerDisk(c.DiskGB), volumeDisk(c.DiskGB))
+			}
 			if !matches(o, c) {
 				continue
 			}
@@ -123,7 +131,7 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 // A failure is not fatal — the known ladder stands in, and the next call asks
 // again — because a search that cannot list sizes is still better than a
 // search that cannot run (§4a).
-func (p *Provider) priceCounts(ctx context.Context) []int {
+func (p *Provider) priceCounts(ctx context.Context, rentable func(string) bool) []int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.counts != nil {
@@ -136,8 +144,31 @@ func (p *Provider) priceCounts(ctx context.Context) []int {
 		p.notice("runpod: could not read pod sizes; pricing up to %d cards", defaultSizes)
 		return countsTo(defaultSizes)
 	}
-	p.counts = countsTo(sizeCeiling(data.GPUTypes))
+	p.counts = countsTo(sizeCeiling(data.GPUTypes, rentable))
 	return p.counts
+}
+
+// rentableCheck reports which catalogue types a create call will accept.
+//
+// Read from the schema POST /pods validates against, and cached for the
+// process like the sizes. When the schema cannot be read, the check falls
+// back to dropping only what is known not to be rentable — a search that
+// offers a type the create then refuses costs one attempt, where a search
+// that offers nothing costs the run (§4a).
+func (p *Provider) rentableCheck(ctx context.Context) func(string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.rentable == nil {
+		set, err := p.c.rentableTypes(ctx)
+		if err != nil {
+			p.notice("runpod: could not read which gpu types can be rented (%s); dropping only known ones",
+				shortest(err))
+			return purchasable
+		}
+		p.rentable = set
+	}
+	set := p.rentable
+	return func(id string) bool { return set[id] }
 }
 
 // matches applies the criteria the catalogue cannot.

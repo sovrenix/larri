@@ -26,7 +26,20 @@ type Deps struct {
 	// NewOrchestrator builds one configured for the current environment. It
 	// returns an error rather than a zero value so a missing API key is
 	// reported to the calling agent, not discovered as a nil dereference.
-	NewOrchestrator func(runtimeKind string) (*daemon.Orchestrator, error)
+	//
+	// providerName is the provider holding an existing rig, or "" for the
+	// configured default when there is no rig yet. Acting on a rig through
+	// any other provider reads "not found" as confirmed absence.
+	//
+	// model is what the engine is chosen from when runtimeKind is empty, the
+	// same reading the CLI gives it. Chosen from nothing, a named .gguf file
+	// or a Q4_K_M request got vLLM, which cannot load either.
+	NewOrchestrator func(runtimeKind, providerName string, model core.ModelSpec) (*daemon.Orchestrator, error)
+
+	// Providers names every provider an orphan could be at. An orphan is
+	// something LARRI lost track of, so which provider holds it is not known
+	// in advance, and listing only the default hid the rest.
+	Providers func() []string
 
 	// Session is the rig this surface is holding, when it is long-running
 	// enough to hold one. An MCP server outlives its tool calls, so it can;
@@ -102,7 +115,7 @@ func larriTools(d Deps) []Tool {
 		},
 		{
 			Name: "larri_orphans",
-			Description: "List provider resources that local state does not account for, and what they cost per hour. " +
+			Description: "List provider resources that local state does not account for, at every provider, and what they cost per hour. " +
 				"Read-only; destroys nothing.",
 			Schema:  Object(nil),
 			Handler: d.orphans,
@@ -150,7 +163,8 @@ func larriTools(d Deps) []Tool {
 				"THIS DESTROYS RENTED HARDWARE. Split from larri_orphans so listing is always safe.",
 			Schema: Object(map[string]Property{
 				"instance_id": {Type: "string", Description: "provider instance id, from larri_orphans"},
-			}, "instance_id"),
+				"provider":    {Type: "string", Description: "the provider holding it, from larri_orphans"},
+			}, "instance_id", "provider"),
 			Consequential: true,
 			Exposure:      ExposeMCPOnly,
 			Handler:       d.orphanDestroy,
@@ -261,18 +275,17 @@ type planArgs struct {
 	Context      int    `json:"context"`
 }
 
+// spec leaves an unnamed quantisation empty: the daemon fills in the
+// runtime's own default while sizing, and an "fp16" filled in here asked a
+// GGUF engine for full precision.
 func (d planArgs) spec() core.ModelSpec {
-	q := d.Quantization
-	if q == "" {
-		q = "fp16"
-	}
 	c := d.Context
 	if c == 0 {
 		c = 8192
 	}
 	return core.ModelSpec{
 		Ref: d.Model, Source: core.SourceHuggingFace, ServedName: "planned",
-		Quantization: q, ContextLen: c,
+		Quantization: d.Quantization, ContextLen: c,
 	}
 }
 
@@ -284,7 +297,7 @@ func (d Deps) plan(ctx context.Context, raw json.RawMessage) (any, error) {
 	if a.Model == "" {
 		return nil, fmt.Errorf("model is required")
 	}
-	o, err := d.NewOrchestrator("")
+	o, err := d.NewOrchestrator("", "", a.spec())
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +350,7 @@ func (d Deps) searchOffers(ctx context.Context, raw json.RawMessage) (any, error
 	if a.Top <= 0 {
 		a.Top = 10
 	}
-	o, err := d.NewOrchestrator("")
+	o, err := d.NewOrchestrator("", "", a.spec())
 	if err != nil {
 		return nil, err
 	}

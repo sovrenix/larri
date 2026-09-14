@@ -106,13 +106,6 @@ func KnownQuantizations() []string {
 	return out
 }
 
-// IsGGUF reports whether a quantization names a GGUF k-quant, which selects
-// llama.cpp in the runtime heuristic (FR-RT-02).
-func IsGGUF(quant string) bool {
-	q := strings.ToLower(strings.TrimSpace(quant))
-	return strings.HasPrefix(q, "q") || strings.HasPrefix(q, "iq")
-}
-
 func sortStrings(s []string) {
 	for i := 1; i < len(s); i++ {
 		for j := i; j > 0 && s[j] < s[j-1]; j-- {

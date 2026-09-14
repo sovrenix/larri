@@ -36,6 +36,7 @@ const (
 	ReasonProvisionDeadline ReasonCode = "provision-deadline"
 	ReasonBootstrapFailed   ReasonCode = "bootstrap-failed"
 	ReasonOrphanSweep       ReasonCode = "orphan-sweep"
+	ReasonInstanceGone      ReasonCode = "instance-gone" // the provider no longer holds it
 )
 
 // CostSummary is what a rig spent, and on what.
@@ -63,6 +64,13 @@ type Termination struct {
 	Evidence map[string]string `json:"evidence,omitempty"` // the facts behind Summary
 	Cost     CostSummary       `json:"cost"`
 }
+
+// EvidenceNothingCreated is the evidence key a teardown sets when it has
+// asked the provider and found nothing carrying the rig's label.
+//
+// Cost reads it: the states a failed create passes through bill by default,
+// deliberately, and this is what ends that assumption with a fact.
+const EvidenceNothingCreated = "nothing_created"
 
 // Automatic reports whether LARRI ended the rig without being asked.
 // An automatic termination is exactly the case where the evidence matters,

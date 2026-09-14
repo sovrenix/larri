@@ -219,7 +219,7 @@ larri up --model Qwen/Qwen3-Coder-30B \
 |---|---|
 | `larri up` | Search, rank, provision, bootstrap, serve, supervise |
 | `larri status` | State, provider, hardware and card count, instance, hourly rate (and the quote when the bill differs), model, elapsed time, accrued cost — and why a past rig ended |
-| `larri down` | Destroy, **confirm absence**, report total cost |
+| `larri down` | Destroy through the rig's own provider, **confirm absence**, report total cost. `--nothing-created "how you checked" <rig>` corrects an old record of a rig that never had an instance |
 | `larri resume` | Rebuild the tunnel to a rig that outlived the last process |
 | `larri offers` | Search and rank without spending anything |
 | `larri orphans` | Find and destroy resources that local state does not account for |
@@ -263,7 +263,7 @@ it works at all.
 | `--allow-deverified` | Include hosts whose verification was **withdrawn**. Off by default. |
 | `--min-netspeed 200` | Floor the host's download link, in Mbps. The download is billed. |
 | `--context 32768` | Bigger window, bigger KV cache, bigger GPU. |
-| `--quantization Q4_K_M` | Weight format. GGUF engines default to a Q4; vLLM to fp16. |
+| `--quantization Q4_K_M` | Weight format. GGUF engines default to Q4_K_M; vLLM to fp16. A GGUF file can be named outright: `--model owner/repo/file.gguf`. |
 | `--tool-parser` | Override the parser derived from the model, or `none` to disable tool calling. |
 | `--hf-endpoint URL` | A Hugging Face mirror, for hosts whose region cannot route to it. |
 | `--port 8080` | When something else already holds 8000. |

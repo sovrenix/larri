@@ -19,10 +19,12 @@ package state
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"syscall"
 	"time"
 
 	"go.sovrenix.com/larri/internal/core"
@@ -81,12 +83,17 @@ func (s *Store) rigPath(id string) string {
 // spends that went well.
 func (s *Store) RecordIntent(rig *core.Rig, to core.LifecycleState, note string) error {
 	e := Entry{
-		At:      s.now(),
-		RigID:   rig.ID,
-		From:    rig.State,
-		To:      to,
-		Note:    note,
-		PriceHr: rig.Offer.PriceHr,
+		At:    s.now(),
+		RigID: rig.ID,
+		From:  rig.State,
+		To:    to,
+		Note:  note,
+		// The billed rate, not the quote. They differ — a RunPod pod quoted
+		// at $2.78/hr billed $3.18/hr — and a journal that kept the quote
+		// costed the rig at a rate nobody was charging, while status showed
+		// the real one beside it.
+		PriceHr: rig.BilledPriceHr(),
+		Rates:   RatesBilled,
 	}
 	if rig.Offer.Provider != "" {
 		e.Provider, e.Offer = rig.Offer.Provider, rig.Offer.OfferID
@@ -95,11 +102,35 @@ func (s *Store) RecordIntent(rig *core.Rig, to core.LifecycleState, note string)
 		e.Instance = rig.Instance.InstanceID
 		e.StorageHr = rig.Instance.StorageHr
 	}
+	// The entry that ends a rig says why. The field existed and nothing set
+	// it, so the reason lived only in the snapshot — and cost, which is
+	// replayed from the journal, never saw the evidence that a rig had
+	// created nothing: one confirmed absent at teardown was still costed
+	// at $2.09/hr for the minutes before it.
+	if to == core.StateDestroyed && rig.End != nil {
+		e.Termination = rig.End
+	}
 	return s.journal.Append(e)
 }
 
+// ErrAlreadyDestroyed is returned for a move from a stale copy of a rig that
+// the store already holds as destroyed. Nothing was written; the record that
+// ended it stands.
+var ErrAlreadyDestroyed = errors.New("rig already destroyed")
+
 // Transition journals a completed move and updates the snapshot.
 func (s *Store) Transition(rig *core.Rig, to core.LifecycleState, note string) error {
+	if !ValidID(rig.ID) {
+		return fmt.Errorf("state: malformed rig id %q", rig.ID)
+	}
+	unlock, err := s.lockRig(rig.ID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := s.guardDestroyed(rig, to); err != nil {
+		return err
+	}
 	if err := s.RecordIntent(rig, to, note); err != nil {
 		return err
 	}
@@ -107,7 +138,58 @@ func (s *Store) Transition(rig *core.Rig, to core.LifecycleState, note string) e
 		At: s.now(), From: rig.State, To: to, Note: note,
 	})
 	rig.State = to
-	return s.Save(rig)
+	return s.write(rig)
+}
+
+// lockRig holds an exclusive lock on one rig, across processes, for as long
+// as a check of its stored state and the write that depends on it take.
+//
+// Checking and then writing is not enough on its own: two processes can both
+// check before either writes, and the stale one's write lands last. flock is
+// advisory, released by the kernel if the process dies, and present on both
+// platforms the binary supports (NFR-06).
+func (s *Store) lockRig(id string) (func(), error) {
+	f, err := os.OpenFile(filepath.Join(s.dir, "rigs", "."+id+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("state: lock rig %s: %w", id, err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("state: lock rig %s: %w", id, err)
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
+}
+
+// guardDestroyed keeps a destroyed rig destroyed.
+//
+// Two processes can hold the same rig — one serving it, one running `larri
+// down` — and the one holding a stale copy wrote DEGRADED over DESTROYED,
+// which put a pod that no longer existed back to billing in the journal. A
+// stale second teardown is refused too, or it replaces the reason the first
+// one recorded; a rig already destroyed in the caller's own copy may still be
+// re-recorded, which is how an operator's correction lands.
+//
+// A snapshot that cannot be read fails closed for every move but teardown:
+// it cannot show the rig is not destroyed, and teardown must never be the
+// thing a bad file blocks.
+func (s *Store) guardDestroyed(rig *core.Rig, to core.LifecycleState) error {
+	cur, err := s.Load(rig.ID)
+	if err != nil {
+		if to == core.StateDestroyed {
+			return nil
+		}
+		return err
+	}
+	if cur == nil || cur.State != core.StateDestroyed {
+		return nil
+	}
+	if to != core.StateDestroyed || rig.State != core.StateDestroyed {
+		return fmt.Errorf("state: rig %s: %w", rig.ID, ErrAlreadyDestroyed)
+	}
+	return nil
 }
 
 // Save writes a rig snapshot atomically: temp file, fsync, rename, fsync the
@@ -116,10 +198,28 @@ func (s *Store) Transition(rig *core.Rig, to core.LifecycleState, note string) e
 // The rename is atomic on POSIX, so a crash at any point leaves either the
 // previous complete snapshot or the new complete one — never a half-written
 // file that parses into a rig with no instance ID (FR-STATE-02).
+//
+// Every snapshot write passes the destroyed-rig guard, under the rig's lock.
+// Serving and adoption save the rig directly, and a bring-up that saved its
+// endpoint after `larri down` in another terminal had finished wrote a live
+// state back over DESTROYED.
 func (s *Store) Save(rig *core.Rig) error {
 	if !ValidID(rig.ID) {
 		return fmt.Errorf("state: malformed rig id %q", rig.ID)
 	}
+	unlock, err := s.lockRig(rig.ID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := s.guardDestroyed(rig, rig.State); err != nil {
+		return err
+	}
+	return s.write(rig)
+}
+
+// write is Save without the lock or the guard, for callers holding both.
+func (s *Store) write(rig *core.Rig) error {
 	b, err := json.MarshalIndent(rig, "", "  ")
 	if err != nil {
 		return fmt.Errorf("state: marshal rig %s: %w", rig.ID, err)

@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"go.sovrenix.com/larri/internal/config"
@@ -31,7 +30,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("tui", flag.ExitOnError)
 	model := fs.String("model", "", "model reference, e.g. Qwen/Qwen3-Coder-30B")
 	served := fs.String("served-name", "", "stable name clients use (default: derived)")
-	quant := fs.String("quantization", "fp16", "fp16, q4_K_M, awq, ...")
+	quant := fs.String("quantization", "", "fp16, Q4_K_M, awq, … (default: the runtime's)")
 	ctxLen := fs.Int("context", 8192, "context length")
 	gpu := fs.String("gpu", "", "GPU model filter")
 	maxPrice := fs.Float64("max-price", 0, "ceiling in $/hr")
@@ -75,7 +74,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 
 	name := *served
 	if name == "" {
-		name = strings.ToLower(baseName(*model))
+		name = servedNameFor(*model)
 	}
 	spec := core.ModelSpec{
 		Ref: *model, Source: core.SourceHuggingFace, ServedName: name,
@@ -92,7 +91,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	fmt.Printf("\n  %s\n\n", describePolicy(cfg))
 
 	events := make(chan daemon.Event, 256)
-	o, err := newOrchestrator(st, *engine, events)
+	o, err := newOrchestrator(st, *engine, "", spec, events)
 	if err != nil {
 		return err
 	}
@@ -147,13 +146,6 @@ func cmdTUI(ctx context.Context, args []string) error {
 		fmt.Print(fm.Summary())
 	}
 	return nil
-}
-
-func baseName(ref string) string {
-	if i := strings.LastIndex(ref, "/"); i >= 0 {
-		return ref[i+1:]
-	}
-	return ref
 }
 
 type rigRequest struct {

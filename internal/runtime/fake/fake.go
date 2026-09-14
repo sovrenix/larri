@@ -112,8 +112,8 @@ func (r *Runtime) Bootstrap(ctx context.Context, _ runtime.Session, spec core.Mo
 		send(runtime.Progress{
 			Phase:      runtime.PhaseWeightsDownload,
 			Percent:    pct,
-			BytesDone:  int64(float64(r.downloadBytes()) * pct / 100),
-			BytesTotal: r.downloadBytes(),
+			BytesDone:  uint64(float64(r.downloadBytes()) * pct / 100),
+			BytesTotal: uint64(r.downloadBytes()),
 		})
 	}
 	return nil

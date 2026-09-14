@@ -10,12 +10,35 @@ package provider
 
 import (
 	"context"
+	"errors"
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/secret"
 )
 
 // Provider is a normalised rental marketplace.
+// ErrNotSent marks a call an adapter refused before touching the network.
+//
+// It is the difference between "the provider declined" and "the provider was
+// never asked", and only the second is certain: a create that never left the
+// client created nothing, so the rig can be closed on the spot instead of
+// billing on an assumption until somebody confirms it. A missing API key is
+// the case that happens — and the confirming call needs the same key, so
+// without this marker the rig could never be resolved at all.
+var ErrNotSent = errors.New("request not sent")
+
+// NotSent marks err as a call that never left the client.
+//
+// The marker is carried, not printed: the operator reads the adapter's own
+// message ("set RUNPOD_API_KEY: renting needs a key"), while errors.Is sees
+// the marker and the error class survives unwrapping.
+func NotSent(err error) error { return notSent{err} }
+
+type notSent struct{ error }
+
+func (n notSent) Is(target error) bool { return target == ErrNotSent }
+func (n notSent) Unwrap() error        { return n.error }
+
 type Provider interface {
 	Name() string
 

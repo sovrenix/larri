@@ -50,8 +50,13 @@ type searchRequest struct {
 	Reliability *floatFilter   `json:"reliability,omitempty"`
 	DiskSpace   *floatFilter   `json:"disk_space,omitempty"`
 	CPUCores    *intFilter     `json:"cpu_cores,omitempty"`
-	CPURAM      *floatFilter   `json:"cpu_ram,omitempty"`
-	Geolocation *stringsFilter `json:"geolocation,omitempty"`
+
+	// AllocatedStorage is the disk the price is quoted for. Unset, Vast
+	// prices eight gigabytes, so an 80 GB rental was ranked on storage it
+	// would not be charged and billed for storage it was never ranked on.
+	AllocatedStorage *float64       `json:"allocated_storage,omitempty"`
+	CPURAM           *floatFilter   `json:"cpu_ram,omitempty"`
+	Geolocation      *stringsFilter `json:"geolocation,omitempty"`
 }
 
 type searchResponse struct {
@@ -241,12 +246,21 @@ type wireInstance struct {
 	SSHPort      *int           `json:"ssh_port"`
 	PublicIP     *string        `json:"public_ipaddr"`
 	MachineID    *int64         `json:"machine_id"`
-	DPHTotal     *float64       `json:"dph_total"`
-	StorageCost  *float64       `json:"storage_cost"`
+	DPHTotal     *float64       `json:"dph_total"`    // storage for disk_space included
+	StorageCost  *float64       `json:"storage_cost"` // $/GB/month, not $/hr
+	DiskSpace    *float64       `json:"disk_space"`   // GB allocated
 	StartDate    *float64       `json:"start_date"`
 	Ports        map[string]any `json:"ports"`
 	AskContract  *int64         `json:"ask_contract_id"`
 }
+
+// hoursPerMonth converts Vast's storage price, which is per gigabyte per
+// month, to the hourly figure the journal accrues. Vast's own offers use a
+// thirty-day month: storage_total_cost is storage_cost × disk ÷ 720.
+//
+// storage_cost used to be read as dollars an hour. At $0.20/GB/month that
+// added $0.20/hr to every rig — five times the price of a $0.04 card.
+const hoursPerMonth = 720
 
 // normalise converts a wire instance into LARRI's vocabulary.
 func (i wireInstance) normalise() (core.Instance, error) {
@@ -263,8 +277,8 @@ func (i wireInstance) normalise() (core.Instance, error) {
 	if i.DPHTotal != nil {
 		out.PriceHr = *i.DPHTotal
 	}
-	if i.StorageCost != nil {
-		out.StorageHr = *i.StorageCost
+	if i.StorageCost != nil && i.DiskSpace != nil {
+		out.StorageHr = *i.StorageCost * *i.DiskSpace / hoursPerMonth
 	}
 	if i.SSHHost != nil {
 		out.SSHHost = *i.SSHHost

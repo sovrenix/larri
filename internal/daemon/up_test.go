@@ -93,9 +93,22 @@ func TestIntentIsJournalledBeforeTheCreateCall(t *testing.T) {
 	if !errs.Is(err, errs.ClassProviderUnknownOutcome) {
 		t.Fatalf("class = %s, want provider-unknown-outcome", errs.ClassOf(err))
 	}
-	// The instance exists despite the error.
-	if p.Count() != 1 {
-		t.Fatalf("provider holds %d instances; the create landed", p.Count())
+	// The instance exists despite the error, and LARRI finds it by the label
+	// it wrote before the call — then destroys it rather than leaving it
+	// billing for a later sweep to notice. The label is what makes that
+	// possible, which is the point of journalling the intent first.
+	if p.Count() != 0 {
+		t.Fatalf("provider holds %d instances; a create that landed after "+
+			"reporting failure must be torn down, not left billing", p.Count())
+	}
+	var destroyed bool
+	for _, c := range p.Calls {
+		if c == "Destroy" {
+			destroyed = true
+		}
+	}
+	if !destroyed {
+		t.Error("the orphan was never destroyed")
 	}
 	// And the journal knew about it before the call was made.
 	entries, err := st.Entries()
@@ -118,10 +131,17 @@ func TestIntentIsJournalledBeforeTheCreateCall(t *testing.T) {
 	if !sawCreating {
 		t.Error("a CREATING intent must precede the spend")
 	}
-	// The orphan is attributable by label.
-	live, _ := p.List(context.Background())
-	if id, ours := live[0].RigID(); !ours || id != rig.ID {
-		t.Errorf("instance label = %q ours=%v, want rig %s", id, ours, rig.ID)
+	// Attribution by label is what made the teardown above possible: the
+	// instance is gone, so the evidence is that LARRI matched it to this rig
+	// from the marker it wrote before the call, and said why it ended.
+	if rig.End == nil {
+		t.Fatal("the rig does not explain how it ended")
+	}
+	if rig.State != core.StateDestroyed {
+		t.Errorf("state = %s, want DESTROYED once the instance is confirmed absent", rig.State)
+	}
+	if !strings.Contains(rig.End.Summary, "create") {
+		t.Errorf("termination summary %q does not name the failure", rig.End.Summary)
 	}
 }
 
@@ -186,6 +206,66 @@ func TestDownConfirmsAbsence(t *testing.T) {
 	entries, _ := st.Entries()
 	if c := state.CostFor(entries, rig.ID, time.Now()); c.TotalUSD <= 0 {
 		t.Error("a rig that ran should have accrued something")
+	}
+}
+
+// `larri down` on a rig with no instance asks the provider, and absence is
+// evidence that stops cost. The evidence was written to the rig file and not
+// to the journal cost is replayed from, so a rig confirmed never created kept
+// its accrued figure: $0.0563 for the minutes one sat in FAILED.
+func TestDownOfARigThatCreatedNothingStopsItsCostInTheJournal(t *testing.T) {
+	o, _, st := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	hourly(st)
+	id, err := state.NewID(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig := &core.Rig{ID: id, State: core.StateSelected, Offer: offers()[0], Model: upReq().Model}
+	for _, to := range []core.LifecycleState{core.StateCreating, core.StateFailed} {
+		if err := st.Transition(rig, to, "create failed"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := o.Down(context.Background(), rig, nil); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := st.Entries()
+	last := entries[len(entries)-1]
+	if last.To != core.StateDestroyed || last.Termination == nil ||
+		last.Termination.Evidence[core.EvidenceNothingCreated] == "" {
+		t.Fatalf("the ending entry does not carry the evidence: %+v", last)
+	}
+	if c := state.CostFor(entries, rig.ID, last.At.Add(time.Hour)); c.TotalUSD != 0 {
+		t.Errorf("accrued $%.4f for a rig the provider confirmed never existed", c.TotalUSD)
+	}
+}
+
+// A provider that cannot be asked has not said nothing exists. Recording the
+// rig destroyed on a failed query stopped its cost while whatever a lost
+// create had made went on billing.
+func TestDownOfARigWithNoInstanceWaitsForTheProvider(t *testing.T) {
+	o, p, st := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	hourly(st)
+	id, err := state.NewID(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig := &core.Rig{ID: id, State: core.StateSelected, Offer: offers()[0], Model: upReq().Model}
+	for _, to := range []core.LifecycleState{core.StateCreating, core.StateFailed} {
+		if err := st.Transition(rig, to, "create failed"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.SetUnreachable(true)
+	if err := o.Down(context.Background(), rig, nil); !errs.Is(err, errs.ClassProviderTransient) {
+		t.Fatalf("err = %v, want a transient error asking for a retry", err)
+	}
+	if saved, _ := st.Load(rig.ID); saved.State == core.StateDestroyed {
+		t.Error("recorded DESTROYED on a query that failed")
+	}
+	entries, _ := st.Entries()
+	if c := state.CostFor(entries, rig.ID, entries[len(entries)-1].At.Add(time.Hour)); c.TotalUSD == 0 {
+		t.Error("stopped accruing without evidence that nothing exists")
 	}
 }
 

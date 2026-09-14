@@ -373,3 +373,53 @@ func TestCacheEntriesFromAnOlderSchemaAreIgnored(t *testing.T) {
 		t.Error("an entry with no schema version must be refetched, not trusted")
 	}
 }
+
+// A ref naming a GGUF file is sized by its repository. Sizing used to ask
+// for a repository named after the whole ref — ".../Qwen3-8B-Q4_K_M.gguf/
+// revision/main not found" — while the engine had already resolved the file.
+func TestARefNamingAFileIsSizedByItsRepository(t *testing.T) {
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.Path)
+		switch {
+		case r.URL.Path == "/api/models/meta-llama/Llama-3.1-8B/revision/main":
+			fmt.Fprint(w, infoJSON)
+		case strings.HasPrefix(r.URL.Path, "/meta-llama/Llama-3.1-8B/") &&
+			strings.HasSuffix(r.URL.Path, "config.json"):
+			fmt.Fprint(w, configJSON)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	r := &HFResolver{Endpoint: srv.URL, HTTP: srv.Client(), CacheDir: t.TempDir()}
+
+	ref := "meta-llama/Llama-3.1-8B/q4/Llama-3.1-8B-Q4_K_M-00001-of-00002.gguf"
+	f, err := r.Resolve(context.Background(), ref, "")
+	if err != nil {
+		t.Fatalf("%v (asked for %v)", err, asked)
+	}
+	if f.Layers != 32 {
+		t.Errorf("facts = %+v", f)
+	}
+	if f.Ref != ref {
+		t.Errorf("Ref = %q; facts are reported under the name the operator gave", f.Ref)
+	}
+}
+
+func TestSplitRef(t *testing.T) {
+	for ref, want := range map[string][2]string{
+		"unsloth/Qwen3-8B-GGUF":                          {"unsloth/Qwen3-8B-GGUF", ""},
+		"unsloth/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf":     {"unsloth/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf"},
+		"unsloth/X-GGUF/Q6_K/X-Q6_K-00001-of-00002.GGUF": {"unsloth/X-GGUF", "Q6_K/X-Q6_K-00001-of-00002.GGUF"},
+		// Only a GGUF is loadable by path; anything else is a repository id
+		// and will be refused as one.
+		"org/repo/model.safetensors": {"org/repo/model.safetensors", ""},
+		"org/model.gguf":             {"org/model.gguf", ""},
+	} {
+		repo, file := SplitRef(ref)
+		if repo != want[0] || file != want[1] {
+			t.Errorf("SplitRef(%q) = %q, %q; want %q, %q", ref, repo, file, want[0], want[1])
+		}
+	}
+}

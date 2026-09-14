@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/errs"
@@ -54,6 +55,27 @@ func (r *Runtime) SetWeights(w Weights) { r.weights = w }
 
 // SetGGUF records a weight file whose size is not known.
 func (r *Runtime) SetGGUF(file string) { r.weights = Weights{File: file} }
+
+// ResolveWeights picks the GGUF to fetch and records it for Bootstrap.
+//
+// The default quantisation is applied here, before the listing is read,
+// because this is the only place that knows it is needed. A ref naming a file
+// gets no default: the file already says what it carries, and a default
+// would contradict any file that is not Q4_K_M.
+func (r *Runtime) ResolveWeights(ctx context.Context, spec core.ModelSpec) (runtime.Weights, error) {
+	quant := spec.Quantization
+	if quant == "" && explicitFile(spec.Ref) == "" {
+		quant = r.DefaultQuantization()
+	}
+	w, err := ResolveGGUF(ctx, spec.Ref, spec.Revision, quant, r.hfToken)
+	if err != nil {
+		return runtime.Weights{}, err
+	}
+	r.weights = w
+	return w, nil
+}
+
+var _ runtime.WeightResolver = (*Runtime)(nil)
 
 // WeightBytes is the measured size of this model's weights, or zero when the
 // repository did not publish one.
@@ -142,13 +164,108 @@ func (r *Runtime) Bootstrap(ctx context.Context, sess runtime.Session,
 			msg = fmt.Sprintf("fetching %s (part %d of %d)", localName(sh), i+1, len(shards))
 		}
 		send(runtime.Progress{Phase: "weights.download", Message: msg})
-		if _, err := sess.Run(ctx, r.downloadCmd(spec, sh)); err != nil {
+		stop := r.reportDownload(ctx, sess, send)
+		_, err := sess.Run(ctx, r.downloadCmd(spec, sh))
+		stop()
+		if err != nil {
 			return errs.Newf(errs.ClassHostFailure, "llamacpp.Bootstrap",
 				"download weights: %v", err)
 		}
 	}
 	return nil
 }
+
+// downloadPollInterval is how often the weights directory is measured while a
+// shard is in flight. Each sample is one SSH exec against a handful of files,
+// so it costs a round trip; often enough that a stalled pull is visible,
+// rarely enough that it is not the thing making noise.
+var downloadPollInterval = 10 * time.Second
+
+// downloadProbeTimeout bounds one progress measurement. A du over a handful
+// of large files takes milliseconds; one that has not answered in this long
+// is not going to, and the next tick asks again.
+var downloadProbeTimeout = 15 * time.Second
+
+// reportDownload publishes download progress until the returned stop is
+// called.
+//
+// FR-RT-06 asks that a multi-GB download not look like a hang, and for this
+// engine it did: the operator saw one "fetching" line and then nothing for
+// three quarters of an hour. vLLM answers WeightsOnDisk and the daemon samples
+// it during the readiness wait — but llama.cpp fetches earlier, inside
+// Bootstrap, with a blocking curl, so nothing was watching.
+//
+// The whole directory is measured rather than the current file: shards
+// already fetched are bytes already paid for, and the total covers all of
+// them. A size that could not be measured publishes nothing; a progress line
+// is not worth inventing (§4a). Each Run opens its own SSH session, so this
+// rides the same connection as the download it is watching.
+func (r *Runtime) reportDownload(ctx context.Context, sess runtime.Session,
+	send func(runtime.Progress)) func() {
+
+	total := r.weights.Bytes
+	if total == 0 {
+		return func() {}
+	}
+	// Its own context, cancelled before stop waits: stop waits for the
+	// sampler to exit, and a du wedged on the host would otherwise hold
+	// Bootstrap until the attempt deadline — progress is best-effort, and
+	// must not be what a bring-up waits on.
+	sctx, cancel := context.WithCancel(ctx)
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		t := time.NewTicker(downloadPollInterval)
+		defer t.Stop()
+		var last uint64
+		for {
+			select {
+			case <-sctx.Done():
+				return
+			case <-t.C:
+			}
+			pctx, pcancel := context.WithTimeout(sctx, downloadProbeTimeout)
+			got, err := r.WeightsOnDisk(pctx, sess)
+			pcancel()
+			if err != nil || got == 0 || got == last {
+				continue
+			}
+			last = got
+			// Measured on the host, so bounded here: more than the whole
+			// download is other files in the directory, or a host making
+			// things up, and neither is progress.
+			if got > total {
+				got = total
+			}
+			send(runtime.Progress{
+				Phase: "weights.download", Percent: float64(got) / float64(total) * 100,
+				BytesDone: got, BytesTotal: total,
+			})
+		}
+	}()
+	return func() { cancel(); <-stopped }
+}
+
+// WeightsOnDisk reports how many bytes of the model have arrived.
+//
+// du over the weights directory: a handful of large files, so it costs a stat
+// each. Errors are the caller's to ignore — a directory that does not exist
+// yet is zero bytes, not a failure.
+//
+// The apparent size, not the blocks allocated. A filesystem that reserves
+// space ahead of a growing file — XFS does, in doubling steps — made a live
+// download read "96% (52.0 GB of 53.9 GB)" while its first 27.8 GB part was
+// still arriving, then fall back to 87% when the file closed and the
+// reservation was trimmed. The bytes written are what has arrived.
+func (r *Runtime) WeightsOnDisk(ctx context.Context, sess runtime.Session) (uint64, error) {
+	out, err := sess.Run(ctx, "du -sb "+shellQuote(ModelDir)+" 2>/dev/null | cut -f1")
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
+}
+
+var _ runtime.WeightsProgressor = (*Runtime)(nil)
 
 // freeSpaceCmd reports, in KiB, what is free where the weights land and what
 // is already there. One round trip, and `df -P` so the column layout is fixed.

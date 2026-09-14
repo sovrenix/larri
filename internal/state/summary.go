@@ -66,7 +66,7 @@ func Summarise(r *core.Rig, entries []Entry, now time.Time) Summary {
 		Model: r.Model.Ref, Quantization: r.Model.Quantization,
 		Served: r.Model.ServedName, Runtime: r.Runtime,
 		CreatedAt: r.CreatedAt, End: r.End,
-		Cost: CostFor(entries, r.ID, now),
+		Cost: CostForRig(entries, r, now),
 	}
 	if r.Instance != nil {
 		s.Instance = r.Instance.InstanceID

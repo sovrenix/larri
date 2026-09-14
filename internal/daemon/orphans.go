@@ -28,7 +28,7 @@ type Orphan struct {
 // process killed before it could clean up. A bare instance ID would leave the
 // operator guessing whether it is theirs and what it was doing.
 func (o Orphan) Describe() string {
-	s := fmt.Sprintf("%s  %s  $%.4f/hr", o.Instance.InstanceID, o.Instance.Status, o.Instance.PriceHr)
+	s := fmt.Sprintf("%s  %s  %s  $%.4f/hr", o.Instance.Provider, o.Instance.InstanceID, o.Instance.Status, o.Instance.PriceHr)
 	if !o.Instance.Running {
 		// STOPPED is the trap: the GPU is released, the meter looks stopped,
 		// and storage keeps billing until the resource is destroyed (§12.4).
@@ -114,6 +114,18 @@ func (o *Orchestrator) Orphans(ctx context.Context) ([]Orphan, error) {
 // a stopped container satisfies neither the claim nor the operator's bill
 // (FR-DEL-03).
 func (o *Orchestrator) DestroyOrphan(ctx context.Context, instanceID string) error {
+	// Asked of this provider first. Another provider answers "not found" for
+	// an instance it never held, and not found is what confirmed absence
+	// looks like: an id sent to the wrong one was reported destroyed while
+	// it went on billing where it actually was.
+	inst, err := o.Provider.Get(ctx, instanceID)
+	if err != nil {
+		return err
+	}
+	if inst == nil {
+		return errs.Newf(errs.ClassModelFailure, "daemon.DestroyOrphan",
+			"instance %s is not at %s: nothing destroyed", instanceID, o.Provider.Name())
+	}
 	o.emit("orphans", "destroying %s", instanceID)
 	if err := o.Provider.Destroy(ctx, instanceID); err != nil {
 		o.warn("orphans", "destroy call failed: %v", err)
@@ -170,7 +182,7 @@ func (o *Orchestrator) recordReaped(orph Orphan) {
 			"instance": orph.Instance.InstanceID,
 			"reason":   orph.Reason,
 		},
-		Cost: state.CostFor(entries, rig.ID, time.Now().UTC()),
+		Cost: state.CostForRig(entries, rig, time.Now().UTC()),
 	}
 	_ = o.Store.Transition(rig, core.StateDestroyed, "orphan sweep")
 }

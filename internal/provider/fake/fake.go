@@ -17,6 +17,7 @@ package fake
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +50,11 @@ type Behaviour struct {
 	// TransientFailures is the number of times each mutating call fails with
 	// a retryable error before succeeding.
 	TransientFailures int
+
+	// CreateRefusedOutright reproduces a create the client never sent — a
+	// missing API key is the case that happened — so nothing can exist at the
+	// provider afterwards and the rig can be closed on the spot.
+	CreateRefusedOutright bool
 
 	// CreateRefused reproduces a provider that places pods itself and has
 	// nothing to place: the create fails host-attributably and no instance
@@ -170,6 +176,10 @@ func (p *Provider) Create(ctx context.Context, o core.Offer, spec provider.Creat
 	p.record("Create")
 	if err := p.gate("Create"); err != nil {
 		return nil, err
+	}
+	if p.behaviour.CreateRefusedOutright {
+		return nil, provider.NotSent(errs.Newf(errs.ClassModelFailure, p.name+".Create",
+			"set %s_API_KEY: renting needs a key, searching does not", strings.ToUpper(p.name)))
 	}
 	if p.behaviour.CreateRefused {
 		return nil, errs.Newf(errs.ClassHostFailure, p.name+".Create",

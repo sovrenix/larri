@@ -35,6 +35,9 @@ func (s *stubAPI) handler(t *testing.T) http.HandlerFunc {
 		case strings.HasSuffix(path, "/graphql"):
 			w.Write([]byte(catalogueJSON))
 
+		case path == schemaPath:
+			w.Write([]byte(schemaJSON(catalogueTypes...)))
+
 		case path == "/pods" && r.Method == http.MethodPost:
 			var body createRequest
 			_ = json.NewDecoder(r.Body).Decode(&body)
@@ -217,14 +220,22 @@ func TestRunpodCatalogueLive(t *testing.T) {
 	// only way to miss one is the query guard. Nothing purchasable may exceed
 	// it: that would be a market LARRI cannot see, renting four cards where
 	// six would have fitted.
+	// The create call's own list of what it accepts. It is read on every
+	// search; a schema that cannot be read here is drift, not a skip,
+	// because without it the catalogue offers types no create will place.
+	rentable, err := p.c.rentableTypes(context.Background())
+	if err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
 	for _, g := range sizes.GPUTypes {
-		if purchasable(g.ID) && g.MaxGPUCount > sizeGuard {
+		if rentable[g.ID] && g.MaxGPUCount > sizeGuard {
 			t.Errorf("%s places up to %d cards, past the %d-size query guard",
 				g.ID, g.MaxGPUCount, sizeGuard)
 		}
 	}
-	counts := p.priceCounts(context.Background())
-	if got, want := counts[len(counts)-1], sizeCeiling(sizes.GPUTypes); got != want {
+	isRentable := func(id string) bool { return rentable[id] }
+	counts := p.priceCounts(context.Background(), p.rentableCheck(context.Background()))
+	if got, want := counts[len(counts)-1], sizeCeiling(sizes.GPUTypes, isRentable); got != want {
 		t.Errorf("pricing up to %d cards; the catalogue places up to %d", got, want)
 	}
 	t.Logf("pricing %d sizes, the largest a purchasable type places", len(counts))
@@ -263,11 +274,12 @@ func TestRunpodCatalogueLive(t *testing.T) {
 	}
 	for _, o := range offers {
 		// Every offered id must be one POST /pods accepts. The two APIs are
-		// not kept in sync — the catalogue advertises a literal "unknown" and
-		// MIG partitions the create enum lacks — and an offer that cannot be
-		// bought is one selection will choose and then fail on.
-		if !purchasable(gpuTypeID(o.OfferID)) {
-			t.Errorf("offer id %q is not purchasable", o.OfferID)
+		// not kept in sync — the catalogue advertises a literal "unknown",
+		// MIG partitions and a server edition the create enum lacks — and an
+		// offer that cannot be bought is one selection will choose and then
+		// fail on.
+		if !rentable[gpuTypeID(o.OfferID)] {
+			t.Errorf("offer id %q is not in the create schema's gpuTypeIds", o.OfferID)
 		}
 		if o.GPUCount < 1 {
 			t.Errorf("offer %s carries no card count; the aggregate VRAM the fit "+

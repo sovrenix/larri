@@ -6,12 +6,15 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
+	"go.sovrenix.com/larri/internal/provider"
+	pfake "go.sovrenix.com/larri/internal/provider/fake"
 	"go.sovrenix.com/larri/internal/state"
 )
 
@@ -67,7 +70,7 @@ func TestEveryConsequentialToolStatesTheCost(t *testing.T) {
 	r := NewRegistry()
 	if err := Register(r, Deps{
 		Store:           st,
-		NewOrchestrator: func(string) (*daemon.Orchestrator, error) { return nil, nil },
+		NewOrchestrator: func(string, string, core.ModelSpec) (*daemon.Orchestrator, error) { return nil, nil },
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +98,7 @@ func TestReadOnlyToolsAreNotConsequential(t *testing.T) {
 	defer st.Close()
 	r := NewRegistry()
 	if err := Register(r, Deps{Store: st,
-		NewOrchestrator: func(string) (*daemon.Orchestrator, error) { return nil, nil }}); err != nil {
+		NewOrchestrator: func(string, string, core.ModelSpec) (*daemon.Orchestrator, error) { return nil, nil }}); err != nil {
 		t.Fatal(err)
 	}
 	readOnly := map[string]bool{
@@ -120,7 +123,7 @@ func TestUpRefusesWhileARigIsBilling(t *testing.T) {
 	defer st.Close()
 
 	rig := newRig(t, st)
-	d := Deps{Store: st, NewOrchestrator: func(string) (*daemon.Orchestrator, error) {
+	d := Deps{Store: st, NewOrchestrator: func(string, string, core.ModelSpec) (*daemon.Orchestrator, error) {
 		t.Fatal("an orchestrator was built before the billing check")
 		return nil, nil
 	}}
@@ -144,4 +147,110 @@ func newRig(t *testing.T, st *state.Store) *core.Rig {
 		t.Fatal(err)
 	}
 	return rig
+}
+
+// larri_down tears a rig down through the provider holding it. The MCP server
+// opened the configured default for every call, and a provider that never
+// held an instance answers "not found" — which teardown reads as confirmed
+// absence of a machine still billing on the other one.
+func TestDownAsksForTheRigsOwnProvider(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	rig := newRig(t, st)
+	rig.Offer.Provider = "runpod"
+	if err := st.Save(rig); err != nil {
+		t.Fatal(err)
+	}
+	var asked string
+	d := Deps{Store: st, NewOrchestrator: func(_, prov string, _ core.ModelSpec) (*daemon.Orchestrator, error) {
+		asked = prov
+		return nil, errors.New("stop here")
+	}}
+	_, _ = d.down(context.Background(), json.RawMessage(`{"rig":"`+rig.ID+`"}`))
+	if asked != "runpod" {
+		t.Errorf("orchestrator built for provider %q; the rig is on runpod", asked)
+	}
+}
+
+// The engine is chosen from the model when the agent names none, as the CLI
+// chooses it. The factory used to be handed nothing, so a named .gguf file or
+// a Q4_K_M request was planned and rented on vLLM, which loads neither.
+func TestTheEngineIsChosenFromTheModelTheAgentNamed(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var got core.ModelSpec
+	d := Deps{Store: st, NewOrchestrator: func(_, _ string, model core.ModelSpec) (*daemon.Orchestrator, error) {
+		got = model
+		return nil, errors.New("stop here")
+	}}
+	raw := json.RawMessage(`{"model":"unsloth/Qwen3-8B-GGUF/Qwen3-8B-Q8_0.gguf","quantization":"Q8_0"}`)
+	for name, call := range map[string]func(context.Context, json.RawMessage) (any, error){
+		"larri_plan": d.plan, "larri_search_offers": d.searchOffers,
+	} {
+		got = core.ModelSpec{}
+		_, _ = call(context.Background(), raw)
+		if got.Ref != "unsloth/Qwen3-8B-GGUF/Qwen3-8B-Q8_0.gguf" || got.Quantization != "Q8_0" {
+			t.Errorf("%s built its orchestrator from %+v, not the model asked for", name, got)
+		}
+	}
+}
+
+// An orphan is something LARRI lost track of, so the provider holding it is
+// not known in advance. Listing only the default hid a RunPod pod on a machine
+// configured for Vast; destroying by id alone sent it to the wrong provider.
+func TestOrphansAreFoundAndDestroyedAtTheProviderHoldingThem(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	held := pfake.New("runpod", nil, pfake.Behaviour{})
+	lost, err := held.Create(context.Background(), core.Offer{OfferID: "o", PriceHr: 0.5},
+		provider.CreateSpec{Label: core.LabelKey + ":lost-rig"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakes := map[string]*pfake.Provider{
+		"vastai": pfake.New("vastai", nil, pfake.Behaviour{Unreachable: true}),
+		"runpod": held,
+	}
+	var built []string
+	d := Deps{
+		Store:     st,
+		Providers: func() []string { return []string{"vastai", "runpod"} },
+		NewOrchestrator: func(_, prov string, _ core.ModelSpec) (*daemon.Orchestrator, error) {
+			built = append(built, prov)
+			return &daemon.Orchestrator{Store: st, Provider: fakes[prov]}, nil
+		},
+	}
+	out, err := d.orphans(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := out.(map[string]any)
+	rows := res["orphans"].([]map[string]any)
+	if len(rows) != 1 || rows[0]["provider"] != "runpod" || rows[0]["instance_id"] != lost.InstanceID {
+		t.Errorf("orphans = %v; the pod on the second provider must be listed with its provider", rows)
+	}
+	if _, ok := res["not_checked"].(map[string]string)["vastai"]; !ok {
+		t.Errorf("not_checked = %v; an unreachable provider is reported, not read as empty", res["not_checked"])
+	}
+
+	if _, err := d.orphanDestroy(context.Background(), json.RawMessage(`{"instance_id":"`+lost.InstanceID+`"}`)); err == nil {
+		t.Error("destroyed an orphan without being told which provider holds it")
+	}
+	built = nil
+	if _, err := d.orphanDestroy(context.Background(),
+		json.RawMessage(`{"instance_id":"`+lost.InstanceID+`","provider":"runpod"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if len(built) != 1 || built[0] != "runpod" || held.Count() != 0 {
+		t.Errorf("destroy went through %v; want runpod, and the pod gone", built)
+	}
 }

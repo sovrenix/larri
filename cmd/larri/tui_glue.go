@@ -58,7 +58,7 @@ func sampleInto(ctx context.Context, prog *term.Program, o *daemon.Orchestrator,
 		}
 		act := live.Activity()
 		msg := tui.StatsMsg{
-			Accrued: state.CostFor(entries, live.Rig.ID, now),
+			Accrued: state.CostForRig(entries, live.Rig, now),
 			Healthy: live.Rig.State == core.StateReady,
 		}
 		if act != nil {

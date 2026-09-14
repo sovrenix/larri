@@ -545,8 +545,10 @@ func (r *Runtime) SetHuggingFaceEndpoint(endpoint string) { r.hfEndpoint = endpo
 //
 // So every plausible root is measured and the largest wins. They nest, so
 // summing would double-count. On RunPod /root/.cache/huggingface is a link
-// onto the sized volume, made by the start script; measuring the path follows
-// it, so nothing here changes.
+// onto the sized volume, made by the start script, and du does not follow a
+// link it is handed — it measures the link. A live run reported "2 MB of
+// 2.9 GB (0%)" for the whole download. The trailing slash in WeightsOnDisk is
+// what makes du measure the directory the link points at.
 var weightsCacheRoots = []string{
 	"$HF_HOME", "$HF_HUB_CACHE", "$HOME/.cache/huggingface",
 	"/root/.cache/huggingface", "/vllm-workspace",
@@ -563,7 +565,7 @@ func (r *Runtime) WeightsOnDisk(ctx context.Context, sess runtime.Session) (uint
 	for _, root := range weightsCacheRoots {
 		// Unset variables expand to nothing, and du of nothing is an error
 		// the guard swallows, so an absent root simply contributes no line.
-		fmt.Fprintf(&b, `[ -n "%s" ] && [ -d "%s" ] && du -sb "%s" 2>/dev/null | cut -f1; `,
+		fmt.Fprintf(&b, `[ -n "%s" ] && [ -d "%s" ] && du -sb "%s/" 2>/dev/null | cut -f1; `,
 			root, root, root)
 	}
 	out, err := sess.Run(ctx, b.String()+"true")

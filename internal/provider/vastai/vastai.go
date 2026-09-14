@@ -123,6 +123,10 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 	if c.DiskGB > 0 {
 		d := float64(c.DiskGB)
 		req.DiskSpace = &floatFilter{Gte: &d}
+		// Quote the disk being rented. dph_total includes storage, and the
+		// instance bills it for the whole allocation, so a quote for any
+		// other size is a price no rig is charged (invariant 4).
+		req.AllocatedStorage = &d
 	}
 	if c.CPUCores > 0 {
 		req.CPUCores = &intFilter{Gte: &c.CPUCores}

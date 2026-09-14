@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -166,9 +167,9 @@ func TestListIncludesStoppedInstances(t *testing.T) {
 			t.Errorf("List must not filter by status, got select_filters=%s", q)
 		}
 		fmt.Fprint(w, `{"success":true,"next_token":null,"instances":[
-		  {"id":1,"actual_status":"running","dph_total":1.0,"storage_cost":0.02},
-		  {"id":2,"actual_status":"exited","dph_total":1.0,"storage_cost":0.02},
-		  {"id":3,"actual_status":"offline","dph_total":1.0,"storage_cost":0.02}
+		  {"id":1,"actual_status":"running","dph_total":1.0,"storage_cost":0.2,"disk_space":60},
+		  {"id":2,"actual_status":"exited","dph_total":1.0,"storage_cost":0.2,"disk_space":60},
+		  {"id":3,"actual_status":"offline","dph_total":1.0,"storage_cost":0.2,"disk_space":60}
 		]}`)
 	})
 	got, err := p.List(context.Background())
@@ -501,5 +502,43 @@ func TestOrdinaryErrorsAreLeftAlone(t *testing.T) {
 	body := `{"success":false,"error":"no such instance","msg":"instance 48429759 not found"}`
 	if got := c.redactBody([]byte(body)); got != body {
 		t.Errorf("an innocent body was mangled:\n  in:  %s\n  out: %s", body, got)
+	}
+}
+
+// storage_cost is dollars per gigabyte per month — the Vast CLI labels the
+// column "$/Gb/Month" — and was read as dollars an hour, adding $0.20/hr to
+// every rig. The hourly figure is the allocation at a thirty-day month, the
+// same arithmetic Vast's own storage_total_cost uses.
+func TestStorageIsConvertedFromAMonthlyRatePerGigabyte(t *testing.T) {
+	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"success":true,"next_token":null,"instances":[
+		  {"id":1,"actual_status":"running","dph_total":0.8212,"storage_cost":0.2,"disk_space":77}
+		]}`)
+	})
+	got, err := p.List(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("list: %v %v", got, err)
+	}
+	if want := 0.2 * 77 / 720; math.Abs(got[0].StorageHr-want) > 1e-9 {
+		t.Errorf("StorageHr = %.5f, want %.5f ($0.20/GB/month over 77 GB)", got[0].StorageHr, want)
+	}
+	// dph_total already includes that storage; it is the rate while running.
+	if got[0].PriceHr != 0.8212 {
+		t.Errorf("PriceHr = %v, want dph_total", got[0].PriceHr)
+	}
+}
+
+// The quote must be for the disk being rented. Vast prices eight gigabytes
+// when not told otherwise, and a 2× CMP 170HX quoted at $0.802/hr billed
+// $0.821/hr on its 77 GB disk — the difference is exactly the storage.
+func TestSearchQuotesTheDiskBeingRented(t *testing.T) {
+	var body map[string]any
+	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		fmt.Fprint(w, `{"offers":[]}`)
+	})
+	_, _ = p.Search(context.Background(), core.Criteria{DiskGB: 77})
+	if got, ok := body["allocated_storage"].(float64); !ok || got != 77 {
+		t.Errorf("allocated_storage = %v, want 77", body["allocated_storage"])
 	}
 }

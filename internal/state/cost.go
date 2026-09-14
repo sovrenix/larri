@@ -9,6 +9,16 @@ import (
 	"go.sovrenix.com/larri/internal/core"
 )
 
+// legacyDiskGB and hoursPerMonth read the storage figure in entries written
+// before RatesBilled: Vast's per-gigabyte-month price, over the smallest disk
+// any rental of that period had. The disk itself was never journalled, and
+// the floor understates a larger one by cents rather than overstating every
+// rig by the $0.20/hr the raw figure read as.
+const (
+	legacyDiskGB  = 60
+	hoursPerMonth = 720
+)
+
 // Cost reconstructs what a rig spent, from the journal alone.
 //
 // Derived rather than counted, and that is deliberate (FR-STATE-03). A running
@@ -23,6 +33,12 @@ import (
 // and real storage, and a summary that folded them together would report that
 // day as free.
 func Cost(entries []Entry, now time.Time) core.CostSummary {
+	return cost(entries, now, 0)
+}
+
+// cost replays entries. billedHr, when known, is the rate the provider billed
+// the rig, and replaces the quote in entries written before RatesBilled.
+func cost(entries []Entry, now time.Time, billedHr float64) core.CostSummary {
 	var (
 		sum       core.CostSummary
 		state     core.LifecycleState
@@ -32,6 +48,13 @@ func Cost(entries []Entry, now time.Time) core.CostSummary {
 		firstAt   time.Time
 		readyAt   time.Time
 		haveState bool
+
+		// confirmedAbsent records that a termination stated, as evidence,
+		// that the provider held nothing carrying this rig's label.
+		confirmedAbsent bool
+
+		// legacy is whether the latest rates were written before RatesBilled.
+		legacy bool
 	)
 
 	accrue := func(until time.Time) {
@@ -39,10 +62,26 @@ func Cost(entries []Entry, now time.Time) core.CostSummary {
 			return
 		}
 		hours := until.Sub(since).Hours()
-		if computeBilling(state) {
-			sum.ComputeUSD += hours * priceHr
+		// Old rules, where the snapshot kept no billed rate: the quote for
+		// compute and storage on top of it wherever storage bills.
+		if legacy && billedHr == 0 {
+			if computeBilling(state) {
+				sum.ComputeUSD += hours * priceHr
+			}
+			if storageBilling(state) {
+				sum.StorageUSD += hours * storageHr
+			}
+			return
 		}
-		if storageBilling(state) {
+		// PriceHr is everything a running machine bills, disk included, and
+		// StorageHr is what it bills stopped. They are separate rates, not a
+		// whole and its part: RunPod charges a stopped volume twice what a
+		// running one costs, so subtracting one from the other misstated the
+		// split and, on a large enough volume, the total.
+		switch {
+		case computeBilling(state):
+			sum.ComputeUSD += hours * priceHr
+		case storageBilling(state):
 			sum.StorageUSD += hours * storageHr
 		}
 	}
@@ -51,15 +90,35 @@ func Cost(entries []Entry, now time.Time) core.CostSummary {
 		if firstAt.IsZero() {
 			firstAt = e.At
 		}
+		if e.Termination != nil && e.Termination.Evidence[core.EvidenceNothingCreated] != "" {
+			confirmedAbsent = true
+		}
 		accrue(e.At)
 
+		// Nothing follows the end of a rig. A process holding a stale copy
+		// once journalled DEGRADED after another had journalled DESTROYED,
+		// and replaying that entry billed a pod that no longer existed.
+		ended := haveState && state == core.StateDestroyed
+		if ended && e.To != core.StateDestroyed {
+			continue
+		}
+		legacy = e.Rates != RatesBilled
 		if e.PriceHr > 0 {
 			priceHr = e.PriceHr
+			if legacy && billedHr > 0 {
+				priceHr = billedHr
+			}
 		}
 		if e.StorageHr > 0 {
 			storageHr = e.StorageHr
+			if legacy {
+				storageHr = e.StorageHr * legacyDiskGB / hoursPerMonth
+			}
 		}
-		state, since, haveState = e.To, e.At, true
+		state, haveState = e.To, true
+		if !ended {
+			since = e.At // a later record of the same end does not move it
+		}
 
 		if e.To == core.StateReady && readyAt.IsZero() {
 			readyAt = e.At
@@ -69,7 +128,7 @@ func Cost(entries []Entry, now time.Time) core.CostSummary {
 			sum.BootUSD = sum.ComputeUSD + sum.StorageUSD
 			sum.ReachedReady = true
 		}
-		if e.Termination != nil {
+		if e.Termination != nil && !ended {
 			sum.Ran = e.At.Sub(firstAt)
 		}
 	}
@@ -80,6 +139,25 @@ func Cost(entries []Entry, now time.Time) core.CostSummary {
 		sum.Ran = now.Sub(firstAt)
 	} else if sum.Ran == 0 && !firstAt.IsZero() && !since.IsZero() {
 		sum.Ran = since.Sub(firstAt)
+	}
+
+	// A rig whose teardown recorded that nothing was ever created never
+	// billed, whatever states it passed through. FAILED counts as billing on
+	// purpose — a create that fails may still have created something — but
+	// that is an assumption awaiting evidence, and this is the evidence
+	// arriving: LARRI asked the provider and nothing carried the rig's label.
+	//
+	// Keyed on what a termination recorded, never on a missing instance id.
+	// Inferring absence from a blank field would zero real rigs whose journal
+	// happens not to name a machine, and understating money is the one
+	// direction this package must not fail in.
+	//
+	// Without it the assumption outlived its purpose: a create refused for a
+	// missing API key left a rig accruing $1.39/hr against a machine that
+	// never existed, and `larri status` still reported the total four days
+	// later, by then $111.
+	if confirmedAbsent {
+		sum.ComputeUSD, sum.StorageUSD, sum.BootUSD = 0, 0, 0
 	}
 
 	sum.PriceHr = priceHr
@@ -118,4 +196,20 @@ func storageBilling(s core.LifecycleState) bool {
 // CostFor reconstructs one rig's cost from a full journal.
 func CostFor(entries []Entry, rigID string, now time.Time) core.CostSummary {
 	return Cost(EntriesFor(entries, rigID), now)
+}
+
+// CostForRig is CostFor with what the rig's snapshot knows and old journal
+// entries do not: the rate the provider billed.
+//
+// Entries written before RatesBilled carry the quote, and the quote was not
+// the bill — a RunPod pod quoted at $2.78/hr billed $3.18/hr, and its record
+// read $2.69 against the $3.10 RunPod's own billing history shows. The
+// snapshot kept the billed rate all along, storage included, so an old entry
+// read with it follows the current rules.
+func CostForRig(entries []Entry, rig *core.Rig, now time.Time) core.CostSummary {
+	var billed float64
+	if rig.Instance != nil {
+		billed = rig.Instance.PriceHr
+	}
+	return cost(EntriesFor(entries, rig.ID), now, billed)
 }

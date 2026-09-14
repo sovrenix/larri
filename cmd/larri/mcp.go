@@ -66,10 +66,23 @@ func cmdMCP(ctx context.Context, args []string) error {
 	// what lets larri_up serve a model rather than merely provision one.
 	sess := &tools.Session{}
 	deps := tools.Deps{
-		Store:           st,
-		Session:         sess,
-		HFToken:         secret.New(os.Getenv("HF_TOKEN")),
-		NewOrchestrator: func(kind string) (*daemon.Orchestrator, error) { return newOrchestrator(st, kind, events) },
+		Store:   st,
+		Session: sess,
+		HFToken: secret.New(os.Getenv("HF_TOKEN")),
+		NewOrchestrator: func(kind, prov string, model core.ModelSpec) (*daemon.Orchestrator, error) {
+			return newOrchestrator(st, kind, prov, model, events)
+		},
+		Providers: func() []string {
+			provs, err := providersToSweep("")
+			if err != nil {
+				return []string{""}
+			}
+			names := make([]string, len(provs))
+			for i, p := range provs {
+				names[i] = p.Name()
+			}
+			return names
+		},
 	}
 	reg := tools.NewRegistry()
 	if err := tools.Register(reg, deps); err != nil {
@@ -95,10 +108,10 @@ func cmdMCP(ctx context.Context, args []string) error {
 }
 
 // newOrchestrator builds one configured from the environment.
-func newOrchestrator(st *state.Store, runtimeKind string, events chan<- daemon.Event) (*daemon.Orchestrator, error) {
-	prov, err := openProvider("")
+func newOrchestrator(st *state.Store, runtimeKind, providerName string, model core.ModelSpec, events chan<- daemon.Event) (*daemon.Orchestrator, error) {
+	prov, err := openProvider(providerName)
 	if err != nil {
-		return nil, errors.New("VASTAI_API_KEY is not set")
+		return nil, err
 	}
 	labelKey, _, err := config.ResolveLabelKey(os.Getenv, os.ReadFile)
 	if err != nil {
@@ -108,7 +121,7 @@ func newOrchestrator(st *state.Store, runtimeKind string, events chan<- daemon.E
 	if err != nil {
 		return nil, err
 	}
-	eng, err := pickRuntime(runtimeKind, core.ModelSpec{})
+	eng, err := pickRuntime(runtimeKind, model)
 	if err != nil {
 		return nil, err
 	}

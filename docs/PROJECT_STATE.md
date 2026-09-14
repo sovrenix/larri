@@ -25,19 +25,19 @@ and "shown to work" are different claims and are recorded as such.
 | Area | Reqs | ✅ live | ☑️ done | 🟡 part | ⬜ plan | Complete |
 |---|---:|---:|---:|---:|---:|---:|
 | Criteria | 6 | 3 | 3 | 0 | 0 | **100%** |
-| Provisioning | 9 | 8 | 1 | 0 | 0 | **100%** |
+| Provisioning | 11 | 10 | 1 | 0 | 0 | **100%** |
 | State | 5 | 4 | 1 | 0 | 0 | **100%** |
 | Search & selection | 14 | 10 | 3 | 0 | 1 | **93%** |
-| Runtimes | 21 | 16 | 3 | 2 | 0 | 90% |
+| Runtimes | 22 | 17 | 2 | 3 | 0 | 86% |
 | Non-functional | 12 | 6 | 4 | 1 | 1 | 83% |
 | Configuration | 10 | 0 | 8 | 1 | 1 | 80% |
-| Teardown & cost safety | 11 | 3 | 5 | 3 | 0 | 73% |
+| Teardown & cost safety | 14 | 5 | 6 | 3 | 0 | 79% |
 | Supervision | 18 | 7 | 6 | 4 | 1 | 72% |
 | Security | 31 | 13 | 7 | 2 | 9 | 65% |
 | Surfaces | 13 | 1 | 2 | 3 | 7 | 23% |
 | Endpoint & client wiring | 14 | 3 | 0 | 1 | 10 | 21% |
 | Observability | 10 | 0 | 1 | 0 | 9 | 10% |
-| **Total** | **174** | **74** | **44** | **17** | **39** | **68%** |
+| **Total** | **180** | **79** | **44** | **18** | **39** | **68%** |
 
 Sixty-eight per cent of requirements are implemented, and **the lifecycle is the part
 that is done.** Criteria, provisioning and state are at 100%; search, selection and the
@@ -105,6 +105,7 @@ Seventeen requirements are partly met. The gap for each:
 
 | ID | Gap |
 |---|---|
+| FR-RT-06 | vLLM and llama.cpp both report weight-download percentage; Ollama reports phases only, so an `ollama pull` still shows no proportion of the download done. |
 | FR-RT-10 | The parser is now derived from the model family and both vLLM flags are set, so tool calling works unasked. **Refusing** a rig when tool calling is *required* and no parser exists is still not enforced. |
 | FR-RT-11 | The runtime image is pinned by digest and the hardware floors are derived from it (`make refresh-image`). The images are still **stock upstream**, not project-maintained and pre-baked, so bring-up still discovers the launcher at runtime. |
 | FR-SUP-03 | Fallback picks the next-ranked offer without comparing its price to the original, so a silent upgrade is possible. |

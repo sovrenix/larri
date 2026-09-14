@@ -838,7 +838,7 @@ func TestSizesFollowTheCatalogue(t *testing.T) {
 				{ID: "NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb", MaxGPUCount: 32}}, 4},
 		"an empty answer keeps the known ladder": {nil, defaultSizes},
 	} {
-		if got := sizeCeiling(c.types); got != c.want {
+		if got := sizeCeiling(c.types, purchasable); got != c.want {
 			t.Errorf("%s: ceiling %d, want %d", name, got, c.want)
 		}
 	}

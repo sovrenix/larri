@@ -4,6 +4,7 @@
 package state
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -265,5 +266,156 @@ func TestListIsNewestFirst(t *testing.T) {
 	}
 	if got[0].ID != ids[2] {
 		t.Error("List must return newest first")
+	}
+}
+
+// The journal is what cost is replayed from, so it has to carry the rate the
+// provider bills. It carried the quote, and `larri status` showed $0.821/hr
+// beside a total accrued at $0.802.
+func TestTheJournalRecordsTheBilledRate(t *testing.T) {
+	s := openStore(t)
+	rig := newRig(t)
+	if err := s.Transition(rig, core.StateCreating, "create intent"); err != nil {
+		t.Fatal(err)
+	}
+	rig.Instance = &core.Instance{Provider: "vastai", InstanceID: "1", PriceHr: 1.31, StorageHr: 0.02}
+	if err := s.Transition(rig, core.StateReady, "ready"); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := s.Entries()
+	e := EntriesFor(entries, rig.ID)
+	if len(e) != 2 {
+		t.Fatalf("entries = %d", len(e))
+	}
+	if e[0].PriceHr != 1.29 {
+		t.Errorf("before an instance reports a rate, the quote is all there is: got %v", e[0].PriceHr)
+	}
+	if e[1].Rates != RatesBilled {
+		t.Errorf("entry written without the rates marker; replay would read it by the old rules")
+	}
+	if e[1].PriceHr != 1.31 || e[1].StorageHr != 0.02 {
+		t.Errorf("journalled %v/hr with %v storage, want the billed 1.31 and 0.02", e[1].PriceHr, e[1].StorageHr)
+	}
+}
+
+// Two processes can hold one rig. The one with a stale copy must not undo
+// the other's teardown.
+func TestADestroyedRigCannotBeMovedBackToALiveState(t *testing.T) {
+	s := openStore(t)
+	rig := newRig(t)
+	if err := s.Transition(rig, core.StateReady, "ready"); err != nil {
+		t.Fatal(err)
+	}
+	stale := *rig
+	if err := s.Transition(rig, core.StateDestroyed, "down"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transition(&stale, core.StateDegraded, "health probes failing"); err == nil {
+		t.Fatal("a stale copy moved a destroyed rig to DEGRADED")
+	}
+	if got, _ := s.Load(rig.ID); got.State != core.StateDestroyed {
+		t.Errorf("stored state = %s", got.State)
+	}
+}
+
+// A second teardown from a stale copy must not replace the reason the first
+// recorded. A rig already destroyed in the caller's own copy may be recorded
+// again, which is how an operator's correction lands.
+func TestAStaleSecondTeardownKeepsTheFirstRecord(t *testing.T) {
+	s := openStore(t)
+	rig := newRig(t)
+	if err := s.Transition(rig, core.StateReady, "ready"); err != nil {
+		t.Fatal(err)
+	}
+	stale := *rig
+	rig.End = &core.Termination{Actor: core.ActorPolicy, Code: core.ReasonIdleTimeout, Summary: "idle"}
+	if err := s.Transition(rig, core.StateDestroyed, "idle"); err != nil {
+		t.Fatal(err)
+	}
+	stale.End = &core.Termination{Actor: core.ActorOperator, Code: core.ReasonOperatorRequest, Summary: "down"}
+	if err := s.Transition(&stale, core.StateDestroyed, "down"); !errors.Is(err, ErrAlreadyDestroyed) {
+		t.Fatalf("err = %v, want ErrAlreadyDestroyed", err)
+	}
+	if got, _ := s.Load(rig.ID); got.End.Code != core.ReasonIdleTimeout {
+		t.Errorf("ending = %s; the first teardown's record stands", got.End.Code)
+	}
+	// The destroyed copy itself can record a correction.
+	rig.End.Evidence = map[string]string{core.EvidenceNothingCreated: "operator: checked"}
+	if err := s.Transition(rig, core.StateDestroyed, "correction"); err != nil {
+		t.Errorf("a correction to a destroyed rig was refused: %v", err)
+	}
+}
+
+// A rig file that cannot be read cannot show the rig is not destroyed, so
+// only teardown proceeds past it.
+func TestAnUnreadableRigFileFailsClosedExceptForTeardown(t *testing.T) {
+	s := openStore(t)
+	rig := newRig(t)
+	if err := s.Transition(rig, core.StateReady, "ready"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.rigPath(rig.ID), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transition(rig, core.StateDegraded, "probes failing"); err == nil {
+		t.Error("moved a rig whose record could not be read")
+	}
+	if err := s.Transition(rig, core.StateDestroyed, "down"); err != nil {
+		t.Errorf("teardown was blocked by an unreadable file: %v", err)
+	}
+}
+
+// Serving and adoption write the snapshot directly. A bring-up that saved its
+// endpoint after `larri down` in another terminal had finished wrote a live
+// state back over DESTROYED.
+func TestAStaleSnapshotWriteCannotUndoAnEnding(t *testing.T) {
+	s := openStore(t)
+	rig := newRig(t)
+	if err := s.Transition(rig, core.StateBootstrapping, "bootstrap"); err != nil {
+		t.Fatal(err)
+	}
+	stale := *rig
+	if err := s.Transition(rig, core.StateDestroyed, "down"); err != nil {
+		t.Fatal(err)
+	}
+	stale.HostKeyFingerprint = "SHA256:late"
+	if err := s.Save(&stale); !errors.Is(err, ErrAlreadyDestroyed) {
+		t.Fatalf("err = %v, want ErrAlreadyDestroyed", err)
+	}
+	if got, _ := s.Load(rig.ID); got.State != core.StateDestroyed {
+		t.Errorf("stored state = %s after a stale save", got.State)
+	}
+}
+
+// Checking and then writing is not enough: two processes can both check
+// before either writes. The check has to happen under the same lock as the
+// write, so a writer that was waiting sees what the holder wrote.
+func TestTheDestroyedCheckRunsUnderTheWriteLock(t *testing.T) {
+	s := openStore(t)
+	rig := newRig(t)
+	if err := s.Transition(rig, core.StateReady, "ready"); err != nil {
+		t.Fatal(err)
+	}
+	stale := *rig
+
+	unlock, err := s.lockRig(rig.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() { result <- s.Save(&stale) }()
+	select {
+	case err := <-result:
+		t.Fatalf("a save went ahead while another writer held the rig: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	// The holder ends the rig, as `larri down` in another process would.
+	rig.State = core.StateDestroyed
+	if err := s.write(rig); err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	if err := <-result; !errors.Is(err, ErrAlreadyDestroyed) {
+		t.Errorf("waiting save returned %v; it must see the ending written while it waited", err)
 	}
 }

@@ -354,3 +354,32 @@ func TestStatusSaysWhenNoInstanceIsRecorded(t *testing.T) {
 		t.Errorf("a quote equal to the rate was shown as a difference:\n%s", out)
 	}
 }
+
+func TestServedNameForAFileRefIsTheModelNotTheFile(t *testing.T) {
+	for ref, want := range map[string]string{
+		"Qwen/Qwen3-8B":                            "qwen3-8b",
+		"unsloth/Qwen3-8B-GGUF":                    "qwen3-8b-gguf",
+		"unsloth/Qwen3-8B-GGUF/Qwen3-8B-Q8_0.gguf": "qwen3-8b-q8_0",
+		"unsloth/Llama-3.3-70B-Instruct-GGUF/Q6_K/Llama-3.3-70B-Instruct-Q6_K-00001-of-00002.gguf": "llama-3.3-70b-instruct-q6_k",
+		"llama3.1:70b": "llama3.1:70b",
+	} {
+		if got := servedNameFor(ref); got != want {
+			t.Errorf("servedNameFor(%q) = %q, want %q", ref, got, want)
+		}
+	}
+}
+
+// `larri resume` reconnects with the engine the rig was brought up with. It
+// used vLLM for every rig, and each engine finds its own server process and
+// port, so a llama.cpp or Ollama rig could not be reconnected to.
+func TestAResumedRigGetsItsOwnEngine(t *testing.T) {
+	for _, kind := range []core.RuntimeKind{core.RuntimeLlamaCpp, core.RuntimeOllama, core.RuntimeVLLM} {
+		eng, err := pickRuntime(string(kind), core.ModelSpec{Ref: "org/model"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if eng.Kind() != kind {
+			t.Errorf("rig on %s resumed with %s", kind, eng.Kind())
+		}
+	}
+}

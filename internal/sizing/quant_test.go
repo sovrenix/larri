@@ -48,19 +48,6 @@ func TestKQuantFiguresIncludeBlockOverhead(t *testing.T) {
 	}
 }
 
-func TestIsGGUFSelectsLlamaCpp(t *testing.T) {
-	for _, q := range []string{"q4_K_M", "q8_0", "iq3_xxs"} {
-		if !IsGGUF(q) {
-			t.Errorf("%s should be recognised as a GGUF k-quant", q)
-		}
-	}
-	for _, q := range []string{"fp16", "awq", "gptq-int4", ""} {
-		if IsGGUF(q) {
-			t.Errorf("%s is not a GGUF k-quant", q)
-		}
-	}
-}
-
 func TestKnownQuantizationsIsSortedAndNonEmpty(t *testing.T) {
 	ks := KnownQuantizations()
 	if len(ks) < 10 {

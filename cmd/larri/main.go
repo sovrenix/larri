@@ -384,7 +384,7 @@ func cmdUp(ctx context.Context, args []string) error {
 
 	name := *served
 	if name == "" {
-		name = strings.ToLower(filepath.Base(*model))
+		name = servedNameFor(*model)
 	}
 	events := make(chan daemon.Event, 64)
 	prompts := make(chan cliPrompt)
@@ -427,11 +427,9 @@ func cmdUp(ctx context.Context, args []string) error {
 	if isOllamaRef(*model) {
 		spec.Source = core.SourceOllamaRegistry
 	}
-	// The engine is chosen before the spec is resolved, because which weight
-	// format is wanted is a property of the engine and resolution reads it:
-	// a GGUF lookup for "fp16" finds full precision, which is the one format
-	// the GGUF engines exist to avoid. pickRuntime reads only the reference
-	// and its source, both already set.
+	// The quantisation is left as the operator gave it. The daemon settles
+	// the engine's default while sizing, because a GGUF engine resolves a
+	// file from it and must see the default before it lists the repository.
 	eng, err := pickRuntime(*engine, spec)
 	if err != nil {
 		return err
@@ -444,7 +442,6 @@ func cmdUp(ctx context.Context, args []string) error {
 			fmt.Printf("  ! weights   %s ignores --hf-endpoint\n", eng.Kind())
 		}
 	}
-	spec.Quantization = quantFor(eng, *quant)
 	resolver, err := prepareSpec(ctx, &spec)
 	if err != nil {
 		return err
@@ -571,6 +568,8 @@ func cmdUp(ctx context.Context, args []string) error {
 
 func cmdDown(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("down", flag.ExitOnError)
+	nothingCreated := fs.String("nothing-created", "",
+		"for a destroyed rig no instance was ever recorded for: record that nothing was created, and how you checked")
 	_ = fs.Parse(args)
 
 	st, err := openStore()
@@ -579,18 +578,24 @@ func cmdDown(ctx context.Context, args []string) error {
 	}
 	defer st.Close()
 
-	prov, err := openProvider("")
-	if err != nil {
-		return err
-	}
 	rigs, err := st.List()
 	if err != nil {
 		return err
 	}
+	// A named rig is taken at the operator's word; only the unnamed case
+	// looks for something billing. The two disagreed once and there was no
+	// way out: a rig left reading SELECTED by a failed create was not
+	// billable, so `larri down <id>` answered "nothing billable to tear
+	// down" while `larri status` showed it accruing by the hour, and no
+	// command could clear it.
 	var target *core.Rig
 	want := fs.Arg(0)
 	for _, r := range rigs {
-		if want != "" && r.ID != want {
+		if want != "" {
+			if r.ID == want {
+				target = r
+				break
+			}
 			continue
 		}
 		if r.State.Billable() {
@@ -599,8 +604,25 @@ func cmdDown(ctx context.Context, args []string) error {
 		}
 	}
 	if target == nil {
+		if want != "" {
+			return fmt.Errorf("no rig %s", want)
+		}
 		fmt.Println("  nothing billable to tear down")
 		return nil
+	}
+	if *nothingCreated != "" && want == "" {
+		return errors.New("--nothing-created needs a rig id")
+	}
+	if target.State == core.StateDestroyed && *nothingCreated == "" {
+		fmt.Printf("  rig %s is already destroyed\n", target.ID)
+		return nil
+	}
+	// The rig's own provider, never the configured default. Another one
+	// answers "not found" for an instance it never held, which reads as
+	// confirmed absence of a machine that is still billing.
+	prov, err := openProvider(target.ProviderName())
+	if err != nil {
+		return err
 	}
 	events := make(chan daemon.Event, 32)
 	go func() {
@@ -620,6 +642,13 @@ func cmdDown(ctx context.Context, args []string) error {
 	o := &daemon.Orchestrator{
 		Store: st, Provider: prov,
 		Runtime: vllm.New(), Events: events,
+	}
+	if *nothingCreated != "" {
+		if err := o.RecordNothingCreated(ctx, target, *nothingCreated); err != nil {
+			return err
+		}
+		fmt.Printf("\n  ✓ rig %s recorded as never created — it no longer accrues\n", target.ID)
+		return nil
 	}
 	if err := o.Down(ctx, target, nil); err != nil {
 		return err
@@ -750,10 +779,6 @@ func cmdResume(ctx context.Context, args []string) error {
 	}
 	defer st.Close()
 
-	prov, err := openProvider("")
-	if err != nil {
-		return err
-	}
 	rigs, err := st.List()
 	if err != nil {
 		return err
@@ -773,6 +798,10 @@ func cmdResume(ctx context.Context, args []string) error {
 		fmt.Println("  nothing billable to resume")
 		return nil
 	}
+	prov, err := openProvider(target.ProviderName())
+	if err != nil {
+		return err
+	}
 
 	events := make(chan daemon.Event, 32)
 	go func() {
@@ -789,9 +818,16 @@ func cmdResume(ctx context.Context, args []string) error {
 	}()
 	defer close(events)
 
+	// The engine the rig was brought up with, not vLLM for everything: each
+	// engine finds its own server process and port, and a llama.cpp rig
+	// adopted as vLLM could never be reconnected to.
+	eng, err := pickRuntime(string(target.Runtime), target.Model)
+	if err != nil {
+		return err
+	}
 	o := &daemon.Orchestrator{
 		Store: st, Provider: prov,
-		Runtime: vllm.New(), Events: events,
+		Runtime: eng, Events: events,
 	}
 	live, err := o.Adopt(ctx, target.ID)
 	if err != nil {
