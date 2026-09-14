@@ -111,7 +111,7 @@ bin/larri up --model Qwen/Qwen2.5-1.5B-Instruct             # rents, serves, hol
   <div class="note">
     Two habits worth forming immediately: run <b>--dry-run</b> first, every time —
     it shows the hardware, the wait and the bill without renting anything. And
-    <b>copy the key when it appears</b>: it is minted per bring-up and printed once.
+    <b>copy the key when it appears</b>: it is shown once, and every later rig accepts it.
   </div>
 
   <p class="dim" style="font-size:var(--text-sm);margin:14px 0 0">
@@ -210,14 +210,17 @@ export LARRI_LABEL_KEY=...</code></div>
   an actual generated token.</p>
   <div class="out">  ✓ rig 01M0ZXE8… <b>READY</b>   http://127.0.0.1:8000/v1   model: <i>qwen2.5-1.5b-instruct</i>
     vastai RTX 3060 12GB at $0.047/hr
-    key: <i>fKLtIo4OscEe1W7a0TYJasIlaH6Q0tc530Vi-n5n7Ow</i>
+    key: <i>fKLtIo4OscEe1W7a0TYJasIlaH6Q0tc530Vi-n5n7Ow</i>   (client key "default", created now — shown once)
 
   policy: idle 30m0s → destroy · no budget ceiling
   holding the tunnel — Ctrl-C to tear down and stop paying</div>
   <div class="note">
-    <b>Copy the key now.</b> It is minted per bring-up and printed once;
-    <b>larri status</b> does not repeat it. Leave this terminal open — it is holding
-    the tunnel and supervising the rig.
+    <b>Copy the key now.</b> The first rig creates a client key and shows it once;
+    every later rig accepts the same key, so a client is configured once. LARRI keeps
+    only a hash — a lost key is replaced with <b>larri token create</b>. Leave this
+    terminal open — it is holding the tunnel and supervising the rig. Or add <b>-d</b>:
+    it asks the same question, returns once the rig is serving, and leaves a larri
+    process of its own holding it, which <b>larri status</b> names.
   </div>
 </section>
 
@@ -231,7 +234,7 @@ export LARRI_LABEL_KEY=...</code></div>
   <table>
     <tr><th>Field</th><th>Value</th></tr>
     <tr><td>Base URL</td><td><b>http://127.0.0.1:8000/v1</b></td></tr>
-    <tr><td>API key</td><td>the <b>key:</b> line — changes every bring-up</td></tr>
+    <tr><td>API key</td><td>the <b>key:</b> line — the same on every rig; <b>larri token</b> makes one per client</td></tr>
     <tr><td>Model</td><td>the <b>model:</b> line</td></tr>
   </table>
 
@@ -287,7 +290,7 @@ bin/larri orphans --destroy</code></div>
   <h2>Daily use</h2>
   <table>
     <tr><th>Command</th><th>Does</th></tr>
-    <tr><td><b>larri up</b></td><td>Search, rank, provision, serve, supervise</td></tr>
+    <tr><td><b>larri up</b></td><td>Search, rank, provision, serve, supervise — <b>-d</b> returns once it is serving and leaves a larri process holding the rig</td></tr>
     <tr><td><b>larri status</b></td><td>State, provider, hardware and card count, instance, the billed rate beside the quoted one, accrued cost — and why a past rig ended</td></tr>
     <tr><td><b>larri down</b></td><td>Destroy, confirm absence, report total cost</td></tr>
     <tr><td><b>larri resume</b></td><td>Rebuild the tunnel to a rig that outlived the last process</td></tr>
@@ -297,6 +300,8 @@ bin/larri orphans --destroy</code></div>
     <tr><td><b>larri tui</b></td><td>The same lifecycle under a live dashboard</td></tr>
     <tr><td><b>larri mcp</b></td><td>Hand the lifecycle to Claude Code as MCP tools</td></tr>
     <tr><td><b>larri privacy</b></td><td>What the machine you rent can see, in full</td></tr>
+    <tr><td><b>larri logs</b></td><td>What LARRI wrote while holding a rig started with <b>-d</b>, like docker logs: <b>-f</b> follows, <b>-n 50</b> tails</td></tr>
+    <tr><td><b>larri token</b></td><td>API keys for your clients: create one per client, list them, revoke one</td></tr>
     <tr><td><b>larri label-key</b></td><td>Generate a key that seals provider-side labels</td></tr>
   </table>
 

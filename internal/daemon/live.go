@@ -40,9 +40,18 @@ import (
 // The instance itself was never at risk either way: teardown is a provider API
 // call and has never depended on SSH (FR-SEC-18).
 type Live struct {
-	Rig         *core.Rig
-	Endpoint    string
+	Rig      *core.Rig
+	Endpoint string
+
+	// ClientToken is a key for this rig alone, set only when one was minted
+	// (Orchestrator.OneRigKey, or no stored keys to accept). Empty means
+	// clients use their stored keys.
 	ClientToken secret.Secret
+
+	// probeToken is LARRI's own key for readiness and health probes. Never
+	// shown: a probe needs a key the proxy accepts, and a stored key's value
+	// is not kept anywhere to use.
+	probeToken secret.Secret
 
 	keys    *sshx.KeyPair
 	ssh     *sshx.Client
@@ -50,12 +59,38 @@ type Live struct {
 	forward *sshx.Forward
 	proxy   *wire.Proxy
 	cancel  context.CancelFunc
+	release func() // gives up holding the rig
 }
 
-// Close releases the tunnel and proxy. It does not destroy the instance —
-// that is Down's job, and conflating them would make a dropped connection look
-// like a teardown.
+// Close releases the tunnel and proxy, and the hold on the rig. It does not
+// destroy the instance — that is Down's job, and conflating them would make a
+// dropped connection look like a teardown.
 func (l *Live) Close() error {
+	l.closeServing()
+	if l.release != nil {
+		l.release()
+		l.release = nil
+	}
+	return nil
+}
+
+// EndServing closes the tunnel and proxy of a rig about to be torn down and
+// keeps holding it; the caller releases the hold once the teardown is done.
+//
+// Close released the hold before the teardown began, so for the seconds a
+// destroy takes the rig read as held by no one — no endpoint, nothing
+// supervising, `larri resume` free to reconnect to a rig being destroyed — and
+// `larri logs -f` stopped following before the lines that said how it ended.
+func (l *Live) EndServing() (release func()) {
+	l.closeServing()
+	release, l.release = l.release, nil
+	if release == nil {
+		release = func() {}
+	}
+	return release
+}
+
+func (l *Live) closeServing() {
 	// The heartbeat stops first. From here the host is on its own clock,
 	// which is the entire point: whatever killed this process cannot also
 	// have stopped the watchdog.
@@ -74,7 +109,6 @@ func (l *Live) Close() error {
 	if l.proxy != nil {
 		_ = l.proxy.Close()
 	}
-	return nil
 }
 
 // Serve brings a provisioned rig up to READY: waits for sshd, pins the host
@@ -85,7 +119,11 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 	if rig.Instance == nil {
 		return nil, errs.Newf(errs.ClassModelFailure, "daemon.Serve", "rig has no instance")
 	}
-	live := &Live{Rig: rig, keys: keys}
+	release, err := o.takeHold(rig, "daemon.Serve")
+	if err != nil {
+		return nil, err
+	}
+	live := &Live{Rig: rig, keys: keys, release: release}
 
 	// ---- wait for sshd ---------------------------------------------------
 	// Reaching sshd is not the same as the host being ready. Vast answers
@@ -227,7 +265,7 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 	// credential, and the model produces a token. A check run on the host
 	// would prove only that vLLM answers itself.
 	o.emit("ready", "waiting for a completion to round-trip")
-	if err := o.waitReady(ctx, sess, rig, live.proxy.LocalPort(), live.ClientToken); err != nil {
+	if err := o.waitReady(ctx, sess, rig, live.proxy.LocalPort(), live.probeToken); err != nil {
 		return live, err
 	}
 	if err := o.Store.Transition(rig, core.StateReady, "completion round-trip verified"); err != nil {

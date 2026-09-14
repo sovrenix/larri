@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"slices"
 	"sort"
 	"strconv"
@@ -105,6 +106,21 @@ type Orchestrator struct {
 	Resolver sizing.Resolver
 	Policy   rank.Policy
 	Proxy    *wire.Proxy
+
+	// ClientKeys are the stored keys the local endpoint accepts, the same on
+	// every rig so a client is configured once (invariant 3). Nil accepts
+	// none, and a key for this rig alone is minted instead.
+	ClientKeys wire.KeySet
+
+	// OneRigKey also mints a key valid for this rig only, returned once in
+	// Live.ClientToken — for a caller that wants no stored credential, such
+	// as an agent whose rig should take its key with it.
+	OneRigKey bool
+
+	// Detached and HolderLog describe this process when it holds a rig, so
+	// `larri status` can say who is serving it and where its output went.
+	Detached  bool
+	HolderLog string
 
 	// Deadline bounds the whole provisioning sequence. On expiry the rig is
 	// torn down rather than abandoned (FR-PROV-04).
@@ -231,6 +247,13 @@ type Orchestrator struct {
 	// lastKeys carries the ephemeral identity from Up to Serve. Not
 	// persisted: FR-STATE-05 forbids private keys in state files.
 	lastKeys *sshx.KeyPair
+
+	// upHold carries the hold Up took on the rig it minted to the Serve that
+	// follows, as lastKeys carries its identity. A rig is held from the
+	// moment it has an id, not from the moment it serves: a detached holder
+	// spends most of its bring-up downloading, and that is when `larri
+	// status` most needs to say who is renting it and where its log is.
+	upHold *heldRig
 
 	// lastBootStatus is the provider's most recent account of what the host
 	// was doing, kept so a failure can say how far it got.
@@ -426,21 +449,21 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 	// nobody asked the second, and Pascal cannot serve with vLLM at any
 	// price.
 	reqs := o.Runtime.Requires()
-	fits := func(of core.Offer) (bool, string) {
+	fits := func(of core.Offer) (rank.Reason, string) {
 		if ok, why := reqs.SatisfiesVendor(of.GPUVendor); !ok {
-			return false, why
+			return rank.ReasonEngine, why
 		}
 		if ok, why := reqs.Satisfies(of.ComputeCapability); !ok {
-			return false, why
+			return rank.ReasonEngine, why
 		}
 		if ok, why := reqs.SatisfiesCUDA(parseCUDA(of.CUDAVersion)); !ok {
-			return false, why
+			return rank.ReasonEngine, why
 		}
 		// A link too slow to deliver the cold start is a cost problem, not a
 		// preference: the download is billed at the rig's hourly rate.
 		if floor := req.Criteria.MinNetMbps; floor > 0 &&
 			of.NetDownMbps > 0 && of.NetDownMbps < floor {
-			return false, fmt.Sprintf("%.0f Mbps link below the %.0f Mbps floor (%s to fetch %s)",
+			return rank.ReasonNetwork, fmt.Sprintf("%.0f Mbps link below the %.0f Mbps floor (%s to fetch %s)",
 				of.NetDownMbps, floor,
 				fetchETA(coldStartBytes(plan), of.NetDownMbps).Round(time.Minute),
 				sizing.HumanBytes(coldStartBytes(plan)))
@@ -459,10 +482,10 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 		perOffer.GPUCount = shards
 		need, err := sizing.Plan(perOffer)
 		if err != nil {
-			return false, err.Error()
+			return rank.ReasonVRAM, err.Error()
 		}
 		if avail >= need.RequiredVRAMBytes {
-			return true, ""
+			return rank.ReasonEligible, ""
 		}
 		short := fmt.Sprintf("%s short of usable VRAM",
 			sizing.HumanBytes(need.RequiredVRAMBytes-avail))
@@ -474,7 +497,7 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 			short += fmt.Sprintf(" (%s shards across %d of %d cards)",
 				reqs.Why, shards, of.GPUCount)
 		}
-		return false, short
+		return rank.ReasonVRAM, short
 	}
 	if len(o.excludedMachines) > 0 {
 		before := len(offers)
@@ -782,6 +805,12 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 		Model: req.Model, Runtime: o.Runtime.Kind(), Offer: chosen,
 		Plan: plan, CreatedAt: time.Now().UTC(),
 	}
+	release, err := o.hold(rig, "daemon.Up")
+	if err != nil {
+		return nil, err
+	}
+	o.dropUpHold()
+	o.upHold = &heldRig{id: rig.ID, release: release}
 	if err := o.Store.Save(rig); err != nil {
 		return nil, err
 	}
@@ -869,7 +898,7 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 	// own machine already held port 8000 — a fact knowable before the first
 	// API call, and one no other host would have fixed. Checking costs a
 	// bind and a close.
-	if err := checkLocalPort(req.LocalPort); err != nil {
+	if err := CheckLocalPort(req.LocalPort); err != nil {
 		return nil, err
 	}
 	attempts := o.MaxHostAttempts
@@ -888,6 +917,7 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 		if rig == nil {
 			// Nothing was selected, so there is no machine to blame and
 			// nothing to fall back from.
+			o.dropUpHold()
 			return nil, err
 		}
 		lastErr = err
@@ -924,6 +954,9 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 			o.warn("cleanup", "tearing down rather than leaving it billing")
 			o.teardownAfterFailure(rig, core.ReasonHostFailure, err)
 		}
+		// Held through the teardown, so nothing reconnects to a rig while it
+		// is being ended; given up once it has been.
+		o.dropUpHold()
 		// Only host-attributable failures are worth another machine.
 		if errs.ClassOf(err) != errs.ClassHostFailure {
 			return nil, err
@@ -962,7 +995,9 @@ func (o *Orchestrator) attempt(ctx context.Context, req UpRequest) (*Live, *core
 	live, serr := o.Serve(ctx, rig, o.lastKeys, req.LocalPort, req.HFToken)
 	if serr != nil {
 		if live != nil {
-			_ = live.Close()
+			// Held through the teardown UpAndServe does next, and released
+			// there, as a hold Up took and no Serve claimed is.
+			o.upHold = &heldRig{id: rig.ID, release: live.EndServing()}
 		}
 		return nil, rig, o.explainDeadline(ctx, serr, deadline, started)
 	}
@@ -1122,11 +1157,11 @@ func (o *Orchestrator) teardownAfterFailure(rig *core.Rig, code core.ReasonCode,
 	}
 }
 
-// checkLocalPort confirms nothing already holds the port the rig will be
+// CheckLocalPort confirms nothing already holds the port the rig will be
 // published on.
 //
 // Port 0 means the caller wants whatever is free, which cannot collide.
-func checkLocalPort(port int) error {
+func CheckLocalPort(port int) error {
 	if port == 0 {
 		return nil
 	}
@@ -1629,6 +1664,44 @@ func (o *Orchestrator) recordEnd(rig *core.Rig, note string) error {
 		return nil
 	}
 	return err
+}
+
+// heldRig is a hold taken by Up and not yet handed to Serve.
+type heldRig struct {
+	id      string
+	release func()
+}
+
+// takeHold is hold for Serve: the hold Up took on this rig, if it took one,
+// and otherwise a new one.
+func (o *Orchestrator) takeHold(rig *core.Rig, op string) (func(), error) {
+	if h := o.upHold; h != nil && h.id == rig.ID {
+		o.upHold = nil
+		return h.release, nil
+	}
+	return o.hold(rig, op)
+}
+
+// dropUpHold gives up a hold Up took that no Serve claimed.
+func (o *Orchestrator) dropUpHold() {
+	if h := o.upHold; h != nil {
+		o.upHold = nil
+		h.release()
+	}
+}
+
+// hold takes a rig for this process — it is the one serving and supervising
+// it — or reports the process that already has.
+func (o *Orchestrator) hold(rig *core.Rig, op string) (func(), error) {
+	release, err := o.Store.Hold(rig.ID, state.Holder{
+		PID: os.Getpid(), Started: time.Now().UTC(), Log: o.HolderLog, Detached: o.Detached,
+	})
+	if errors.Is(err, state.ErrHeld) {
+		h, _, _ := o.Store.HolderOf(rig.ID)
+		return nil, errs.Newf(errs.ClassModelFailure, op,
+			"rig %s is already served by larri pid %d: larri down %s ends it", rig.ID, h.PID, rig.ID)
+	}
+	return release, err
 }
 
 // holdsRig refuses to act on a rig through a provider that does not hold it.

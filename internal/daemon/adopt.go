@@ -46,7 +46,7 @@ import (
 // a rig has served, the key is known, and a key that no longer matches the
 // recorded fingerprint means the endpoint is not the machine LARRI was talking
 // to. Adopt refuses that outright instead of pinning whatever answers.
-func (o *Orchestrator) Adopt(ctx context.Context, rigID string) (*Live, error) {
+func (o *Orchestrator) Adopt(ctx context.Context, rigID string) (live *Live, err error) {
 	rig, err := o.Store.Load(rigID)
 	if err != nil {
 		return nil, err
@@ -62,6 +62,20 @@ func (o *Orchestrator) Adopt(ctx context.Context, rigID string) (*Live, error) {
 		return nil, errs.Newf(errs.ClassModelFailure, "daemon.Adopt",
 			"rig %s never provisioned", rigID)
 	}
+	// One holder per rig. A rig a detached `larri up` is serving is not one
+	// to reconnect to a second time.
+	release, err := o.hold(rig, "daemon.Adopt")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			if live != nil {
+				live.release = nil
+			}
+			release()
+		}
+	}()
 
 	// ---- is it still there? ---------------------------------------------
 	//
@@ -119,7 +133,7 @@ func (o *Orchestrator) Adopt(ctx context.Context, rigID string) (*Live, error) {
 		return nil, err
 	}
 
-	live := &Live{Rig: rig, keys: keys}
+	live = &Live{Rig: rig, keys: keys, release: release}
 
 	// ---- reconnect, verifying rather than pinning -------------------------
 	client, err := o.dialPinned(ctx, inst, rig.HostKeyFingerprint, keys)
@@ -172,7 +186,7 @@ func (o *Orchestrator) Adopt(ctx context.Context, rigID string) (*Live, error) {
 
 	// ---- prove it, the same way a bring-up proves it ---------------------
 	o.emit("ready", "waiting for a completion to round-trip")
-	if err := o.waitReady(ctx, sess, rig, live.proxy.LocalPort(), live.ClientToken); err != nil {
+	if err := o.waitReady(ctx, sess, rig, live.proxy.LocalPort(), live.probeToken); err != nil {
 		return live, err
 	}
 	if err := o.Store.Transition(rig, core.StateReady, "adopted after restart"); err != nil {
@@ -258,13 +272,27 @@ func (o *Orchestrator) attachTunnel(ctx context.Context, live *Live, rig *core.R
 	proxy.SetUpstream(wire.Upstream{
 		Host: "127.0.0.1", Port: fwd.LocalPort(), Key: ep.Key,
 	})
-	token, err := secret.Generate(32)
+	// LARRI's own probes carry a key of their own, so readiness never depends
+	// on which client keys exist.
+	probe, err := secret.Generate(32)
 	if err != nil {
 		cancel()
 		return err
 	}
-	proxy.AddClient("larri-cli", token)
-	live.ClientToken = token
+	proxy.AddClient("larri-probe", probe)
+	live.probeToken = probe
+	if o.ClientKeys != nil {
+		proxy.SetKeys(o.ClientKeys)
+	}
+	if o.OneRigKey || o.ClientKeys == nil {
+		token, err := secret.Generate(32)
+		if err != nil {
+			cancel()
+			return err
+		}
+		proxy.AddClient("this-rig", token)
+		live.ClientToken = token
+	}
 	rig.LocalPort = proxy.LocalPort()
 	live.Endpoint = fmt.Sprintf("http://127.0.0.1:%d/v1", rig.LocalPort)
 	return nil

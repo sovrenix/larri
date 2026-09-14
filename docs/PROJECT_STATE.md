@@ -32,12 +32,12 @@ and "shown to work" are different claims and are recorded as such.
 | Non-functional | 12 | 6 | 4 | 1 | 1 | 83% |
 | Configuration | 10 | 0 | 8 | 1 | 1 | 80% |
 | Teardown & cost safety | 14 | 5 | 6 | 3 | 0 | 79% |
-| Supervision | 18 | 7 | 6 | 4 | 1 | 72% |
-| Security | 31 | 13 | 7 | 2 | 9 | 65% |
-| Surfaces | 13 | 1 | 2 | 3 | 7 | 23% |
+| Supervision | 19 | 8 | 6 | 4 | 1 | 73% |
+| Security | 32 | 14 | 7 | 2 | 9 | 65% |
+| Surfaces | 15 | 3 | 2 | 3 | 7 | 33% |
 | Endpoint & client wiring | 14 | 3 | 0 | 1 | 10 | 21% |
 | Observability | 10 | 0 | 1 | 0 | 9 | 10% |
-| **Total** | **181** | **80** | **44** | **18** | **39** | **68%** |
+| **Total** | **185** | **84** | **44** | **18** | **39** | **69%** |
 
 Sixty-eight per cent of requirements are implemented, and **the lifecycle is the part
 that is done.** Criteria, provisioning and state are at 100%; search, selection and the
@@ -119,7 +119,7 @@ Seventeen requirements are partly met. The gap for each:
 | FR-SEC-01 | Keys resolve from the **environment**; OS keyring support is not implemented. |
 | FR-SEC-13 | The Hugging Face token sent to a host is the operator's own, not a scoped read-only credential. |
 | FR-WIRE-09 | The proxy carries a served-model name but routes a single upstream; multi-rig routing is not built. |
-| FR-UI-01 | `up`, `down`, `status`, `offers`, `orphans`, `config`, `resume`, `mcp`, `tui`, `privacy`, `label-key` ship; **no `logs` command** (it exists only as an MCP tool), no `daemon`, and no `--json` anywhere. |
+| FR-UI-01 | `up`, `down`, `status`, `logs`, `offers`, `orphans`, `config`, `resume`, `token`, `mcp`, `tui`, `privacy`, `label-key` ship; no `daemon`, and `--json` only on `up -d` and `resume -d`. |
 | FR-UI-06 | Surfaces share state through one store, but with no daemon there is no cross-process consistency guarantee. |
 | FR-UI-11 | The tool registry enforces the safe/consequential split; there is no chat pane to apply it to. |
 | NFR-08 | Structured events and an append-only journal exist; no rig-scoped correlation ID is plumbed through. |

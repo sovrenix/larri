@@ -548,6 +548,13 @@ func TestFallbackMovesOnWhenThereIsNoMachineToExclude(t *testing.T) {
 		t.Errorf("attempted %v of 3 listings; a refused create must not send the "+
 			"fallback back to one already tried", tried)
 	}
+	// A refused create ends its rig, and a rig that has ended is held by no
+	// one — the last attempt's included, which no later attempt clears.
+	for _, r := range rigs {
+		if _, held, _ := st.HolderOf(r.ID); held {
+			t.Errorf("rig %s was refused and is still held", r.ID)
+		}
+	}
 }
 
 // hourly makes every journal entry an hour after the last, so a rig that

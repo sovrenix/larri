@@ -256,7 +256,7 @@ func (o *Orchestrator) probe(ctx context.Context, live *Live) error {
 	defer cancel()
 	ep := runtime.Endpoint{
 		Host: "127.0.0.1", Port: live.proxy.LocalPort(),
-		Model: live.Rig.Model.ServedName, Key: live.ClientToken,
+		Model: live.Rig.Model.ServedName, Key: live.probeToken,
 		Probe: true,
 	}
 	return o.Runtime.Ready(pctx, ep, live.Rig.Model)

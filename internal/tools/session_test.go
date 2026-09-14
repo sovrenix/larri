@@ -7,9 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
 	"go.sovrenix.com/larri/internal/state"
 )
@@ -145,6 +149,41 @@ func TestLogsWithoutASessionExplainsItself(t *testing.T) {
 	d := Deps{Session: &Session{}}
 	if _, err := d.logs(context.Background(), json.RawMessage(`{}`)); err == nil {
 		t.Fatal("returned logs with no rig")
+	}
+}
+
+// A rig another larri process holds — `larri up -d` in a shell — has no
+// session here, but it has a log, and larri_logs returns it, labelled as
+// larri's own account rather than the engine's.
+func TestLogsForARigHeldElsewhereAreTheHoldersLog(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	id, _ := state.NewID(time.Now())
+	if err := st.Save(&core.Rig{ID: id, State: core.StateReady, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(dir, "up.log")
+	if err := os.WriteFile(log, []byte("  ✓ rig READY\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release, err := st.Hold(id, state.Holder{PID: 1, Detached: true, Log: log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	d := Deps{Session: &Session{}, Store: st}
+	got, err := d.logs(context.Background(), json.RawMessage(`{"rig":"`+strings.ToLower(id[:20])+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := got.(map[string]any)
+	if m["source"] != "larri" || m["held"] != true || !strings.Contains(m["log"].(string), "READY") {
+		t.Errorf("result = %v", m)
 	}
 }
 

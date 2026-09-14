@@ -166,7 +166,7 @@ func TestLocalPortIsCheckedBeforeSpending(t *testing.T) {
 	defer ln.Close()
 	taken := ln.Addr().(*net.TCPAddr).Port
 
-	if err := checkLocalPort(taken); err == nil {
+	if err := CheckLocalPort(taken); err == nil {
 		t.Fatal("an occupied port must be refused")
 	} else {
 		if !errs.Is(err, errs.ClassWiring) {
@@ -180,14 +180,14 @@ func TestLocalPortIsCheckedBeforeSpending(t *testing.T) {
 
 	// A free port passes, and the check must not leave the port held.
 	ln.Close()
-	if err := checkLocalPort(taken); err != nil {
+	if err := CheckLocalPort(taken); err != nil {
 		t.Errorf("a free port must pass: %v", err)
 	}
-	if err := checkLocalPort(taken); err != nil {
+	if err := CheckLocalPort(taken); err != nil {
 		t.Errorf("the check must release the port it tested: %v", err)
 	}
 	// Port 0 means "anything free", which cannot collide.
-	if err := checkLocalPort(0); err != nil {
+	if err := CheckLocalPort(0); err != nil {
 		t.Errorf("port 0 must pass: %v", err)
 	}
 }
@@ -637,5 +637,25 @@ func TestASilentSessionIsNotAStalledRuntime(t *testing.T) {
 	// Nor is a host whose log is being read fine but is simply not growing.
 	if silent(dead, 4096, "") {
 		t.Error("a readable log means the connection is alive")
+	}
+}
+
+// A rig being torn down stays held until the teardown is done: EndServing
+// closes the transport and hands the hold back, and Close after it does not
+// release what it no longer has.
+func TestEndServingKeepsTheHoldForTheTeardown(t *testing.T) {
+	released := 0
+	l := &Live{release: func() { released++ }}
+	release := l.EndServing()
+	if released != 0 {
+		t.Fatal("ending service released the hold before the teardown")
+	}
+	_ = l.Close()
+	if released != 0 {
+		t.Fatal("Close released a hold EndServing had handed over")
+	}
+	release()
+	if released != 1 {
+		t.Errorf("released %d times, want once", released)
 	}
 }

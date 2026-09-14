@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"go.sovrenix.com/larri/internal/config"
@@ -27,8 +28,8 @@ func (d Deps) logs(ctx context.Context, raw json.RawMessage) (any, error) {
 		a.Tail = 100
 	}
 	live := d.live()
-	if live == nil {
-		return nil, fmt.Errorf("no rig is being served by this process; logs need its ssh session")
+	if live == nil || (a.Rig != "" && !strings.HasPrefix(live.Rig.ID, strings.ToUpper(a.Rig))) {
+		return d.holderLogs(a)
 	}
 	o, err := d.NewOrchestrator(string(live.Rig.Runtime), live.Rig.ProviderName(), live.Rig.Model)
 	if err != nil {
@@ -43,7 +44,30 @@ func (d Deps) logs(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"rig": live.Rig.ID, "log": string(b)}, nil
+	return map[string]any{"rig": live.Rig.ID, "source": "runtime", "log": string(b)}, nil
+}
+
+// holderLogs answers larri_logs for a rig this server is not serving: what
+// the detached larri process holding it wrote, the same log `larri logs` shows.
+// The engine's own log is read over the SSH session of the process serving the
+// rig, which this one is not.
+func (d Deps) holderLogs(a logsArgs) (any, error) {
+	if d.Store == nil {
+		return nil, fmt.Errorf("no rig is being served by this process; logs need its ssh session")
+	}
+	l, err := daemon.FindRigLogs(d.Store, a.Rig)
+	if err != nil {
+		return nil, err
+	}
+	text, _, err := l.Read(a.Tail)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"rig": l.Rig, "source": "larri", "held": l.Held, "log": text,
+		"note": "larri's own account of the rig, from the log of the detached process that held it; " +
+			"the inference engine's log is available from the server serving the rig",
+	}, nil
 }
 
 func (d Deps) live() *daemon.Live {
@@ -250,7 +274,7 @@ func (d Deps) bringUp(ctx context.Context, crit core.Criteria, spec core.ModelSp
 	d.Session.Ready(live)
 
 	term := o.Supervise(ctx, live, policy)
-	live.Close()
+	release := live.EndServing()
 
 	// A policy that ended the rig destroys it; a cancelled context means the
 	// operator asked to stop holding it, and larri_down does the destroying.
@@ -259,6 +283,7 @@ func (d Deps) bringUp(ctx context.Context, crit core.Criteria, spec core.ModelSp
 		defer dcancel()
 		_ = o.Down(dctx, live.Rig, term)
 	}
+	release()
 	d.Session.Finish()
 }
 

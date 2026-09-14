@@ -47,6 +47,10 @@ type Behaviour struct {
 	// absence catches it (FR-DEL-03).
 	DestroyOnlyStops bool
 
+	// BeforeDestroy, when set, is called as a destroy arrives, so a test can
+	// see what else is true while a teardown is under way.
+	BeforeDestroy func(instanceID string)
+
 	// ListOmitsStopped reproduces an adapter or API that returns only running
 	// instances, which would make a storage-billing container read as gone.
 	ListOmitsStopped bool
@@ -283,6 +287,9 @@ func (p *Provider) Destroy(ctx context.Context, id string) error {
 	p.record("Destroy")
 	if err := p.gate("Destroy"); err != nil {
 		return err
+	}
+	if p.behaviour.BeforeDestroy != nil {
+		p.behaviour.BeforeDestroy(id)
 	}
 	inst, ok := p.instances[id]
 	if !ok {

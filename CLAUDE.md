@@ -149,6 +149,20 @@ hold in code:
   journal and would have refused the next `up`. The store refuses the move, supervision
   re-reads the store and asks the provider when probes fail, and cost replay ignores
   anything journalled after the end.
+- **A rig has at most one holder** — the process serving its endpoint and supervising
+  it — enforced by a kernel `flock` (`state.Store.Hold`), so a holder that crashes frees
+  it by dying. `larri resume` once adopted a rig a detached `larri up` was serving: two
+  tunnels, two supervisors, two idle clocks. The hold is taken when `Up` mints the id and
+  handed to `Serve`, not taken again, and kept through a teardown the holder runs
+  (`Live.EndServing`, released after `Down`) — releasing it first let `resume` reconnect to
+  a rig being destroyed. Status reads the lock rather than the record: a billing rig nobody
+  holds has no endpoint and nothing reclaiming it, and says so. `larri down` never waits on
+  the holder.
+- **Detached is the same process, moved.** `larri up -d` re-executes itself in its own
+  session; the launcher confirms (from a terminal) and passes the agreed price down as
+  `--max-price`, and without a terminal `-d` requires `--yes` rather than implying it. The
+  holder's log never carries a key value — a key shown for the first time travels over the
+  inherited report pipe to the launcher only.
 - **A failed create must resolve itself.** Journal *and* snapshot the failure together —
   `RecordIntent` writes only the journal, and the two disagreeing left a rig reading
   SELECTED in `larri status` while the journal billed it at $1.39/hr for four days — then
@@ -368,7 +382,9 @@ accident:
   replacement. The proxy **strips** the incoming `Authorization` and substitutes the rig's —
   header pass-through is the default in most reverse proxies and would ship the token shared
   by all your IDEs to untrusted hardware. Client tokens are per-client, so one can be revoked
-  without rewiring the rest and spend can be attributed per tool.
+  without rewiring the rest and spend can be attributed per tool. They are stored only as
+  SHA-256 hashes (`larri token`), shown once at creation, and LARRI's own probes use a
+  separate key, so no code path needs a client key's value after it is made.
 - Don't build anything stronger than a bearer token *inside* the tunnel: the channel is
   already SSH-authenticated to a loopback service, and the only principal in there is the
   host, which has root and would read the runtime's memory rather than its API. The rig token

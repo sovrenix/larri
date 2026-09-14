@@ -5,12 +5,14 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"go.sovrenix.com/larri/internal/core"
 	pfake "go.sovrenix.com/larri/internal/provider/fake"
 	rfake "go.sovrenix.com/larri/internal/runtime/fake"
+	"go.sovrenix.com/larri/internal/state"
 )
 
 // upRig provisions a rig so the adopt paths have something to reconcile
@@ -22,6 +24,7 @@ func upRig(t *testing.T) (*Orchestrator, *pfake.Provider, *core.Rig) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	o.dropUpHold() // the process that rented it has gone, as after a restart
 	return o, p, rig
 }
 
@@ -123,5 +126,62 @@ func TestAdoptJournalsTheProvidersRateNotTheSnapshots(t *testing.T) {
 	last := entries[len(entries)-1]
 	if last.To != core.StateStopped || last.StorageHr != fresh.StorageHr {
 		t.Errorf("STOPPED entry storage = %v, want the provider's %v", last.StorageHr, fresh.StorageHr)
+	}
+}
+
+// A rig a detached `larri up` is still serving is not reconnected to a second
+// time: two holders would run two tunnels and two supervisors.
+func TestAdoptRefusesARigAnotherProcessHolds(t *testing.T) {
+	o, _, rig := upRig(t)
+	release, err := o.Store.Hold(rig.ID, state.Holder{PID: 4242, Detached: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	_, err = o.Adopt(context.Background(), rig.ID)
+	if err == nil || !strings.Contains(err.Error(), "already served by larri pid 4242") {
+		t.Fatalf("err = %v; want the holder named", err)
+	}
+}
+
+// An adoption that fails lets go of the rig, so the next attempt is not
+// refused by the attempt that failed.
+func TestAFailedAdoptReleasesTheRig(t *testing.T) {
+	o, p, rig := upRig(t)
+	p.Stop(rig.Instance.InstanceID) // adopt refuses a stopped instance
+	if _, err := o.Adopt(context.Background(), rig.ID); err == nil {
+		t.Fatal("adopted a stopped instance")
+	}
+	if _, held, _ := o.Store.HolderOf(rig.ID); held {
+		t.Error("a failed adopt kept holding the rig")
+	}
+}
+
+// A rig is held from the moment it has an id, not from the moment it serves:
+// most of a bring-up is a download, and `larri status` has to be able to say
+// who is renting the rig while it happens. The Serve that follows takes the
+// same hold rather than being refused by it.
+func TestARigIsHeldFromTheMomentItIsRented(t *testing.T) {
+	o, _, _ := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	rig, err := o.Up(context.Background(), upReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held, _ := o.Store.HolderOf(rig.ID); !held {
+		t.Fatal("a rig being brought up has no holder")
+	}
+	if _, err := o.Store.Hold(rig.ID, state.Holder{PID: 1}); !errors.Is(err, state.ErrHeld) {
+		t.Fatalf("another process took a rig being brought up: err = %v", err)
+	}
+	release, err := o.takeHold(rig, "test")
+	if err != nil {
+		t.Fatalf("Serve was refused the hold Up took: %v", err)
+	}
+	if o.upHold != nil {
+		t.Error("the hold was handed over and still kept for another Serve")
+	}
+	release()
+	if _, held, _ := o.Store.HolderOf(rig.ID); held {
+		t.Error("released, and still held")
 	}
 }
