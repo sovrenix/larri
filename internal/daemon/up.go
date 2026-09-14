@@ -406,8 +406,17 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 	// ---- search and select ----------------------------------------------
 	o.emit("search", "querying %s", o.Provider.Name())
 	offers, err := o.Provider.Search(ctx, req.Criteria)
+	// A provider can refuse the criteria itself — RunPod does when every type
+	// it lists is filtered out — and returning that at once skipped the
+	// refusal's own advice: `--gpu B200` answered "nothing rentable" while
+	// B200s were listed at low stock. Carried on with an empty market, so the
+	// refusal below can say what would have fitted.
+	var providerRefused error
 	if err != nil {
-		return nil, err
+		if !errs.Is(err, errs.ClassCriteriaUnsatisfiable) {
+			return nil, err
+		}
+		providerRefused, offers = err, nil
 	}
 	o.emit("search", "%d offers satisfy the criteria", len(offers))
 
@@ -418,6 +427,9 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 	// price.
 	reqs := o.Runtime.Requires()
 	fits := func(of core.Offer) (bool, string) {
+		if ok, why := reqs.SatisfiesVendor(of.GPUVendor); !ok {
+			return false, why
+		}
 		if ok, why := reqs.Satisfies(of.ComputeCapability); !ok {
 			return false, why
 		}
@@ -507,11 +519,20 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 		return nil, err
 	}
 	sel := rank.Select(offers, req.Criteria, fits, policy)
+	if sel.Selected == nil && providerRefused != nil {
+		hints := o.moreCardsWouldFit(ctx, req.Criteria, fits, policy) +
+			o.lowStockWouldFit(ctx, req.Criteria, fits, policy)
+		if hints == "" {
+			return nil, providerRefused
+		}
+		return nil, errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.survey", "%v\n%s", providerRefused, hints)
+	}
 	if sel.Selected == nil {
 		shortReq := base
 		shortReq.Shards = shardsOn(facts, reqs.TensorParallel)
 		short := sizing.Analyse(shortReq, offers)
-		msg := short.String() + o.moreCardsWouldFit(ctx, req.Criteria, fits, policy)
+		msg := short.String() + o.moreCardsWouldFit(ctx, req.Criteria, fits, policy) +
+			o.lowStockWouldFit(ctx, req.Criteria, fits, policy)
 		return nil, errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.survey", "%s", msg)
 	}
 	if diskErr != nil {
@@ -610,6 +631,40 @@ func (o *Orchestrator) moreCardsWouldFit(ctx context.Context, c core.Criteria,
 		alt.Hardware(), alt.PriceHr, alt.GPUCount)
 }
 
+// lowStockWouldFit names an offer the provider holds at low stock, when
+// nothing in stock fits and the operator has not allowed low stock.
+//
+// Issue #3: the only card large enough for a model was listed at low stock,
+// and the answer was that no offer had enough VRAM — true of the offers
+// weighed, and no help to an operator who would take the chance. One more
+// search, only on a request that has already failed, turns that into a
+// choice. A provider with no notion of stock returns the same market and
+// nothing is said.
+func (o *Orchestrator) lowStockWouldFit(ctx context.Context, c core.Criteria,
+	fits rank.FitFunc, policy rank.Policy) string {
+
+	if c.AllowLowStock {
+		return ""
+	}
+	if sr, ok := o.Provider.(provider.StockReporter); !ok || !sr.ReportsStock() {
+		return ""
+	}
+	c.AllowLowStock = true
+	o.emit("search", "nothing in stock fits; checking offers at low stock")
+	offers, err := o.Provider.Search(ctx, c)
+	if err != nil || len(offers) == 0 {
+		return ""
+	}
+	sel := rank.Select(offers, c, fits, policy)
+	if sel.Selected == nil || !sel.Selected.Offer.LowStock {
+		return ""
+	}
+	alt := sel.Selected.Offer
+	return fmt.Sprintf("  At low stock: %s ($%.2f/hr) would fit — --allow-low-stock considers it; "+
+		"the provider may refuse the create, and LARRI falls back if it does.\n",
+		alt.Hardware(), alt.PriceHr)
+}
+
 // weightBytes asks the runtime how large the weights it will fetch are.
 //
 // Zero from a runtime that cannot say, and zero from one that could not find
@@ -671,6 +726,9 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 	o.reportExclusions(sel)
 	o.emit("select", "%s %s $%.3f/hr (reliability %.2f)",
 		chosen.Provider, chosen.Hardware(), chosen.PriceHr, chosen.Reliability)
+	if chosen.LowStock {
+		o.warn("select", "low stock: the provider may refuse this create; nothing is created if it does, and LARRI falls back")
+	}
 
 	// Say what the cold start will cost before asking for the money. Nothing
 	// is cached between rentals — the image and the weights are fetched every

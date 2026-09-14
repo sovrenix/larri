@@ -15,6 +15,9 @@ import (
 	"go.sovrenix.com/larri/internal/daemon"
 	"go.sovrenix.com/larri/internal/provider"
 	pfake "go.sovrenix.com/larri/internal/provider/fake"
+	"go.sovrenix.com/larri/internal/rank"
+	rfake "go.sovrenix.com/larri/internal/runtime/fake"
+	"go.sovrenix.com/larri/internal/sizing"
 	"go.sovrenix.com/larri/internal/state"
 )
 
@@ -252,5 +255,36 @@ func TestOrphansAreFoundAndDestroyedAtTheProviderHoldingThem(t *testing.T) {
 	}
 	if len(built) != 1 || built[0] != "runpod" || held.Count() != 0 {
 		t.Errorf("destroy went through %v; want runpod, and the pod gone", built)
+	}
+}
+
+// The agent's surface carries the same choice the CLI does, and sees which
+// offers it is making.
+func TestSearchOffersCarriesTheLowStockChoice(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	p := pfake.New("fake", []core.Offer{
+		{Provider: "fake", OfferID: "b200", GPUModel: "B200", GPUCount: 1, VRAMPerGPUGB: 180,
+			PriceHr: 6.79, Reliability: 0.99, MachineID: "m1", NetDownMbps: 1000, LowStock: true},
+	}, pfake.Behaviour{})
+	d := Deps{Store: st, NewOrchestrator: func(_, _ string, _ core.ModelSpec) (*daemon.Orchestrator, error) {
+		return &daemon.Orchestrator{Store: st, Provider: p, Runtime: rfake.New(rfake.Behaviour{}),
+			Resolver: sizing.StaticResolver{"org/model": {Ref: "org/model", Params: 8, Layers: 32,
+				AttentionHeads: 32, KVHeads: 8, HeadDim: 128, HiddenSize: 4096, MaxContextLen: 32768}},
+			Policy: rank.DefaultPolicy()}, nil
+	}}
+	out, err := d.searchOffers(context.Background(), json.RawMessage(`{"model":"org/model","allow_low_stock":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.LastSearch().AllowLowStock {
+		t.Error("allow_low_stock did not reach the search")
+	}
+	rows := out.(map[string]any)["offers"].([]map[string]any)
+	if len(rows) != 1 || rows[0]["low_stock"] != true {
+		t.Errorf("offers = %v; the low-stock offer is returned and marked", rows)
 	}
 }

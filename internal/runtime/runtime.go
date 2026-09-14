@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/secret"
@@ -120,9 +121,25 @@ type Requirements struct {
 	// and sizes against those, not against the number in the listing.
 	TensorParallel bool
 
+	// Vendor is the GPU vendor the image is built for, "" for any. Every
+	// image LARRI runs today is CUDA, and an AMD card with 192 GB is the
+	// cheapest large card RunPod lists at low stock — rented for a CUDA
+	// image, it could never load a model.
+	Vendor string
+
 	// Why explains the constraint in the exclusion message, so an operator
 	// seeing a cheap card rejected knows it was not arbitrary.
 	Why string
+}
+
+// SatisfiesVendor reports whether an offer's GPU vendor can run the image.
+// An offer that does not say passes, for the same reason an unreported
+// compute capability does: failing closed on a missing field empties markets.
+func (r Requirements) SatisfiesVendor(vendor string) (bool, string) {
+	if r.Vendor == "" || vendor == "" || strings.EqualFold(r.Vendor, vendor) {
+		return true, ""
+	}
+	return false, fmt.Sprintf("%s gpu, and the %s image is built for %s", vendor, r.Why, r.Vendor)
 }
 
 // SatisfiesCUDA reports whether a host's maximum usable CUDA version can run

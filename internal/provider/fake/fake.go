@@ -28,6 +28,11 @@ import (
 
 // Behaviour configures how the fake misbehaves.
 type Behaviour struct {
+	// RefuseEmptySearch makes a search that matches nothing an unsatisfiable
+	// criteria error, the way RunPod's catalogue answers, rather than an
+	// empty list.
+	RefuseEmptySearch bool
+
 	// CreateTimesOutButSucceeds reproduces R-07: the call returns an error,
 	// the instance exists anyway. A caller that blind-retries ends up paying
 	// for two.
@@ -158,6 +163,9 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 		if c.MaxGPUCount > 0 && o.GPUCount > c.MaxGPUCount {
 			continue
 		}
+		if o.LowStock && !c.AllowLowStock {
+			continue
+		}
 		if c.MinReliability > 0 && o.Reliability < c.MinReliability {
 			continue
 		}
@@ -166,7 +174,24 @@ func (p *Provider) Search(ctx context.Context, c core.Criteria) ([]core.Offer, e
 		}
 		out = append(out, o)
 	}
+	if len(out) == 0 && p.behaviour.RefuseEmptySearch {
+		return nil, errs.Newf(errs.ClassCriteriaUnsatisfiable, p.name+".Search",
+			"nothing rentable: %d listed, all filtered", len(p.offers))
+	}
 	return out, nil
+}
+
+// ReportsStock is true when the market holds an offer at low stock, so the
+// fake reports stock exactly when there is some to report.
+func (p *Provider) ReportsStock() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, o := range p.offers {
+		if o.LowStock {
+			return true
+		}
+	}
+	return false
 }
 
 // Create purchases an offer.

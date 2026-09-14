@@ -154,3 +154,60 @@ func TestSearchQuotesTheDiskBeingRented(t *testing.T) {
 			offers[0].PriceHr, want)
 	}
 }
+
+// A CUDA process sees one MIG device however many a pod holds, so a MIG type
+// is one slice. RunPod prices PRO 6000 MIG 1g.24gb at up to 22 slices; offered
+// that way it would read as 528 GB for a split model the engine loads into
+// 24 GB. Today that type is not in the create schema — but RunPod does list
+// a MIG type there, so the schema is not what keeps this out.
+func TestAMIGTypeIsOfferedAsOneSlice(t *testing.T) {
+	const mig = "NVIDIA B300 SXM6 AC MIG 1g.34gb"
+	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/graphql"):
+			w.Write([]byte(`{"data":{"gpuTypes":[
+			 {"id":"` + mig + `","displayName":"B300 MIG 34GB","memoryInGb":34,"secureCloud":true,"maxGpuCount":32,
+			  "price1":{"uninterruptablePrice":0.9,"stockStatus":"High"},
+			  "price2":{"uninterruptablePrice":1.8,"stockStatus":"High"},
+			  "price22":{"uninterruptablePrice":19.8,"stockStatus":"High"}},
+			 {"id":"NVIDIA A40","displayName":"A40","memoryInGb":48,"secureCloud":true,"maxGpuCount":4,
+			  "price1":{"uninterruptablePrice":0.49,"stockStatus":"High"},
+			  "price2":{"uninterruptablePrice":0.98,"stockStatus":"High"}}
+			]}}`))
+		case r.URL.Path == schemaPath:
+			w.Write([]byte(schemaJSON(mig, "NVIDIA A40")))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	offers, err := p.Search(context.Background(), core.Criteria{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migOffers []int
+	for _, o := range offers {
+		if gpuTypeID(o.OfferID) == mig {
+			migOffers = append(migOffers, o.GPUCount)
+		}
+	}
+	if len(migOffers) != 1 || migOffers[0] != 1 {
+		t.Errorf("MIG type offered at %v slices; want one", migOffers)
+	}
+	// Its placeable count does not widen the sizes priced for every type.
+	if counts := p.priceCounts(context.Background(), p.rentableCheck(context.Background())); counts[len(counts)-1] != 4 {
+		t.Errorf("pricing up to %d cards; the only non-MIG type places 4", counts[len(counts)-1])
+	}
+}
+
+// RunPod lists AMD's Instinct cards beside NVIDIA's, and says whose they are
+// only in the name.
+func TestOffersSayWhoMadeTheCard(t *testing.T) {
+	for id, want := range map[string]string{
+		"AMD Instinct MI300X OAM": "amd", "NVIDIA A40": "nvidia", "Tesla V100-SXM2-16GB": "nvidia",
+		"NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb": "nvidia",
+	} {
+		if got := vendorOf(id); got != want {
+			t.Errorf("vendorOf(%q) = %q, want %q", id, got, want)
+		}
+	}
+}

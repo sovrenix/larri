@@ -309,6 +309,7 @@ bin/larri orphans --destroy</code></div>
     <tr><td><b>--verified-only</b></td><td>Only hosts the provider has verified. Costs more, fails less.</td></tr>
     <tr><td><b>--min-netspeed 200</b></td><td>Floor the host's link, in Mbps. The download is billed at the rig's rate.</td></tr>
     <tr><td><b>--context 32768</b></td><td>Bigger window, bigger KV cache, bigger GPU.</td></tr>
+    <tr><td><b>--allow-low-stock</b></td><td>Also consider cards the provider reports at low stock. Most place; one that is refused costs nothing and LARRI moves on.</td></tr>
     <tr><td><b>--max-gpus 1</b></td><td>Cap the cards on one host. A model too big for one card is split across several by default; this keeps it to one — or to however many you name.</td></tr>
     <tr><td><b>--gpus 2</b> · <b>--vram-per-gpu 24</b> · <b>--vram 80</b></td><td>Floors: at least this many cards, this much per card, this much across all of them.</td></tr>
     <tr><td><b>--disk 120</b></td><td>Disk in GB. Sized from the weights when omitted; a figure too small for them is refused before renting, never quietly raised.</td></tr>
@@ -347,6 +348,10 @@ bin/larri orphans --destroy</code></div>
     <tr><td><b>local port 8000 is already in use</b></td>
         <td>Something else holds the port. Use <b>--port 8080</b>. Checked before
         renting, so it costs nothing.</td></tr>
+    <tr><td><b>At low stock: … would fit — --allow-low-stock considers it</b></td>
+        <td>Nothing in stock can hold the model, but a card the provider lists at low stock can.
+        Add <b>--allow-low-stock</b> to try it. If the provider refuses, nothing is created and
+        LARRI takes the next offer.</td></tr>
     <tr><td><b>With more cards: … raise --max-gpus to 4</b></td>
         <td>No host within your card cap has enough VRAM, but a bigger one does. It names the
         host and its price; raise <b>--max-gpus</b> to take it. Costs nothing to see.</td></tr>

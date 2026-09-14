@@ -96,6 +96,8 @@ func larriTools(d Deps) []Tool {
 				"gpu":          {Type: "string", Description: "GPU model filter, e.g. 'RTX 4090'"},
 				"gpus":         {Type: "integer", Description: "minimum GPUs per host"},
 				"max_gpus":     {Type: "integer", Description: "maximum GPUs per host"},
+				"allow_low_stock": {Type: "boolean", Description: "consider offers the provider reports at low stock; " +
+					"a create against one may be refused, and larri falls back if it is"},
 				"vram":         {Type: "integer", Description: "minimum aggregate VRAM in GB"},
 				"vram_per_gpu": {Type: "integer", Description: "minimum VRAM per card in GB"},
 				"max_price":    {Type: "number", Description: "ceiling in $/hr"},
@@ -128,19 +130,20 @@ func larriTools(d Deps) []Tool {
 				"download, model load), so poll larri_status until it reports READY and an endpoint. Stop it " +
 				"at any point with larri_down.",
 			Schema: Object(map[string]Property{
-				"model":        {Type: "string", Description: "model reference"},
-				"quantization": {Type: "string"},
-				"context":      {Type: "integer"},
-				"gpu":          {Type: "string"},
-				"gpus":         {Type: "integer"},
-				"max_gpus":     {Type: "integer"},
-				"vram":         {Type: "integer"},
-				"vram_per_gpu": {Type: "integer"},
-				"max_price":    {Type: "number", Description: "ceiling in $/hr; refuses above it"},
-				"idle_timeout": {Type: "string", Description: "e.g. '30m'; destroys after this long unused"},
-				"budget":       {Type: "number", Description: "spend ceiling in $; destroys on breach"},
-				"runtime":      {Type: "string", Enum: []string{"vllm", "llamacpp", "ollama"}},
-				"dry_run":      {Type: "boolean", Description: "select and price without renting"},
+				"model":           {Type: "string", Description: "model reference"},
+				"quantization":    {Type: "string"},
+				"context":         {Type: "integer"},
+				"gpu":             {Type: "string"},
+				"gpus":            {Type: "integer"},
+				"max_gpus":        {Type: "integer"},
+				"allow_low_stock": {Type: "boolean", Description: "consider offers at low stock; a create may be refused"},
+				"vram":            {Type: "integer"},
+				"vram_per_gpu":    {Type: "integer"},
+				"max_price":       {Type: "number", Description: "ceiling in $/hr; refuses above it"},
+				"idle_timeout":    {Type: "string", Description: "e.g. '30m'; destroys after this long unused"},
+				"budget":          {Type: "number", Description: "spend ceiling in $; destroys on breach"},
+				"runtime":         {Type: "string", Enum: []string{"vllm", "llamacpp", "ollama"}},
+				"dry_run":         {Type: "boolean", Description: "select and price without renting"},
 			}, "model"),
 			Consequential: true,
 			Exposure:      ExposeMCPOnly,
@@ -333,6 +336,7 @@ type offersArgs struct {
 	GPU        string  `json:"gpu"`
 	GPUCount   int     `json:"gpus"`
 	MaxGPU     int     `json:"max_gpus"`
+	LowStock   bool    `json:"allow_low_stock"`
 	VRAMTotal  int     `json:"vram"`
 	VRAMPerGPU int     `json:"vram_per_gpu"`
 	MaxPrice   float64 `json:"max_price"`
@@ -359,6 +363,7 @@ func (d Deps) searchOffers(ctx context.Context, raw json.RawMessage) (any, error
 		MinReliability: 0.90,
 		GPUCount:       a.GPUCount,
 		MaxGPUCount:    a.MaxGPU,
+		AllowLowStock:  a.LowStock,
 		VRAMTotalGB:    a.VRAMTotal,
 		VRAMPerGPUGB:   a.VRAMPerGPU,
 	}
@@ -378,6 +383,7 @@ func (d Deps) searchOffers(ctx context.Context, raw json.RawMessage) (any, error
 			"gpu": c.Offer.GPUModel, "vram_gb": c.Offer.VRAMTotalGB(),
 			"price_hr": round4(c.Offer.PriceHr), "reliability": round2(c.Offer.Reliability),
 			"provider": c.Offer.Provider, "offer_id": c.Offer.OfferID,
+			"low_stock": c.Offer.LowStock,
 		})
 	}
 	return map[string]any{

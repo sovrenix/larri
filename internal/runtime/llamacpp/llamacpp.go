@@ -99,7 +99,7 @@ func (r *Runtime) Kind() core.RuntimeKind { return core.RuntimeLlamaCpp }
 // engine exists to make usable. Setting the floor at vLLM's would discard the
 // reason to have a second runtime at all.
 func (r *Runtime) Requires() runtime.Requirements {
-	return runtime.Requirements{MinComputeCapability: 500}
+	return runtime.Requirements{MinComputeCapability: 500, Vendor: "nvidia", Why: "llama.cpp"}
 }
 
 // Image returns the container image. M1/M3 use a stock image; the digest-pinned

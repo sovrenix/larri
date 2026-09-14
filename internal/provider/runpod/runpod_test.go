@@ -473,15 +473,11 @@ func TestUnplaceableGpuTypeFallsBackInsteadOfAborting(t *testing.T) {
 	}
 }
 
-// Stock status predicts whether a create succeeds, measured against the live
-// API: an A40 (High) and an RTX 4090 (Medium) both created on request, while
-// an RTX 3070 (Low) was refused with "there are no instances currently
-// available".
-//
-// So a Low-stock type is not offered. It would otherwise be *chosen* — the
-// RTX 3070 is the cheapest thing RunPod lists — and the operator would watch
-// the cheapest option fail every time.
-func TestOutOfStockTypesAreNotOffered(t *testing.T) {
+// Low stock is offered only when the operator allows it. Without that it is
+// skipped and named as low stock, so an operator who needs the card knows
+// what to ask for; with it, the offer is marked, since a create against it
+// may be refused (five of six Low-stock pods probed were placed at once).
+func TestLowStockIsOfferedOnlyWhenAllowed(t *testing.T) {
 	var noticed string
 	p := catalogueOnly(t)
 	p.OnNotice = func(m string) { noticed += m + "; " }
@@ -491,13 +487,12 @@ func TestOutOfStockTypesAreNotOffered(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, o := range offers {
-		if strings.Contains(o.GPUModel, "3070") {
-			t.Error("a Low-stock type was offered; it is the cheapest listed and " +
-				"would be selected, then refused at create")
+		if strings.Contains(o.GPUModel, "3070") || o.LowStock {
+			t.Errorf("offered %s at %d cards, at low stock, without being allowed to", o.GPUModel, o.GPUCount)
 		}
 	}
-	if !strings.Contains(noticed, "out of stock") {
-		t.Errorf("the operator was not told why it vanished: %q", noticed)
+	if !strings.Contains(noticed, "low stock") {
+		t.Errorf("the operator was not told low stock was skipped: %q", noticed)
 	}
 	// High and Medium both stay. Counted by type rather than by offer: one
 	// type is now several offers, one per card count it is in stock at.
@@ -520,23 +515,53 @@ func TestOutOfStockTypesAreNotOffered(t *testing.T) {
 	if len(sizes) != 2 || sizes[0] != 1 || sizes[1] != 2 {
 		t.Errorf("4090 offered at %v cards; want 1 and 2, the sizes it is in stock at", sizes)
 	}
+
+	// Allowed, the Low sizes come back, marked, and nothing else changes.
+	allowed, err := p.Search(context.Background(), core.Criteria{AllowLowStock: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var low, high int
+	for _, o := range allowed {
+		switch {
+		case o.LowStock:
+			low++
+			// The fixture's Low sizes: the 3070 at every size, the 4090 at
+			// four cards, the A100 at eight.
+			if !strings.Contains(o.GPUModel, "3070") && !(o.GPUModel == "RTX 4090" && o.GPUCount == 4) &&
+				!(o.GPUModel == "A100 PCIe" && o.GPUCount == 8) {
+				t.Errorf("%s at %d cards marked low stock; the catalogue says otherwise", o.GPUModel, o.GPUCount)
+			}
+		default:
+			high++
+		}
+	}
+	if low == 0 {
+		t.Error("allowing low stock offered none")
+	}
+	if high != len(offers) {
+		t.Errorf("in-stock offers changed from %d to %d when low stock was allowed", len(offers), high)
+	}
 }
 
-func TestInStockAcceptsOnlyWhatCreates(t *testing.T) {
+// High and Medium always created on request; Low usually does and sometimes
+// is refused, so it is a level of its own; nothing else is stock at all.
+func TestStockLevelsAreReadAsTheyCreate(t *testing.T) {
 	str := func(s string) *string { return &s }
 	for _, c := range []struct {
 		in   *string
-		want bool
+		want stockLevel
 	}{
-		{str("High"), true}, {str("Medium"), true}, {str("medium"), true},
-		{str("Low"), false}, {nil, false}, {str(""), false},
+		{str("High"), stockAvailable}, {str("Medium"), stockAvailable}, {str("medium"), stockAvailable},
+		{str("Low"), stockLow}, {str(" low "), stockLow},
+		{nil, stockNone}, {str(""), stockNone}, {str("Unknown"), stockNone},
 	} {
-		if got := inStock(c.in); got != c.want {
+		if got := stock(c.in); got != c.want {
 			label := "nil"
 			if c.in != nil {
 				label = *c.in
 			}
-			t.Errorf("inStock(%q) = %v, want %v", label, got, c.want)
+			t.Errorf("stock(%q) = %v, want %v", label, got, c.want)
 		}
 	}
 }

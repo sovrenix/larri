@@ -254,6 +254,7 @@ it works at all.
 | `--session 8` | Optimise the choice for a long session: the download amortises and the hourly rate starts to dominate. |
 | `--max-price 0.50` | Hard ceiling per hour. |
 | `--gpu "RTX 3090"` | Restrict to hardware you trust. |
+| `--allow-low-stock` | Consider offers the provider reports at low stock (RunPod). Off by default: most place, but a create against one can be refused — nothing is created if it is, and LARRI falls back. When only a low-stock offer would fit, a refusal names it and this flag. |
 | `--max-gpus 2` | Ceiling on cards per host. Multi-GPU hosts are considered by default — a model past the largest single card is the ordinary reason to want one — and this is how you decline to pay for eight. |
 | `--gpus 4` | Floor, when you know you want to shard. |
 | `--vram 160` | Minimum VRAM per host, summed across its cards. |

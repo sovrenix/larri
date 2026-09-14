@@ -66,7 +66,9 @@ func countsTo(n int) []int {
 func sizeCeiling(types []gpuSize, rentable func(string) bool) int {
 	max := 0
 	for _, g := range types {
-		if rentable(g.ID) && g.MaxGPUCount > max {
+		// A MIG type is offered as one slice whatever it will place, so its
+		// count widens nothing LARRI can use.
+		if rentable(g.ID) && !isMIG(g.ID) && g.MaxGPUCount > max {
 			max = g.MaxGPUCount
 		}
 	}
@@ -195,8 +197,10 @@ type dropReason string
 const (
 	dropUnpriced      dropReason = "no secure-cloud price"
 	dropOutOfStock    dropReason = "out of stock"
+	dropLowStock      dropReason = "low stock: allow low stock to consider them"
 	dropUnpurchasable dropReason = "not a rentable type"
 	dropTooManyGPUs   dropReason = "more gpus than the type allows"
+	dropMIGSlices     dropReason = "more than one mig slice"
 )
 
 // countSep joins a GPU type id to the number of cards in an offer.
@@ -234,16 +238,27 @@ func gpuTypeID(offer string) string {
 //   - **No price.** Selection cannot rank it, no ceiling applies to it, and
 //     cost accounting cannot follow it. "No price" means unavailable, not
 //     free.
-//   - **Out of stock.** Measured rather than assumed: an A40 (High) and an
-//     RTX 4090 (Medium) both created on request, while an RTX 3070 (Low) was
-//     refused outright. Stock is re-read on every search, so this is current
-//     reality rather than a permanent exclusion — a type that comes back into
-//     stock comes back into the list.
+//   - **Out of stock.** No stock status at all. Stock is re-read on every
+//     search, so this is current reality rather than a permanent exclusion —
+//     a type that comes back into stock comes back into the list.
+//   - **Low stock, unless allowed.** Low is not unplaceable: five of six
+//     Low-stock Secure Cloud pods probed on 2026-09-14 — RTX 2000 Ada, RTX
+//     A4000, A100 80GB PCIe, H100 NVL, B200 — were placed on a machine at
+//     once, and the sixth was refused with "no instances currently
+//     available" and nothing created. An RTX 3070 had been refused the same
+//     way earlier. A refusal costs an attempt, not money, so whether to spend
+//     attempts on it is the operator's call; allowed, the offer is marked.
 //   - **Not purchasable.** The catalogue advertises types POST /pods rejects;
 //     rentable is the create call's own list of the ones it accepts.
-func (g gpuType) normalise(count int, mode core.Tristate, rentable func(string) bool) (core.Offer, dropReason, bool) {
+func (g gpuType) normalise(count int, mode core.Tristate, rentable func(string) bool, allowLow bool) (core.Offer, dropReason, bool) {
 	if count > 1 && g.MaxGPUCount > 0 && count > g.MaxGPUCount {
 		return core.Offer{}, dropTooManyGPUs, false
+	}
+	// A MIG slice is part of a card, and a CUDA process sees one MIG device
+	// however many a pod holds. Twenty-two slices of a PRO 6000 read as 528 GB
+	// for a split model; the engine would load into 24 GB of it.
+	if count > 1 && isMIG(g.ID) {
+		return core.Offer{}, dropMIGSlices, false
 	}
 	lowest := g.priceAt(count)
 	if lowest == nil {
@@ -281,7 +296,15 @@ func (g gpuType) normalise(count int, mode core.Tristate, rentable func(string) 
 	if !rentable(g.ID) {
 		return core.Offer{}, dropUnpurchasable, false
 	}
-	if !inStock(lowest.StockStatus) {
+	low := false
+	switch stock(lowest.StockStatus) {
+	case stockAvailable:
+	case stockLow:
+		if !allowLow {
+			return core.Offer{}, dropLowStock, false
+		}
+		low = true
+	default:
 		return core.Offer{}, dropOutOfStock, false
 	}
 	name := g.DisplayName
@@ -298,6 +321,8 @@ func (g gpuType) normalise(count int, mode core.Tristate, rentable func(string) 
 		VRAMPerGPUGB:  g.MemoryInGb,
 		PriceHr:       price,
 		Interruptible: interruptible,
+		LowStock:      low,
+		GPUVendor:     vendorOf(g.ID),
 
 		// Deliberately absent, both of them.
 		//
@@ -314,19 +339,41 @@ func (g gpuType) normalise(count int, mode core.Tristate, rentable func(string) 
 	}, "", true
 }
 
-// inStock reports whether a type can currently be placed.
+type stockLevel int
+
+const (
+	stockNone stockLevel = iota
+	stockLow
+	stockAvailable
+)
+
+// stock reads a catalogue stock status.
 //
-// High and Medium both created on request; Low did not, and absent means the
-// catalogue has nothing to say.
-func inStock(status *string) bool {
+// High and Medium have always created on request. Low usually does and
+// sometimes is refused, so it is its own level. Absent, or anything else,
+// means the catalogue has nothing to offer.
+func stock(status *string) stockLevel {
 	if status == nil {
-		return false
+		return stockNone
 	}
-	switch strings.ToLower(*status) {
+	switch strings.ToLower(strings.TrimSpace(*status)) {
 	case "high", "medium":
-		return true
+		return stockAvailable
+	case "low":
+		return stockLow
 	}
-	return false
+	return stockNone
+}
+
+// vendorOf names who makes a GPU type. Every type RunPod lists is NVIDIA's
+// except AMD's Instinct cards, which say so in the name.
+func vendorOf(id string) string {
+	s := strings.ToUpper(id)
+	if strings.HasPrefix(s, "AMD ") || strings.Contains(s, "INSTINCT") ||
+		strings.Contains(s, "MI300") || strings.Contains(s, "MI250") {
+		return "amd"
+	}
+	return "nvidia"
 }
 
 // computeCapability maps a GPU type to its architecture level ×100.
@@ -492,5 +539,12 @@ func purchasable(id string) bool {
 	}
 	// MIG partitions are slices of a card, not a card, and the create enum
 	// does not list the ones the catalogue advertises.
-	return !strings.Contains(strings.ToLower(id), "mig ")
+	return !isMIG(id)
+}
+
+// isMIG reports a GPU type that is a MIG partition of a card, named like
+// "NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb". "MI300X" is a
+// card, not a partition.
+func isMIG(id string) bool {
+	return strings.Contains(strings.ToLower(id), "mig ")
 }

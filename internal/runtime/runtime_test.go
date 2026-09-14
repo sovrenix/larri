@@ -44,3 +44,17 @@ func TestCUDAFloorExcludesADriverTooOldForTheImage(t *testing.T) {
 		t.Error("an unreported CUDA version must not exclude an offer")
 	}
 }
+
+// Every image LARRI runs is CUDA. An AMD card is refused for one, and a
+// provider that does not say who made the card is not.
+func TestAnImageRunsOnlyOnItsVendor(t *testing.T) {
+	r := Requirements{Vendor: "nvidia", Why: "vLLM"}
+	for vendor, want := range map[string]bool{"nvidia": true, "NVIDIA": true, "": true, "amd": false} {
+		if ok, why := r.SatisfiesVendor(vendor); ok != want {
+			t.Errorf("vendor %q: ok = %v (%s), want %v", vendor, ok, why, want)
+		}
+	}
+	if ok, _ := (Requirements{}).SatisfiesVendor("amd"); !ok {
+		t.Error("an engine that names no vendor refused one")
+	}
+}
