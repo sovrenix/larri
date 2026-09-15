@@ -74,7 +74,14 @@ written down here instead.
 ### 1. Two abstractions, and only two
 
 **Provider** (`Search(Criteria) []Offer`, `Create(Offer) Instance`, `Status`, `Destroy`) and
-**Runtime** (`Bootstrap(Instance, ModelSpec)`, `Readiness`, `Serve`). Provider-specific
+**Workload** (`Bootstrap(Instance, ModelSpec)`, `Readiness`, `Serve`, `Protocol`).
+
+The second one has two tiers, and the tiers are not a third abstraction. A **Runtime** is a
+Workload that additionally serves OpenAI-compatible `/v1` — vLLM, llama.cpp, Ollama — and an
+**Application** is one that serves something else. The lifecycle underneath never depended
+on the wire format, which is why the widening cost nothing structural; what it bought is
+that a caller about to issue a completion can *ask* (`Protocol()`), rather than discover the
+answer from a 404 on a rig that is already billing. Provider-specific
 vocabulary — Vast's offers/asks and interruptible bids, RunPod's pods and Secure vs
 Community Cloud — is normalized at the provider boundary and must not leak upward. If
 core/ranking/wiring code has to branch on which provider it is talking to, the abstraction
@@ -83,11 +90,19 @@ is wrong; fix the boundary rather than adding the branch.
 Provider APIs churn. Verify request/response shapes against current provider docs before
 trusting anything written here or in existing code.
 
-### 2. OpenAI-compatible `/v1` is the contract
+### 2. OpenAI-compatible `/v1` is the contract — for inference clients
 
 llama.cpp (`llama-server`), Ollama, and vLLM all expose an OpenAI-compatible HTTP surface.
 That surface — not any runtime's native API — is what the wiring, the chat UI, and the IDE
-depend on. Runtimes differ in three places only, and those differences belong inside the
+depend on, and that has not changed: every **Runtime** serves `/v1`, and a test asserts it
+for each compiled-in engine.
+
+What the widening in invariant 1 admits is that not every rentable payload is an inference
+engine. An **Application** workload serves its own API, and the rule that follows is simple:
+no inference client is ever pointed at one. `/v1` is still the only thing the IDE and chat
+wiring know how to speak.
+
+Runtimes differ in three places only, and those differences belong inside the
 Runtime implementation:
 
 - how model weights are acquired (HF repo pull vs registry pull vs pre-baked image),

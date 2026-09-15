@@ -92,6 +92,11 @@ func New() *Runtime { return &Runtime{} }
 
 func (r *Runtime) Kind() core.RuntimeKind { return core.RuntimeLlamaCpp }
 
+// Protocol reports the OpenAI-compatible /v1 surface, which is what makes
+// this a Runtime rather than merely a Workload: llama.cpp's server serves /v1 and the
+// wiring, the chat UI and the IDE configuration all depend on it.
+func (r *Runtime) Protocol() runtime.Protocol { return runtime.ProtocolOpenAI }
+
 // Requires reports a much lower floor than vLLM's.
 //
 // llama.cpp's CUDA backend targets Maxwell and later, and it can offload to

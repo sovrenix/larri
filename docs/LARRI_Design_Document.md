@@ -456,20 +456,62 @@ stated separately.
 
 ### 6.1 Interface
 
+The second abstraction has two tiers. **Workload** is the general one — anything LARRI
+rents hardware for and holds open — and **Runtime** is the inference-engine case, which
+additionally promises the OpenAI-compatible `/v1` surface of P2.
+
 ```go
-type Runtime interface {
+type Protocol string
+
+const (
+    ProtocolOpenAI  Protocol = "openai-v1"
+    ProtocolComfyUI Protocol = "comfyui"
+)
+
+type Workload interface {
     Kind() RuntimeKind
+    Protocol() Protocol                      // what the endpoint speaks
+    Requires() Requirements                  // hardware floors, applied during selection
     Image(spec ModelSpec, plan SizingPlan) string
     Bootstrap(ctx context.Context, sess Session, spec ModelSpec, plan SizingPlan, progress chan<- Progress) error
     Launch(ctx context.Context, sess Session, spec ModelSpec, plan SizingPlan) (Endpoint, error)
-    Ready(ctx context.Context, ep Endpoint, spec ModelSpec) error  // real completion
+    Ready(ctx context.Context, ep Endpoint, spec ModelSpec) error  // a real round-trip
     Logs(ctx context.Context, sess Session, tail int) (io.ReadCloser, error)
     Stop(ctx context.Context, sess Session) error
 }
+
+// Runtime is a Workload whose endpoint speaks /v1. The method set is identical;
+// the type exists because the distinction it names is load-bearing.
+type Runtime interface { Workload }
 ```
 
 `Session` is an SSH exec session against the instance. `Progress` carries phase, percent,
 and bytes so a 40-GB weight download does not look like a hang (FR-RT-06).
+
+**Why the widening.** The lifecycle underneath this interface — renting, pinning a host
+key, tunnelling to a loopback bind, supervising on evidence, destroying with confirmation —
+never depended on the payload serving `/v1`. It was written as though it did because the
+only payloads were engines. The alternative to widening was an adapter whose `Ready()`
+returned something other than a completion while its interface promised one — a lie the
+type system would have helped nobody catch.
+
+**P2 is unchanged.** "`/v1` is the contract" is a statement about *inference clients*: the
+IDE wiring, the chat clients, and the chat pane all depend on it and always will. What
+changes is that a caller can now *ask*, so code about to issue a completion can require the
+protocol rather than discover its absence on a rig that is already billing.
+`TestEveryRuntimeServesOpenAI` checks that every compiled-in engine still answers
+`ProtocolOpenAI`, so the promise is enforced rather than merely documented.
+
+`Protocol.Browser()` reports whether a surface is opened rather than configured, and two
+consequences follow from that one bit: the local listener needs a cookie-shaped credential
+(§10.1.1), because neither a navigation nor a WebSocket handshake can carry an
+`Authorization` header; and the content it renders comes from a host with root (§15.4).
+
+**Failure classification.** `waitReady` cannot tell a dead host from a broken
+configuration, and its default — try another machine — is wrong for a payload that died on
+an import error, where the next machine runs the same image and dies identically
+(FR-PROV-05). A workload may implement `FailureClassifier` to read its own log and say
+which it was; returning `ClassUnknown` keeps the host-failure default.
 
 ### 6.2 Per-Runtime Differences
 
