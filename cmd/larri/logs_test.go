@@ -145,3 +145,62 @@ func TestFollowingALogOutlastsTheReleaseAndStopsWithTheHolder(t *testing.T) {
 		t.Errorf("repeated what was already shown:\n%s", out.String())
 	}
 }
+
+// A rig a foreground process holds has logs only from earlier holders, and no
+// more will be written to them: following says where the output goes now,
+// rather than polling a file nobody writes — at the start, or when a foreground
+// process takes the rig over.
+func TestFollowingARigAForegroundProcessHoldsSaysWhereItsOutputGoes(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	id, _ := state.NewID(time.Now())
+	if err := st.Save(&core.Rig{ID: id, State: core.StateReady, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	up := filepath.Join(dir, "up.log")
+	appendTo(t, up, "detached bring-up\n")
+
+	// A detached holder, followed, and then a foreground one taking over.
+	release, err := st.Hold(id, state.Holder{PID: os.Getpid(), Detached: true, Log: up})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, _ := daemon.FindRigLogs(st, id)
+	var out syncBuffer
+	done := make(chan error, 1)
+	go func() { done <- followLogs(context.Background(), st, l, 0, &out, 5*time.Millisecond) }()
+	waitFor(t, &out, "detached bring-up")
+	release()
+	fg, err := st.Hold(id, state.Holder{PID: os.Getpid()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fg()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("kept following after a foreground process took the rig")
+	}
+	if !strings.Contains(out.String(), "in the foreground") {
+		t.Errorf("did not say where the output went:\n%s", out.String())
+	}
+
+	// Asked to follow while the foreground process holds it: said at once.
+	l, err = daemon.FindRigLogs(st, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var now syncBuffer
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := followLogs(ctx, st, l, 0, &now, 5*time.Millisecond); err != nil || !strings.Contains(now.String(), "in the foreground") {
+		t.Errorf("err %v, output %q", err, now.String())
+	}
+	if ctx.Err() != nil {
+		t.Error("followed until the deadline instead of saying at once")
+	}
+}

@@ -5,7 +5,9 @@ package state
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -94,4 +96,134 @@ func TestEveryHoldersLogIsKept(t *testing.T) {
 	if got := h.Logs(); len(got) != 2 || got[0] != "/s/logs/up.log" || got[1] != "/s/logs/resume.log" {
 		t.Errorf("logs = %v; want both detached holders' logs, oldest first", got)
 	}
+}
+
+// A reader never sees a rig held by nobody in particular. The record used to
+// be the lock file's own contents, truncated and rewritten under the lock, so a
+// status taken mid-write read an empty record and named pid 0 as the holder.
+func TestAHeldRigAlwaysNamesItsHolder(t *testing.T) {
+	s := openStore(t)
+	rig := newRig(t)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			release, err := s.Hold(rig.ID, Holder{PID: os.Getpid(), Detached: true,
+				Log: fmt.Sprintf("/s/logs/%d.log", i)})
+			if err == nil {
+				release()
+			}
+		}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		h, held, err := s.HolderOf(rig.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if held && h.PID == 0 {
+			t.Fatal("a held rig was reported with no holder")
+		}
+	}
+	close(stop)
+	<-done
+}
+
+// A hold whose record cannot be written is not a hold: the process would serve
+// a rig that status, resume and logs cannot attribute to it.
+func TestAHoldThatCannotBeRecordedFailsAndFreesTheRig(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permissions do not bind root")
+	}
+	s := openStore(t)
+	rig := newRig(t)
+	release, err := s.Hold(rig.ID, Holder{PID: os.Getpid()}) // creates the lock file
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	rigs := filepath.Join(s.dir, "rigs")
+	if err := os.Chmod(rigs, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(rigs, 0o700)
+	if _, err := s.Hold(rig.ID, Holder{PID: os.Getpid()}); err == nil {
+		t.Fatal("held a rig whose record could not be written")
+	}
+	os.Chmod(rigs, 0o700)
+	again, err := s.Hold(rig.ID, Holder{PID: os.Getpid()})
+	if err != nil {
+		t.Fatalf("the failed hold kept the lock: %v", err)
+	}
+	again()
+}
+
+// A hold that cannot be inspected is reported as unknown, not as absent:
+// calling a supervised rig an orphan misleads the decision it informs.
+func TestAnUnreadableHoldIsUnknownNotAbsent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permissions do not bind root")
+	}
+	s := openStore(t)
+	rig := newRig(t)
+	rig.LocalPort = 8123
+	if err := s.Transition(rig, core.StateReady, "ready"); err != nil {
+		t.Fatal(err)
+	}
+	release, err := s.Hold(rig.ID, Holder{PID: os.Getpid()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	lock := s.holdPath(rig.ID)
+	if err := os.Chmod(lock, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(lock, 0o600)
+	entries, _ := s.Entries()
+	sm := s.Describe(rig, entries, time.Now())
+	if sm.HolderErr == "" || sm.Held {
+		t.Fatalf("summary %+v; want the hold reported unknown", sm)
+	}
+	if sm.Endpoint == "" {
+		t.Error("an unknown hold was reported as no endpoint, which is the claim of an absent one")
+	}
+}
+
+// A reader asking who holds a rig does not make taking it fail. The probe takes
+// the lock shared for an instant, and a hold attempted in that instant was
+// refused as though another process held the rig.
+func TestAskingWhoHoldsARigDoesNotStopItBeingTaken(t *testing.T) {
+	s := openStore(t)
+	rig := newRig(t)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_, _, _ = s.HolderOf(rig.ID)
+			}
+		}
+	}()
+	for i := 0; i < 300; i++ {
+		release, err := s.Hold(rig.ID, Holder{PID: os.Getpid()})
+		if err != nil {
+			close(stop)
+			<-done
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+		release()
+	}
+	close(stop)
+	<-done
 }

@@ -2258,10 +2258,19 @@ is the wrong place for a credential.
 **One holder per rig.** Nothing stopped two: `larri resume` would adopt a rig a detached
 `larri up` was serving and start a second tunnel and supervisor, each with its own idle clock
 counting the other's probes as not operator traffic. `state.Store.Hold` takes an exclusive
-non-blocking `flock` on `rigs/.<id>.hold` and writes the holder's pid, start time, and log
-path there. The lock is the kernel's, so a holder that crashes or is `kill -9`ed frees the rig
-by dying, with no stale-pid logic and nothing to clean up. The record is kept after release,
-so the last holder's log can still be found.
+non-blocking `flock` on `rigs/.<id>.hold`, then publishes the holder's pid, start time and log
+paths as `rigs/.<id>.holder.json`, written beside the old record and renamed over it. The lock
+is the kernel's, so a holder that crashes or is `kill -9`ed frees the rig by dying, with no
+stale-pid logic and nothing to clean up. The record is kept after release, so the last
+holder's log can still be found, and a record that cannot be written fails the hold.
+
+The record was first the lock file's own contents, truncated and rewritten under the lock, and
+a status taken mid-write named pid 0 as the holder. Separating them leaves one instant — the
+lock taken, the record not yet renamed — which a reader recognises as a held lock under a
+record naming no live process, and reads again. The probe itself takes the lock shared for an
+instant, and a `resume` attempted in that instant was refused as though a process held the
+rig; `Hold` waits out a lock for a tenth of a second, which a probe never lasts and a holder
+always does. A hold that cannot be inspected at all is reported as unknown, never as absent.
 
 The hold is taken the moment `Up` mints the rig's id — before the intent is journalled — and
 handed to the `Serve` that follows, not taken afresh there. Most of a bring-up is a download,
@@ -2287,8 +2296,18 @@ FAILED rig).
 **A resumed rig is supervised.** `larri resume` used to reconnect and hold with no
 supervisor, so a detached resume would have been exactly the unwatched, billing rig
 reclamation exists for. It now runs the same supervisor as `up`, with the configured idle
-timeout and budget; a policy termination tears the rig down, and an interrupt leaves it
-running, as it always did.
+timeout and budget; a policy termination tears the rig down. An interrupt to a foreground
+`resume` leaves the rig running, as it always did, but a *detached* holder that is stopped
+tears its rig down whichever command started it. Its interrupt is a kill, a logout or a
+shutdown, with no one at a terminal to read that the rig kept running, and the alternative
+made the outcome of a reboot depend on whether a rig had last been brought up or resumed. The
+teardown is recorded as "the detached larri process holding it was stopped".
+
+`larri_down` in an MCP session stops the session with `StopForTeardown`, which takes the hold
+from the live rig *before* cancelling the bring-up — cancelling first lets the supervisor end
+serving and release the hold itself — and releases it once `Down` returns. `Live.Close` and
+`Live.EndServing` are serialised and one-shot, since in a session they run on the tool call's
+goroutine and the supervisor's at once.
 
 `larri down` from another process is unaffected by the hold and does not wait for it: ending
 a rig must never depend on the process serving it. The holder learns of it through the store
@@ -2856,7 +2875,11 @@ stored creates `default` once the rig is ready. The proxy accepts every stored k
 reaches a rig already serving on its next request. It holds the keys it mints itself as hashes
 too: a *probe key*, per process and never shown, which is what LARRI's readiness and health
 checks present, so they never depend on which client keys exist; and, with `--new-key` or from
-the MCP server, a *one-rig key*, shown once and gone with the rig. Until this existed every
+the MCP server, a *one-rig key*, shown once and gone with the rig. A key file that cannot be
+read matches no key, so `UpAndServe` and a detached launch refuse it before renting and name
+`--new-key`; a rig wired after the file broke, and a READY rig whose `default` key cannot be
+written, get a one-rig key instead (`Live.AddRigKey`) — a rig billing while it admits no
+client is worse than a key shown once. Until this existed every
 bring-up minted the client key, contradicting the lifetime in the table above, and `larri
 resume` minted one it never printed.
 

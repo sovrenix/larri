@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -184,6 +185,63 @@ func TestLogsForARigHeldElsewhereAreTheHoldersLog(t *testing.T) {
 	m := got.(map[string]any)
 	if m["source"] != "larri" || m["held"] != true || !strings.Contains(m["log"].(string), "READY") {
 		t.Errorf("result = %v", m)
+	}
+}
+
+// A prefix naming the served rig and another is ambiguous, and larri_logs says
+// so — rather than taking it to mean the rig this server happens to serve.
+func TestLogsRefuseAPrefixThatNamesMoreThanOneRig(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	at := time.Now()
+	var ids []string
+	for i := 0; i < 2; i++ {
+		id, _ := state.NewID(at) // one millisecond: a shared prefix
+		if err := st.Save(&core.Rig{ID: id, State: core.StateReady, CreatedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	sess := &Session{}
+	sess.Begin(ids[0], func() {})
+	sess.Ready(&daemon.Live{Rig: &core.Rig{ID: ids[0]}})
+	d := Deps{Session: sess, Store: st}
+	_, err = d.logs(context.Background(), json.RawMessage(`{"rig":"`+ids[0][:10]+`"}`))
+	if err == nil || !strings.Contains(err.Error(), "matches 2 rigs") {
+		t.Errorf("err = %v; want the prefix refused as ambiguous", err)
+	}
+}
+
+// larri_status says who holds a rig, as larri status does: the pid, whether it
+// is detached, and its log.
+func TestStatusNamesTheHolder(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	id, _ := state.NewID(time.Now())
+	rig := &core.Rig{ID: id, State: core.StateReady, CreatedAt: time.Now()}
+	if err := st.Save(rig); err != nil {
+		t.Fatal(err)
+	}
+	release, err := st.Hold(id, state.Holder{PID: os.Getpid(), Detached: true, Log: "/s/logs/up.log"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	got, err := Deps{Store: st}.status(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(got)
+	for _, want := range []string{`"held":true`, fmt.Sprintf(`"pid":%d`, os.Getpid()), `"detached":true`, `"log":"/s/logs/up.log"`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("status lacks %s: %s", want, b)
+		}
 	}
 }
 

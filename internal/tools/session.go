@@ -148,6 +148,29 @@ func (s *Session) Stop() {
 	}
 }
 
+// StopForTeardown stops the session as Stop does but keeps holding its rig,
+// and returns the release to call once the rig is torn down.
+//
+// larri_down stopped the session and then destroyed, so the hold was released
+// before the destroy began and a `larri resume` could reconnect to a rig being
+// torn down. The hold is taken before the bring-up is cancelled: cancelling
+// first lets the supervisor return, end serving, and release the hold itself.
+func (s *Session) StopForTeardown() (release func()) {
+	s.mu.Lock()
+	cancel, live := s.cancel, s.live
+	s.cancel, s.live, s.running = nil, nil, false
+	s.mu.Unlock()
+
+	release = func() {}
+	if live != nil {
+		release = live.EndServing()
+	}
+	if cancel != nil {
+		cancel()
+	}
+	return release
+}
+
 // HeldRig returns the rig a session is holding, if it matches the one given.
 func (s *Session) HeldRig(rig *core.Rig) bool {
 	return rig != nil && s.RigID() == rig.ID

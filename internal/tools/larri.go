@@ -220,6 +220,25 @@ func (d Deps) status(ctx context.Context, raw json.RawMessage) (any, error) {
 			"held":      sm.Held,
 			"created":   sm.CreatedAt.UTC().Format(time.RFC3339),
 		}
+		// Who holds it, as `larri status` says: the pid to stop, and where
+		// a detached holder's log is. Unknown is reported as unknown.
+		switch {
+		case sm.HolderErr != "":
+			row["held"] = nil
+			row["holder_error"] = sm.HolderErr
+		case sm.Held:
+			holder := map[string]any{
+				"pid": sm.Holder.PID, "detached": sm.Holder.Detached,
+				"since": sm.Holder.Started.UTC().Format(time.RFC3339),
+			}
+			if sm.Holder.Log != "" {
+				holder["log"] = sm.Holder.Log
+			}
+			row["holder"] = holder
+		}
+		if logs := sm.Holder.Logs(); len(logs) > 0 {
+			row["logs"] = logs
+		}
 		if sm.Instance != "" {
 			row["instance"] = sm.Instance
 		}

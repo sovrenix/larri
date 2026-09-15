@@ -27,6 +27,16 @@ func (d Deps) logs(ctx context.Context, raw json.RawMessage) (any, error) {
 	if a.Tail <= 0 {
 		a.Tail = 100
 	}
+	// The rig is resolved across every rig before the served one is chosen,
+	// so a prefix that also names another rig is refused as ambiguous rather
+	// than taken to mean the one this server happens to hold.
+	if a.Rig != "" && d.Store != nil {
+		id, err := daemon.ResolveRig(d.Store, a.Rig)
+		if err != nil {
+			return nil, err
+		}
+		a.Rig = id
+	}
 	live := d.live()
 	if live == nil || (a.Rig != "" && !strings.HasPrefix(live.Rig.ID, strings.ToUpper(a.Rig))) {
 		return d.holderLogs(a)
@@ -324,12 +334,14 @@ func (d Deps) down(ctx context.Context, raw json.RawMessage) (any, error) {
 		}
 		return map[string]any{"destroyed": false, "note": "nothing billable to tear down"}, nil
 	}
-	// Stop holding it before destroying it. A supervisor still running
-	// against a rig that is being torn down would race the teardown, and the
-	// tunnel would be closed twice.
+	// Stop serving it before destroying it — a supervisor still running
+	// against a rig being torn down would race the teardown — but keep holding
+	// it until the destroy is confirmed, so nothing reconnects to it meanwhile.
+	release := func() {}
 	if d.Session != nil {
-		d.Session.Stop()
+		release = d.Session.StopForTeardown()
 	}
+	defer release()
 	o, err := d.NewOrchestrator(string(target.Runtime), target.ProviderName(), target.Model)
 	if err != nil {
 		return nil, err

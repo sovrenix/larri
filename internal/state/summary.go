@@ -59,6 +59,9 @@ type Summary struct {
 	// supervisor — idle reclamation is not running for it.
 	Held   bool
 	Holder Holder
+	// HolderErr is why whether a process holds the rig could not be told.
+	// Set, Held means nothing: an unreadable hold is not an absent one.
+	HolderErr string
 }
 
 // Summarise renders a rig and its journal for display.
@@ -91,9 +94,15 @@ func Summarise(r *core.Rig, entries []Entry, now time.Time) Summary {
 // the same thing about a rig nobody is serving.
 func (s *Store) Describe(r *core.Rig, entries []Entry, now time.Time) Summary {
 	sm := Summarise(r, entries, now)
-	if h, held, err := s.HolderOf(r.ID); err == nil {
-		sm.Held, sm.Holder = held, h
+	h, held, err := s.HolderOf(r.ID)
+	if err != nil {
+		// Unknown, and said so. Reporting it as unheld would call a rig
+		// something is supervising an orphan, which is the decision this
+		// line exists to inform.
+		sm.HolderErr = err.Error()
+		return sm
 	}
+	sm.Held, sm.Holder = held, h
 	// An endpoint is only there while a process serves it.
 	if !sm.Held {
 		sm.Endpoint = ""

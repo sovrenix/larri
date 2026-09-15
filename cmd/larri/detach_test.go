@@ -18,6 +18,10 @@ import (
 
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
+	pfake "go.sovrenix.com/larri/internal/provider/fake"
+	"go.sovrenix.com/larri/internal/rank"
+	rfake "go.sovrenix.com/larri/internal/runtime/fake"
+	"go.sovrenix.com/larri/internal/sizing"
 	"go.sovrenix.com/larri/internal/state"
 )
 
@@ -338,5 +342,95 @@ func TestAJSONLauncherReportsItsOwnFailureOnce(t *testing.T) {
 	if got := strings.Count(string(out), "\n"); got != 1 || !strings.Contains(string(out), `"ok":false`) ||
 		!strings.Contains(string(out), "already in use") {
 		t.Errorf("stdout = %q; want one failure object", out)
+	}
+}
+
+// swapStdout gives a test the process's stdout, and restores it and the JSON
+// reporting state afterwards.
+func swapStdout(t *testing.T) (read func() string) {
+	t.Helper()
+	origOut, origReport, origMode := os.Stdout, reportOut, jsonMode
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout, reportOut, jsonMode = origOut, origReport, origMode })
+	return func() string {
+		os.Stdout = origOut
+		w.Close()
+		b, _ := io.ReadAll(r)
+		return string(b)
+	}
+}
+
+// A refused flag is still an outcome --json owes an object for: the check ran
+// before stdout was given over to the report, so the refusal went to stderr and
+// stdout stayed empty.
+func TestARefusedDetachStillAnswersJSON(t *testing.T) {
+	t.Setenv("LARRI_STATE_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	read := swapStdout(t)
+	err := cmdUp(context.Background(), []string{"-d", "--json", "--model", "test/model"}) // no terminal, no --yes
+	if err == nil {
+		t.Fatal("rented detached without --yes and without a terminal")
+	}
+	reportFailure(err)
+	out := read()
+	var rep detachReport
+	if jerr := json.Unmarshal([]byte(strings.TrimSpace(out)), &rep); jerr != nil || rep.OK || !strings.Contains(rep.Error, "needs --yes") {
+		t.Errorf("stdout %q; want one failure object", out)
+	}
+}
+
+// Declining the offer is an outcome too, and with --json it is reported as one.
+func TestADeclinedDetachedRentalAnswersJSON(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	market := []core.Offer{{Provider: "fake", OfferID: "a", GPUModel: "RTX 4090", GPUCount: 1,
+		VRAMPerGPUGB: 24, PriceHr: 0.40, Reliability: 0.97, MachineID: "m1"}}
+	o := &daemon.Orchestrator{
+		Store: st, Provider: pfake.New("fake", market, pfake.Behaviour{}), Runtime: rfake.New(rfake.Behaviour{}),
+		Resolver: sizing.StaticResolver{"test/model": sizing.Facts{Ref: "test/model", Params: 8.03, Layers: 32,
+			KVHeads: 8, HeadDim: 128, HiddenSize: 4096, MaxContextLen: 131072}},
+		Policy: rank.DefaultPolicy(),
+	}
+	req := daemon.UpRequest{Model: core.ModelSpec{Ref: "test/model", ServedName: "test",
+		Quantization: "q4_K_M", ContextLen: 8192}, DiskGB: 50}
+	prompts := make(chan cliPrompt)
+	go func() {
+		for p := range prompts {
+			p.Result <- false
+		}
+	}()
+	defer close(prompts)
+	read := swapStdout(t)
+	jsonOnStdout()
+	if err := launchDetachedUp(context.Background(), o, req, nil,
+		detachOptions{interactive: true, json: true, prompts: prompts}); err != nil {
+		t.Fatal(err)
+	}
+	out := read()
+	var rep detachReport
+	if jerr := json.Unmarshal([]byte(strings.TrimSpace(out)), &rep); jerr != nil || rep.OK || !strings.Contains(rep.Error, "declined") {
+		t.Errorf("stdout %q; want the decline reported as one object", out)
+	}
+}
+
+// A detached holder's interrupt is a signal no one typed, and the record of
+// the teardown says so.
+func TestAnInterruptedTeardownSaysWhoInterrupted(t *testing.T) {
+	orig := detachedMode
+	defer func() { detachedMode = orig }()
+	detachedMode = false
+	if s := interruptedTermination().Summary; !strings.Contains(s, "interrupted from the CLI") {
+		t.Errorf("foreground: %q", s)
+	}
+	detachedMode = true
+	if s := interruptedTermination().Summary; !strings.Contains(s, "detached larri process holding it was stopped") {
+		t.Errorf("detached: %q", s)
 	}
 }

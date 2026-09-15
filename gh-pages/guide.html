@@ -335,7 +335,9 @@ bin/larri resume -d 01M2H0…   # after its holder died: take the rig back, in t
   <p class="dim" style="font-size:var(--text-sm);margin:0 0 16px">A rig has one holder at a
   time: <b>resume</b> refuses a rig another larri process is serving and names its pid.
   <b>larri logs</b> takes an id or any unique prefix of it, keeps every holder's log oldest
-  first, and <b>-f</b> stops when the rig has ended and its holder has exited.</p>
+  first, and <b>-f</b> stops when the rig has ended and its holder has exited. Stopping a
+  detached process that is serving — <b>kill</b>, logout, shutdown — tears its rig down,
+  whether <b>up -d</b> or <b>resume -d</b> started it.</p>
 
   <h3>From a script or an agent</h3>
   <p style="margin:0 0 10px">Without a terminal there is no one to ask, so <b>-d</b> needs

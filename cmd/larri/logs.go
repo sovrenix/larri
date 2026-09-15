@@ -101,7 +101,16 @@ func parseInterleaved(fs *flag.FlagSet, args []string) []string {
 func followLogs(ctx context.Context, st *state.Store, l daemon.RigLogs, offset int64,
 	out io.Writer, every time.Duration) error {
 
-	path, pid := l.Paths[len(l.Paths)-1], l.Holder.PID
+	path := l.Paths[len(l.Paths)-1]
+	foreground := func(pid int) error {
+		fmt.Fprintf(out, "── larri pid %d holds the rig now, in the foreground: its output goes to its terminal\n", pid)
+		return nil
+	}
+	// The logs are the history of a rig a foreground process holds now, and
+	// nothing more will be written to them.
+	if l.Held && l.Holder.Log == "" {
+		return foreground(l.Holder.PID)
+	}
 	tick := time.NewTicker(every)
 	defer tick.Stop()
 	for {
@@ -109,14 +118,13 @@ func followLogs(ctx context.Context, st *state.Store, l daemon.RigLogs, offset i
 		h, held, err := st.HolderOf(l.Rig)
 		switch {
 		case err != nil:
-		case held && h.PID != pid && h.Log == "":
-			fmt.Fprintf(out, "── larri pid %d holds the rig now, in the foreground: its output goes to its terminal\n", h.PID)
-			return nil
-		case held && h.PID != pid:
+		case held && h.Log == "":
+			return foreground(h.PID)
+		case held && h.Log != path:
 			fmt.Fprintf(out, "── larri pid %d holds the rig now: %s\n", h.PID, h.Log)
-			path, pid, offset = h.Log, h.PID, 0
+			path, offset = h.Log, 0
 			continue
-		case !held && !processAlive(pid):
+		case !held && !processAlive(h.PID):
 			copyLogFrom(out, path, offset)
 			return nil
 		}

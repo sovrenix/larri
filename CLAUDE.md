@@ -151,7 +151,8 @@ hold in code:
   anything journalled after the end.
 - **A rig has at most one holder** — the process serving its endpoint and supervising
   it — enforced by a kernel `flock` (`state.Store.Hold`), so a holder that crashes frees
-  it by dying. `larri resume` once adopted a rig a detached `larri up` was serving: two
+  it by dying. The record naming the holder is a separate file replaced by rename; it was
+  once rewritten inside the lock file, and status read pid 0 mid-write. `larri resume` once adopted a rig a detached `larri up` was serving: two
   tunnels, two supervisors, two idle clocks. The hold is taken when `Up` mints the id and
   handed to `Serve`, not taken again, and kept through a teardown the holder runs
   (`Live.EndServing`, released after `Down`) — releasing it first let `resume` reconnect to
@@ -162,7 +163,8 @@ hold in code:
   session; the launcher confirms (from a terminal) and passes the agreed price down as
   `--max-price`, and without a terminal `-d` requires `--yes` rather than implying it. The
   holder's log never carries a key value — a key shown for the first time travels over the
-  inherited report pipe to the launcher only.
+  inherited report pipe to the launcher only. A detached holder that is stopped tears its
+  rig down, whether `up -d` or `resume -d` started it.
 - **A failed create must resolve itself.** Journal *and* snapshot the failure together —
   `RecordIntent` writes only the journal, and the two disagreeing left a rig reading
   SELECTED in `larri status` while the journal billed it at $1.39/hr for four days — then

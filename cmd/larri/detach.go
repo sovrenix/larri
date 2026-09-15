@@ -363,6 +363,9 @@ func launchDetachedUp(ctx context.Context, o *daemon.Orchestrator, req daemon.Up
 	if err := daemon.CheckLocalPort(req.LocalPort); err != nil {
 		return err
 	}
+	if err := o.CheckClientKeys(); err != nil {
+		return err
+	}
 	childArgs := withoutFlags(args, "d", "detach", "json")
 	var agreed float64
 	if !opt.yes {
@@ -379,6 +382,9 @@ func launchDetachedUp(ctx context.Context, o *daemon.Orchestrator, req daemon.Up
 		}
 		if agreed == 0 {
 			fmt.Println("\n  not rented")
+			if opt.json {
+				_ = json.NewEncoder(reportOut).Encode(detachReport{Error: "not rented: the offer was declined"})
+			}
 			return nil
 		}
 		ceiling := agreed + 0.0005 // the quote to the tenth of a cent, and no further

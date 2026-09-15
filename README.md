@@ -426,7 +426,8 @@ From a terminal, `-d` still shows the offer and asks, and the process it starts 
 nothing dearer than the price you agreed to — including when it falls back, so if the host you
 agreed to fails and nothing else is that cheap, it stops and says so. Without a terminal it
 needs `--yes`. With `--json`, stdout is the one object — `"ok":false` with the error when it
-fails — and the notices go to stderr. The log is
+fails, is refused, or you decline — and the notices go to stderr. Stopping a detached process
+that is serving tears its rig down, as Ctrl-C does to `larri up`. The log is
 `0600` and never holds a key: a key shown for the first time is printed by the command you
 ran and nowhere else. `larri resume -d` reconnects the same way. A rig has one holder at a
 time, so `resume` refuses a rig another larri process is already serving and names it.

@@ -36,27 +36,20 @@ const maxLogRead = 8 << 20
 // FindRigLogs resolves a rig by its id or a unique prefix of it — or, given
 // none, the newest rig a detached holder wrote a log for — and finds its logs.
 func FindRigLogs(st *state.Store, ref string) (RigLogs, error) {
-	rigs, err := st.List() // newest first
-	if err != nil {
-		return RigLogs{}, err
-	}
 	var ids []string
-	for _, r := range rigs {
-		if ref == "" || strings.HasPrefix(r.ID, strings.ToUpper(ref)) {
+	if ref != "" {
+		id, err := ResolveRig(st, ref)
+		if err != nil {
+			return RigLogs{}, err
+		}
+		ids = []string{id}
+	} else {
+		rigs, err := st.List() // newest first
+		if err != nil {
+			return RigLogs{}, err
+		}
+		for _, r := range rigs {
 			ids = append(ids, r.ID)
-		}
-	}
-	switch {
-	case ref != "" && len(ids) == 0:
-		return RigLogs{}, fmt.Errorf("logs: no rig %q: larri status --all lists them", ref)
-	case ref != "" && len(ids) > 1:
-		for _, id := range ids {
-			if id == strings.ToUpper(ref) {
-				ids = []string{id}
-			}
-		}
-		if len(ids) > 1 {
-			return RigLogs{}, fmt.Errorf("logs: %q matches %d rigs: give more of the id", ref, len(ids))
 		}
 	}
 	for _, id := range ids {
@@ -81,6 +74,31 @@ func FindRigLogs(st *state.Store, ref string) (RigLogs, error) {
 		}
 	}
 	return RigLogs{}, errors.New("logs: no rig has a log: a detached larri up -d or larri resume -d writes one")
+}
+
+// ResolveRig names a rig by its id or a unique prefix of it, in either case.
+func ResolveRig(st *state.Store, ref string) (string, error) {
+	rigs, err := st.List()
+	if err != nil {
+		return "", err
+	}
+	want := strings.ToUpper(ref)
+	var ids []string
+	for _, r := range rigs {
+		if r.ID == want {
+			return r.ID, nil
+		}
+		if strings.HasPrefix(r.ID, want) {
+			ids = append(ids, r.ID)
+		}
+	}
+	switch len(ids) {
+	case 0:
+		return "", fmt.Errorf("logs: no rig %q: larri status --all lists them", ref)
+	case 1:
+		return ids[0], nil
+	}
+	return "", fmt.Errorf("logs: %q matches %d rigs: give more of the id", ref, len(ids))
 }
 
 // Read returns the rig's logs, oldest first, cut to their last n lines — all of

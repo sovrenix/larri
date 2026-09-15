@@ -68,13 +68,19 @@ func (o *Orchestrator) Adopt(ctx context.Context, rigID string) (live *Live, err
 	if err != nil {
 		return nil, err
 	}
+	// A failed adoption gives back what it built — the SSH client, forward
+	// and proxy of a partial reconnect, and the hold — and returns no Live, so
+	// no caller is left owning half a connection.
 	defer func() {
-		if err != nil {
-			if live != nil {
-				live.release = nil
-			}
-			release()
+		if err == nil {
+			return
 		}
+		if live != nil {
+			_ = live.Close()
+			live = nil
+			return
+		}
+		release()
 	}()
 
 	// ---- is it still there? ---------------------------------------------
@@ -284,7 +290,7 @@ func (o *Orchestrator) attachTunnel(ctx context.Context, live *Live, rig *core.R
 	if o.ClientKeys != nil {
 		proxy.SetKeys(o.ClientKeys)
 	}
-	if o.OneRigKey || o.ClientKeys == nil {
+	if o.needsRigKey() {
 		token, err := secret.Generate(32)
 		if err != nil {
 			cancel()

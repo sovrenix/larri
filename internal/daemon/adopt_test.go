@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"go.sovrenix.com/larri/internal/core"
 	pfake "go.sovrenix.com/larri/internal/provider/fake"
@@ -183,5 +184,34 @@ func TestARigIsHeldFromTheMomentItIsRented(t *testing.T) {
 	release()
 	if _, held, _ := o.Store.HolderOf(rig.ID); held {
 		t.Error("released, and still held")
+	}
+}
+
+// attachingFake is the fake provider with the one capability adoption needs
+// before it reconnects, so a test reaches the reconnect.
+type attachingFake struct{ *pfake.Provider }
+
+func (attachingFake) AttachSSHKey(context.Context, string, string) error { return nil }
+
+// An adoption that fails after it began reconnecting — here, a host whose sshd
+// never answers — closes what it built and returns no Live, and lets go of the
+// rig, rather than leaving a caller holding half a connection.
+func TestAnAdoptionThatFailsPartWayClosesWhatItBuilt(t *testing.T) {
+	o, p, rig := upRig(t)
+	o.Provider = attachingFake{p}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	live, err := o.Adopt(ctx, rig.ID)
+	if err == nil {
+		t.Fatal("adopted a host with no sshd")
+	}
+	if strings.Contains(err.Error(), "attach a key") {
+		t.Fatalf("failed before reconnecting, which is not the case under test: %v", err)
+	}
+	if live != nil {
+		t.Errorf("a failed adoption returned a Live: %+v", live)
+	}
+	if _, held, _ := o.Store.HolderOf(rig.ID); held {
+		t.Error("a failed adoption kept holding the rig")
 	}
 }

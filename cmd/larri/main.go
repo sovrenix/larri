@@ -322,12 +322,14 @@ func cmdUp(ctx context.Context, args []string) error {
 		"how long the host waits without hearing from larri before stopping itself "+
 			"(0: derive from --idle-timeout; -1: disable)")
 	_ = fs.Parse(args)
+	// Before the checks, so a refused flag is reported as the object --json
+	// promises rather than only on stderr.
+	if *jsonOut && detachedHolder == nil {
+		jsonOnStdout()
+	}
 	if err := checkDetach("up", *detach, *jsonOut, *dryRun, *yes,
 		config.DetectMode(config.Invocation{ForceNonInteractive: *yes}, os.Getenv).Interactive()); err != nil {
 		return err
-	}
-	if *jsonOut && detachedHolder == nil {
-		jsonOnStdout()
 	}
 	if *sshTimeout < 0 {
 		return errors.New("ssh-timeout must not be negative")
@@ -594,6 +596,7 @@ func cmdUp(ctx context.Context, args []string) error {
 	})
 	if term == nil {
 		fmt.Printf("\n  interrupted; tearing down\n")
+		term = interruptedTermination()
 	} else {
 		fmt.Printf("\n  ! %s — %s\n", term.Code, term.Summary)
 	}
@@ -737,6 +740,9 @@ func cmdStatus(ctx context.Context, args []string) error {
 
 // holderLine says who is serving a billing rig, or that nobody is.
 func holderLine(s state.Summary) string {
+	if s.HolderErr != "" {
+		return "unknown — the hold could not be read: " + s.HolderErr
+	}
 	if !s.Held {
 		if s.State == core.StateFailed {
 			return fmt.Sprintf("by no larri process — nothing supervises it: larri down %s", s.ID)
@@ -842,11 +848,11 @@ func cmdResume(ctx context.Context, args []string) error {
 	fs.BoolVar(detach, "d", false, "shorthand for --detach")
 	jsonOut := fs.Bool("json", false, "with --detach: print the outcome as one JSON object")
 	_ = fs.Parse(args)
-	if err := checkDetach("resume", *detach, *jsonOut, false, true, true); err != nil {
-		return err
-	}
 	if *jsonOut && detachedHolder == nil {
 		jsonOnStdout()
+	}
+	if err := checkDetach("resume", *detach, *jsonOut, false, true, true); err != nil {
+		return err
 	}
 
 	st, err := openStore()
@@ -945,11 +951,22 @@ func cmdResume(ctx context.Context, args []string) error {
 	}
 	fmt.Printf("\n  %s\n", describePolicy(cfg))
 	term := o.Supervise(ctx, live, daemon.SupervisePolicy{Idle: cfg.Idle, Budget: cfg.Budget})
-	if term == nil {
+	switch {
+	case term == nil && !detachedMode:
 		fmt.Println("\n  interrupted — the rig keeps running; 'larri down' destroys it")
 		return nil
+	case term == nil:
+		// A detached holder stopped by a signal ends its rig, whichever
+		// command started it. Its interrupt is a kill, a logout or a
+		// shutdown, with no one at a terminal to read that the rig kept
+		// running — and after a reboot, a resumed rig would otherwise be the
+		// one left billing with nothing watching it while one brought up
+		// with -d was destroyed.
+		fmt.Println("\n  stopped; tearing down")
+		term = interruptedTermination()
+	default:
+		fmt.Printf("\n  ! %s — %s\n", term.Code, term.Summary)
 	}
-	fmt.Printf("\n  ! %s — %s\n", term.Code, term.Summary)
 	release := live.EndServing()
 	defer release()
 	dctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -961,6 +978,18 @@ func cmdResume(ctx context.Context, args []string) error {
 	fmt.Printf("\n  ✓ rig %s DESTROYED  ran %s  total $%.4f\n",
 		target.ID, c.Ran.Round(time.Second), c.TotalUSD)
 	return nil
+}
+
+// interruptedTermination records an interrupted holder's teardown: an
+// operator's Ctrl-C in the foreground, or a signal to a detached holder, which
+// no one typed at a terminal and which "requested from the CLI" would misstate.
+func interruptedTermination() *core.Termination {
+	summary := "interrupted from the CLI"
+	if detachedMode {
+		summary = "the detached larri process holding it was stopped"
+	}
+	return &core.Termination{Actor: core.ActorOperator, Code: core.ReasonOperatorRequest,
+		At: time.Now().UTC(), Summary: summary}
 }
 
 // localPort resolves the local port as every other setting resolves: a flag,

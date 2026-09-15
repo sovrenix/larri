@@ -811,17 +811,24 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 	}
 	o.dropUpHold()
 	o.upHold = &heldRig{id: rig.ID, release: release}
+	// Until an instance exists, a failure here leaves nothing to tear down, so
+	// the hold goes with it — rather than staying with a caller of Up that has
+	// no Serve to hand it to, and naming this process as the holder of a rig
+	// it has stopped working on.
 	if err := o.Store.Save(rig); err != nil {
+		o.dropUpHold()
 		return nil, err
 	}
 	keys, err := sshx.NewKeyPair()
 	if err != nil {
+		o.dropUpHold()
 		return nil, err
 	}
 	// FR-PROV-01. Everything after this line may fail, time out, or kill the
 	// process; the journal already names the rig, provider, and offer, so
 	// reconciliation can find whatever was created by its label.
 	if err := o.Store.RecordIntent(rig, core.StateCreating, "create intent"); err != nil {
+		o.dropUpHold()
 		return nil, err
 	}
 	rig.State = core.StateCreating
@@ -849,6 +856,7 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 	})
 	if err != nil {
 		o.resolveFailedCreate(ctx, rig, err)
+		o.dropUpHold() // settled above: nothing is left for a caller to tear down
 		return rig, err
 	}
 	rig.Instance = inst
@@ -899,6 +907,9 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 	// API call, and one no other host would have fixed. Checking costs a
 	// bind and a close.
 	if err := CheckLocalPort(req.LocalPort); err != nil {
+		return nil, err
+	}
+	if err := o.CheckClientKeys(); err != nil {
 		return nil, err
 	}
 	attempts := o.MaxHostAttempts
@@ -1688,6 +1699,45 @@ func (o *Orchestrator) dropUpHold() {
 		o.upHold = nil
 		h.release()
 	}
+}
+
+// CheckClientKeys refuses a bring-up whose stored client keys cannot be read,
+// before anything is rented. Such a store matches no key: the rig would come
+// up billing, READY, and admitting only LARRI's own probes.
+func (o *Orchestrator) CheckClientKeys() error {
+	if err := o.clientKeysUnreadable(); err != nil {
+		return errs.Newf(errs.ClassWiring, "daemon.UpAndServe",
+			"%v: repair or remove it, or rent with --new-key", err)
+	}
+	return nil
+}
+
+// clientKeysUnreadable is why the stored client keys cannot be used, or nil
+// when they can or none are in use.
+func (o *Orchestrator) clientKeysUnreadable() error {
+	if o.OneRigKey || o.ClientKeys == nil {
+		return nil
+	}
+	if c, ok := o.ClientKeys.(interface{ Check() error }); ok {
+		return c.Check()
+	}
+	return nil
+}
+
+// needsRigKey reports whether a rig being wired needs a key of its own: one
+// was asked for, there is no store, or the store cannot be read. The last is
+// the case that matters. A reconnected rig is already billing, and one being
+// served has been rented, so a key file that broke since the check before
+// renting gets the rig its own key rather than no usable key at all.
+func (o *Orchestrator) needsRigKey() bool {
+	if o.OneRigKey || o.ClientKeys == nil {
+		return true
+	}
+	if err := o.clientKeysUnreadable(); err != nil {
+		o.warn("keys", "stored client keys unusable (%v) — this rig gets a key of its own", err)
+		return true
+	}
+	return false
 }
 
 // hold takes a rig for this process — it is the one serving and supervising

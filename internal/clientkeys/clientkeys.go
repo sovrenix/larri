@@ -106,6 +106,13 @@ func (s *Store) Create(name string) (secret.Secret, error) {
 	return value, nil
 }
 
+// Check reports whether the stored keys can be read. A store that cannot be
+// read matches no key, so a rig relying on it would admit no client.
+func (s *Store) Check() error {
+	_, err := s.read()
+	return err
+}
+
 // List returns the stored keys, oldest first. Hashes are included; they are
 // not secret, but nothing displays them.
 func (s *Store) List() ([]Key, error) {

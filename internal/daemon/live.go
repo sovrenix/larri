@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -59,13 +60,50 @@ type Live struct {
 	forward *sshx.Forward
 	proxy   *wire.Proxy
 	cancel  context.CancelFunc
+
+	// ending serialises Close and EndServing, which run on different
+	// goroutines in an MCP session — the tool call stopping the session and
+	// the supervisor returning — and makes each step happen once.
+	ending  sync.Mutex
+	closed  bool
 	release func() // gives up holding the rig
+}
+
+// RigKey is the key for this rig alone, empty when clients use stored keys.
+func (l *Live) RigKey() secret.Secret {
+	l.ending.Lock()
+	defer l.ending.Unlock()
+	return l.ClientToken
+}
+
+// AddRigKey gives a serving rig a client key of its own, and returns it; a rig
+// that has one already returns that. It is the fallback for a rig whose stored
+// keys cannot be read or added to once it is READY — a rig that bills while
+// admitting no client is the one outcome worse than a key shown once.
+func (l *Live) AddRigKey() (secret.Secret, error) {
+	l.ending.Lock()
+	defer l.ending.Unlock()
+	if !l.ClientToken.Empty() {
+		return l.ClientToken, nil
+	}
+	if l.proxy == nil || l.closed {
+		return secret.Secret{}, errors.New("daemon: rig is not serving")
+	}
+	token, err := secret.Generate(32)
+	if err != nil {
+		return secret.Secret{}, err
+	}
+	l.proxy.AddClient("this-rig", token)
+	l.ClientToken = token
+	return token, nil
 }
 
 // Close releases the tunnel and proxy, and the hold on the rig. It does not
 // destroy the instance — that is Down's job, and conflating them would make a
 // dropped connection look like a teardown.
 func (l *Live) Close() error {
+	l.ending.Lock()
+	defer l.ending.Unlock()
 	l.closeServing()
 	if l.release != nil {
 		l.release()
@@ -82,6 +120,8 @@ func (l *Live) Close() error {
 // supervising, `larri resume` free to reconnect to a rig being destroyed — and
 // `larri logs -f` stopped following before the lines that said how it ended.
 func (l *Live) EndServing() (release func()) {
+	l.ending.Lock()
+	defer l.ending.Unlock()
 	l.closeServing()
 	release, l.release = l.release, nil
 	if release == nil {
@@ -90,7 +130,12 @@ func (l *Live) EndServing() (release func()) {
 	return release
 }
 
+// closeServing closes the transport, once. Called with ending held.
 func (l *Live) closeServing() {
+	if l.closed {
+		return
+	}
+	l.closed = true
 	// The heartbeat stops first. From here the host is on its own clock,
 	// which is the entire point: whatever killed this process cannot also
 	// have stopped the watchdog.

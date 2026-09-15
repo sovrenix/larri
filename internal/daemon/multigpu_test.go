@@ -595,6 +595,11 @@ func TestACreateThatNeverLandedClosesTheRig(t *testing.T) {
 	if rig == nil {
 		t.Fatal("no rig to inspect")
 	}
+	// Up called on its own has no Serve to hand its hold to: a create that
+	// failed must not leave this process named as the rig's holder.
+	if _, held, _ := st.HolderOf(rig.ID); held {
+		t.Error("a refused create left the rig held")
+	}
 	// The snapshot and the journal agree, and both say it is over.
 	if rig.State != core.StateDestroyed {
 		t.Errorf("state = %s, want DESTROYED: nothing was created", rig.State)
