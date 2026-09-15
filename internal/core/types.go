@@ -284,6 +284,14 @@ const (
 	RuntimeVLLM     RuntimeKind = "vllm"
 	RuntimeLlamaCpp RuntimeKind = "llamacpp"
 	RuntimeOllama   RuntimeKind = "ollama"
+
+	// RuntimeComfyUI is an image-generation graph rather than an inference
+	// engine. It is a Workload and not a Runtime — it serves no /v1 at all —
+	// and it shares this type because everything that persists, reports, or
+	// reconciles a rig keys on the name of what is running, and forking that
+	// type would fork the journal, the snapshot, and every surface reading
+	// them.
+	RuntimeComfyUI RuntimeKind = "comfyui"
 )
 
 // Transition is one entry in a rig's history and in the journal.

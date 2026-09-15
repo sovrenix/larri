@@ -3,10 +3,16 @@
 
 // Package runtime is LARRI's second abstraction (P1).
 //
-// Nothing above this layer knows whether vLLM, llama.cpp, or Ollama is behind
-// the endpoint (P2). Runtimes differ in exactly four places, and all four live
-// inside an implementation: how weights are acquired, how VRAM fit is
-// computed, what "ready" means, and whether tool calling is enabled at launch.
+// Nothing above this layer knows what is behind the endpoint. Implementations
+// differ in exactly four places, and all four live inside one: how the payload
+// is acquired, how VRAM fit is computed, what "ready" means, and what is
+// enabled at launch.
+//
+// The abstraction has two tiers. Workload is the general one — anything LARRI
+// rents hardware for and holds open — and Runtime is the inference engine
+// case, which additionally promises the OpenAI-compatible /v1 surface of P2.
+// vLLM, llama.cpp and Ollama are Runtimes; ComfyUI is a Workload and is not a
+// Runtime, since it serves no /v1 at all.
 package runtime
 
 import (
@@ -202,34 +208,18 @@ type CredentialTaker interface {
 	SetHuggingFaceToken(secret.Secret)
 }
 
-// Runtime is an inference engine.
+// Runtime is an inference engine: a Workload whose endpoint speaks the
+// OpenAI-compatible /v1 surface of P2.
+//
+// The method set is Workload's exactly, and the type still exists because the
+// distinction it names is real. "Runtime" is a promise about the wire format,
+// and the wiring, the chat UI, and the IDE configuration all depend on that
+// promise rather than on the lifecycle underneath it. An implementation must
+// return ProtocolOpenAI from Protocol; TestRuntimesServeOpenAI checks that
+// every compiled-in engine does, so the promise is enforced rather than
+// documented.
 type Runtime interface {
-	Kind() core.RuntimeKind
-
-	// Requires reports hardware constraints to apply during selection.
-	Requires() Requirements
-
-	// Image returns the container image for this spec and plan. M1 uses a
-	// stock image; the pre-baked, digest-pinned matrix (§6.5) follows.
-	Image(spec core.ModelSpec, plan core.SizingPlan) string
-
-	// Bootstrap acquires the image and weights on the host.
-	Bootstrap(ctx context.Context, sess Session, spec core.ModelSpec, plan core.SizingPlan, progress chan<- Progress) error
-
-	// Launch starts the server and returns its endpoint, which must be
-	// loopback-bound.
-	Launch(ctx context.Context, sess Session, spec core.ModelSpec, plan core.SizingPlan) (Endpoint, error)
-
-	// Ready performs a real completion round-trip. A TCP connect or a 200 on
-	// /health is necessary but not sufficient: READY means a completion has
-	// come back (NFR-05).
-	Ready(ctx context.Context, ep Endpoint, spec core.ModelSpec) error
-
-	// Logs streams runtime logs for diagnosis.
-	Logs(ctx context.Context, sess Session, tail int) (io.ReadCloser, error)
-
-	// Stop halts the runtime.
-	Stop(ctx context.Context, sess Session) error
+	Workload
 }
 
 // Adopter is implemented by runtimes that can re-attach to a server they

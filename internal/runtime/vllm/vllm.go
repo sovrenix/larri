@@ -84,6 +84,11 @@ func New() *Runtime {
 
 func (r *Runtime) Kind() core.RuntimeKind { return core.RuntimeVLLM }
 
+// Protocol reports the OpenAI-compatible /v1 surface, which is what makes
+// this a Runtime rather than merely a Workload: vLLM serves /v1 and the
+// wiring, the chat UI and the IDE configuration all depend on it.
+func (r *Runtime) Protocol() runtime.Protocol { return runtime.ProtocolOpenAI }
+
 // SetHuggingFaceToken supplies the credential for gated weights.
 func (r *Runtime) SetHuggingFaceToken(t secret.Secret) { r.hfToken = t }
 

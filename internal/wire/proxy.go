@@ -43,6 +43,7 @@ type Activity struct {
 	lastOperator atomic.Int64 // unix nanos
 	requests     atomic.Int64
 	probes       atomic.Int64
+	background   atomic.Int64
 	inFlight     atomic.Int64
 }
 
@@ -62,6 +63,12 @@ func (a *Activity) Requests() int64 { return a.requests.Load() }
 // Probes counts LARRI's own health checks, kept separately so the exclusion is
 // auditable rather than invisible.
 func (a *Activity) Probes() int64 { return a.probes.Load() }
+
+// Background counts requests that were carried but not treated as work — an
+// open browser tab polling a queue it has nothing in. Counted rather than
+// discarded for the same reason probes are: an exclusion nobody can see is an
+// exclusion nobody can check, and this one decides when a rig is destroyed.
+func (a *Activity) Background() int64 { return a.background.Load() }
 
 // InFlight counts requests currently being served. A long generation is
 // activity even though no new request has arrived.
@@ -116,6 +123,25 @@ type Proxy struct {
 	upstream Upstream
 	clients  map[string]string // sha256 of a token -> client name
 	keys     KeySet
+
+	// browserToken is the cookie-shaped credential for a surface the
+	// operator opens rather than configures. Empty disables that path
+	// entirely, which is the default: a /v1 endpoint has no business
+	// accepting a cookie.
+	browserToken secret.Secret
+
+	// CountsAsWork decides which requests reset the idle clock.
+	//
+	// Nil means every non-probe request does, which is right for /v1, where
+	// a request is a completion and a completion is the work. It is wrong
+	// for a surface with a browser attached to it: ComfyUI's frontend polls
+	// its queue, reloads assets, and reconnects a WebSocket for as long as
+	// the tab is open, so an idle timeout counting all of that would never
+	// fire and the reclamation it implements would be decorative.
+	//
+	// Supplied by the caller rather than decided here, so wire keeps no
+	// knowledge of any particular protocol's paths.
+	CountsAsWork func(r *http.Request) bool
 }
 
 // KeySet is a store of client keys the proxy accepts beside the ones added to
@@ -238,15 +264,31 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "wire: unexpected Host header", http.StatusForbidden)
 		return
 	}
+	// Checked before authentication, so a cross-origin request is refused
+	// whatever credential a browser was persuaded to attach to it.
+	if !validOrigin(r.Header.Get("Origin")) {
+		http.Error(w, "wire: cross-origin request refused", http.StatusForbidden)
+		return
+	}
+	if p.browserSessionEnabled() && r.URL.Path == SessionPath {
+		p.serveSession(w, r)
+		return
+	}
 	isProbe := r.Header.Get(ProbeHeader) != ""
 
 	client, ok := p.authenticate(r.Header.Get("Authorization"))
+	if !ok && p.cookieAuthenticated(r) {
+		client, ok = "browser", true
+	}
 	if !ok {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		http.Error(w, "wire: missing or unknown API key", http.StatusUnauthorized)
 		return
 	}
 	_ = client
+	if p.browserSessionEnabled() {
+		browserHeaders(w.Header())
+	}
 
 	p.mu.RLock()
 	up := p.upstream
@@ -258,9 +300,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if isProbe {
+	switch {
+	case isProbe:
 		p.Activity.probes.Add(1)
-	} else {
+	case p.CountsAsWork != nil && !p.CountsAsWork(r):
+		// Carried, but not counted. A browser keeping a tab open is not an
+		// operator using the rig, and treating it as one would hold a GPU
+		// overnight on the strength of a reconnecting WebSocket.
+		p.Activity.background.Add(1)
+	default:
 		p.Activity.requests.Add(1)
 		p.Activity.lastOperator.Store(time.Now().UnixNano())
 	}

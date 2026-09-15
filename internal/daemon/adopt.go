@@ -249,6 +249,23 @@ func (o *Orchestrator) dialPinned(ctx context.Context, inst *core.Instance,
 		"reconnect failed: %v", shortErr(lastErr))
 }
 
+// endpointURL renders the local address in the form its clients actually use.
+//
+// "/v1" is the OpenAI base path, and an inference client is configured with
+// exactly that string. A browser surface has no such base: ComfyUI is served
+// at the root, so advertising /v1 for it names a path that 404s. A live run
+// printed "tunnel http://127.0.0.1:8188/v1" for a rig whose UI was at "/",
+// which is the endpoint an operator would have pasted into a browser first.
+//
+// Asked of the workload rather than branched on its kind, so a future
+// protocol answers this without editing the wiring layer.
+func (o *Orchestrator) endpointURL(port int) string {
+	if o.Runtime != nil && o.Runtime.Protocol() != runtime.ProtocolOpenAI {
+		return fmt.Sprintf("http://127.0.0.1:%d/", port)
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d/v1", port)
+}
+
 // attachTunnel opens the forward and proxy for an endpoint and records them on
 // live. Serve and Adopt share it so a restored rig is wired exactly like a
 // fresh one — including the credential substitution, which is what keeps a
@@ -300,6 +317,6 @@ func (o *Orchestrator) attachTunnel(ctx context.Context, live *Live, rig *core.R
 		live.ClientToken = token
 	}
 	rig.LocalPort = proxy.LocalPort()
-	live.Endpoint = fmt.Sprintf("http://127.0.0.1:%d/v1", rig.LocalPort)
+	live.Endpoint = o.endpointURL(rig.LocalPort)
 	return nil
 }

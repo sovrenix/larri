@@ -156,8 +156,19 @@ func (l *Live) closeServing() {
 	}
 }
 
+// Session returns an authenticated channel to the host, for callers that need
+// to reach it outside the bring-up — collecting rendered files before a
+// teardown being the one that matters.
+func (l *Live) Session() runtime.Session {
+	if l.ssh == nil {
+		return nil
+	}
+	return l.ssh.Session()
+}
+
 // Serve brings a provisioned rig up to READY: waits for sshd, pins the host
-// key, bootstraps, launches, opens the tunnel, and verifies a real completion.
+// key, bootstraps, launches, opens the tunnel, and verifies a real round-trip
+// — a completion for an engine, a rendered file for an application workload.
 func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyPair,
 	localPort int, hfToken secret.Secret) (*Live, error) {
 
@@ -309,14 +320,29 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 	// whole path: the forward carries traffic, the proxy substitutes the rig
 	// credential, and the model produces a token. A check run on the host
 	// would prove only that vLLM answers itself.
-	o.emit("ready", "waiting for a completion to round-trip")
+	o.emit("ready", "waiting for %s to round-trip", o.roundTrip())
 	if err := o.waitReady(ctx, sess, rig, live.proxy.LocalPort(), live.probeToken); err != nil {
 		return live, err
 	}
-	if err := o.Store.Transition(rig, core.StateReady, "completion round-trip verified"); err != nil {
+	if err := o.Store.Transition(rig, core.StateReady,
+		o.roundTrip()+" round-trip verified"); err != nil {
 		return live, err
 	}
 	return live, nil
+}
+
+// roundTrip names what READY proves, in the vocabulary of whatever is running.
+//
+// The messages around readiness said "completion" unconditionally, which was
+// true while every workload was an inference engine and is a plain falsehood
+// on a rig that renders images. An operator reading "waiting for a completion"
+// while ComfyUI loads a checkpoint would reasonably conclude something had
+// been configured wrong.
+func (o *Orchestrator) roundTrip() string {
+	if o.Runtime != nil && o.Runtime.Protocol() != runtime.ProtocolOpenAI {
+		return "a render"
+	}
+	return "a completion"
 }
 
 // waitForSSH waits for the host to become usable, driven by what the provider
@@ -1028,7 +1054,7 @@ func sumGPUMemoryMB(out string) (totalMB, gpus int) {
 	return totalMB, gpus
 }
 
-// waitReady waits for a real completion, in two regimes.
+// waitReady waits for a real round-trip, in two regimes.
 //
 // Once SSH is up LARRI has far better control than the provider's status text
 // allowed, and the wait should reflect that. Before the runtime has produced a
@@ -1074,7 +1100,7 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 		ep := runtime.Endpoint{Host: "127.0.0.1", Port: port,
 			Model: rig.Model.ServedName, Key: token}
 		if err := o.Runtime.Ready(ctx, ep, rig.Model); err == nil {
-			o.emit("ready", "completion verified after %s",
+			o.emit("ready", "%s verified after %s", o.roundTrip(),
 				time.Since(deadline.Add(-o.readyCap())).Round(time.Second))
 			return nil
 		}
@@ -1156,7 +1182,12 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 					// "exited after 12s" would hunt for a crash on
 					// startup that never happened.
 					said := o.runtimeSaid(ctx, sess)
-					return errs.Newf(errs.ClassHostFailure, "daemon.waitReady",
+					// The workload reads its own traceback, because this
+					// layer cannot tell a dead host from a broken
+					// configuration and defaulting to "dead host" buys the
+					// same failure on the next machine (FR-PROV-05).
+					return errs.Newf(runtime.ClassifyFailure(o.Runtime, said),
+						"daemon.waitReady",
 						"runtime exited without serving%s; log quiet for %s%s",
 						because(said), idleSince(lastGrowth), said)
 				}
@@ -1186,7 +1217,7 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 		}
 	}
 	return errs.Newf(errs.ClassHostFailure, "daemon.waitReady",
-		"no completion before the deadline%s", o.runtimeSaid(ctx, sess))
+		"no %s before the deadline%s", o.roundTrip(), o.runtimeSaid(ctx, sess))
 }
 
 // runtimeSaid collects the runtime's own account of what went wrong.

@@ -86,6 +86,11 @@ func (r *Runtime) downloadBytes() int64 {
 
 func (r *Runtime) Kind() core.RuntimeKind { return "fake" }
 
+// Protocol reports the OpenAI-compatible /v1 surface, which is what makes
+// this a Runtime rather than merely a Workload: the fake serves /v1 and the
+// wiring, the chat UI and the IDE configuration all depend on it.
+func (r *Runtime) Protocol() runtime.Protocol { return runtime.ProtocolOpenAI }
+
 func (r *Runtime) Image(core.ModelSpec, core.SizingPlan) string {
 	return "ghcr.io/sovrenix/larri-fake@sha256:" + "0"
 }

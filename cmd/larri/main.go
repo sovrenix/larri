@@ -517,6 +517,7 @@ func cmdUp(ctx context.Context, args []string) error {
 		// timeout and always longer, so the supervisor — which can tell a
 		// busy rig from an idle one — acts first.
 		IdleTimeout:        cfg.Idle.Timeout,
+		BudgetUSD:          cfg.Budget.MaxUSD,
 		DeadmanDeadline:    *deadman,
 		EndpointStallLimit: sshWait,
 		AuthStallTimeout:   sshWait,
