@@ -95,9 +95,10 @@ has round-tripped) and **cost safety** (LARRI never loses track of a billable re
 |---|---|
 | Providers | Vast.ai, RunPod. Pluggable interface for others. |
 | Runtimes | llama.cpp (`llama-server`), Ollama, vLLM. |
+| Application workloads | ComfyUI, published at the fixed local port and opened in a browser (§7.13). |
 | Selection criteria | GPU model, GPU count, VRAM, CPU cores, RAM, disk, region, max price/hr, reliability, interruptible vs on-demand, target model. |
 | Lifecycle | Search, rank, provision, bootstrap, verify, wire, supervise, destroy. |
-| Local integration | Stable local `/v1` endpoint; automated IDE and chat-client configuration. |
+| Local integration | Stable local `/v1` endpoint; automated IDE and chat-client configuration; browser-facing local endpoint for application workloads. |
 | Surfaces | CLI + daemon (core), MCP server, TUI dashboard, local web chat UI. |
 | Cost | Live accrual display, budget ceilings, orphan detection. |
 
@@ -468,6 +469,36 @@ All four surfaces are clients of one daemon API. No lifecycle logic lives in a s
 | FR-OBS-08 | S | `plan` | Collect inference throughput, latency, queue depth, and KV-cache utilisation for every runtime, including runtimes that expose no metrics endpoint of their own. |
 | FR-OBS-09 | M | `plan` | Redact secrets in span and metric attributes by the same structural mechanism used for logs (FR-SEC-02). |
 | FR-OBS-10 | M | `plan` | Persist collected metrics across daemon restarts, downsampled as they age, retained in step with terminated-rig retention (FR-DEL-09) so a post-mortem shows both why a rig ended and the series leading up to it. Persistence is best-effort and subordinate (FR-OBS-03): a failed or corrupt write yields a truncated graph, never a startup failure or a state change. |
+
+---
+
+### 7.13 Application Workloads (FR-APP)
+
+The rental lifecycle — rent, pin, tunnel, supervise on evidence, destroy with
+confirmation — was written as though its payload were always an inference
+engine, and none of it ever depended on that. These requirements name the
+generalisation and its first instance.
+
+The distinction from §7.4 is the wire format and nothing else. An engine (FR-RT)
+promises the OpenAI-compatible `/v1` surface that the IDE and chat wiring are
+built on; an application workload promises only that it can be stood up,
+observed, and torn down. P2 is unchanged by this: `/v1` remains the contract
+*for inference clients*, and a workload that serves no `/v1` is one no inference
+client is ever pointed at.
+
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-APP-01 | M | `done` | Model the second abstraction as a **Workload**, of which an inference Runtime is the case that additionally serves `/v1`. Every workload declares its protocol, so a caller that needs a completion can require one rather than discover its absence on a rig that is already billing. |
+| FR-APP-02 | M | `done` | Run ComfyUI as an application workload and publish its own web frontend at the fixed local port (P3), so the operator opens a browser rather than configuring a client. The remote host stays hidden behind the tunnel and may be replaced without the browser learning. |
+| FR-APP-03 | M | `done` | Derive hardware criteria from the **workflow itself** — the models it loads, their measured sizes, and the latent area it renders — rather than from an operator-supplied GPU class. A workflow is a complete statement of what it needs; asking the operator to restate it in hardware terms invites them to get it wrong at their own expense. |
+| FR-APP-04 | M | `done` | Resolve every model a graph names to a concrete repository and **measure it before the create call**. An unresolvable model, a moved repository, or a token that cannot read a gated one are each a reason not to rent, and each costs nothing to discover locally (§4a). |
+| FR-APP-05 | M | `done` | Refuse model containers that deserialise as code — `.ckpt`, `.pt`, `.pth`, `.bin` — requiring `safetensors` unless the operator opts in explicitly. Torch executes a pickle on load, on the host holding the operator's Hugging Face token. The opt-in exists because ComfyUI's ecosystem publishes some models no other way, and it is disclosed at bring-up when used. |
+| FR-APP-06 | M | `done` | Acquire models **on the rented host**, never relayed through the operator's link, with progress driven by bytes on disk, sizes verified before a file is given its name, and an already-present file skipped. The wait ends on *silence*, not on a clock (FR-RT-15). |
+| FR-APP-07 | M | `done` | Authenticate a browser to the local listener with a session credential it will actually send, since neither a navigation nor a WebSocket handshake can carry `Authorization`. The local API key stays mandatory (FR-SEC-09); `Origin` is validated alongside `Host`, and the token is exchanged once and redirected out of the address bar. |
+| FR-APP-08 | M | `done` | Count only operator work toward the idle clock — queueing, interrupting, uploading — and hold the rig open while the workload's queue is non-empty. An open browser tab polls indefinitely and would make idle reclamation decorative; a render outlasts the timeout with no request outstanding and would otherwise be destroyed halfway through. |
+| FR-APP-09 | M | `done` | Retrieve rendered outputs to local disk **before** the destroy, bounded by a budget, read from the host's filesystem rather than the workload's API so that work queued outside LARRI is collected too. A failed or partial retrieval is reported loudly and recorded on the termination, and **never blocks the teardown**: files left behind are lost once, while a rig left alive bills until somebody notices (§4). |
+| FR-APP-10 | M | `done` | Declare readiness only after the operator's **own** graph has produced a file, so READY means the requested work succeeded rather than that a server is listening. Where the graph's serialisation cannot be submitted, say so explicitly rather than let READY mean two different things. |
+| FR-APP-11 | S | `part` | Pin the application workload's image by content digest and derive its hardware floors from that exact build, refreshed together (FR-RT-16). |
 
 ---
 

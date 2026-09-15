@@ -28,6 +28,7 @@ and "shown to work" are different claims and are recorded as such.
 | Provisioning | 12 | 11 | 1 | 0 | 0 | **100%** |
 | State | 5 | 4 | 1 | 0 | 0 | **100%** |
 | Search & selection | 14 | 10 | 3 | 0 | 1 | **93%** |
+| Application workloads | 11 | 0 | 10 | 1 | 0 | **91%** |
 | Runtimes | 22 | 17 | 2 | 3 | 0 | 86% |
 | Non-functional | 12 | 6 | 4 | 1 | 1 | 83% |
 | Configuration | 10 | 0 | 8 | 1 | 1 | 80% |
@@ -37,13 +38,23 @@ and "shown to work" are different claims and are recorded as such.
 | Surfaces | 13 | 1 | 2 | 3 | 7 | 23% |
 | Endpoint & client wiring | 14 | 3 | 0 | 1 | 10 | 21% |
 | Observability | 10 | 0 | 1 | 0 | 9 | 10% |
-| **Total** | **181** | **80** | **44** | **18** | **39** | **68%** |
+| **Total** | **192** | **80** | **54** | **19** | **39** | **70%** |
 
-Sixty-eight per cent of requirements are implemented, and **the lifecycle is the part
+Seventy per cent of requirements are implemented, and **the lifecycle is the part
 that is done.** Criteria, provisioning and state are at 100%; search, selection and the
 runtimes are near it. What is missing clusters into the same three areas as before —
 client wiring, the browser surfaces, and observability — none of which a rig needs in
 order to serve.
+
+**Application workloads are new and none of them are `live`.** The second abstraction was
+widened from Runtime to Workload so the rental lifecycle could carry a payload that serves
+no `/v1`, and ComfyUI is the first one. Every requirement in that area is implemented and
+unit-tested, including a full-chain test that installs, fetches, launches, renders and
+collects against a simulated host — and **not one of them has rented a GPU.** On this
+project that distinction has repeatedly been the whole story, so it is recorded rather
+than rounded up: the paid suite is `TestE2EComfyWorkflow`, it is build-tagged `e2e` and
+gated on `LARRI_E2E_SPEND=yes`, and until somebody runs it these rows say `done` and mean
+it.
 
 Eight requirements were added rather than reclassified. They record behaviour that was
 built during a long run of live failures and had no requirement to point at: ranking on time-and-cost to a working endpoint, the host-verification tier, the link floor, the
@@ -101,11 +112,12 @@ FR-SEC-17, so templates were evaluated and rejected in favour of installing sshd
 
 ## 🟡 Partial — what is missing, specifically
 
-Seventeen requirements are partly met. The gap for each:
+Nineteen requirements are partly met. The gap for each:
 
 | ID | Gap |
 |---|---|
 | FR-RT-06 | vLLM and llama.cpp both report weight-download percentage; Ollama reports phases only, so an `ollama pull` still shows no proportion of the download done. |
+| FR-APP-11 | The ComfyUI image is referenced by **tag, not digest**, so its hardware floors describe whatever that tag pointed at most recently — the exact exposure that rented three V100 boxes on the vLLM path. `make refresh-image IMAGE=<ref>` reads the digest and both floors, and the adapter probes for what it needs instead of assuming a layout, but the pin itself is not made. Pin it before any live use. |
 | FR-RT-10 | The parser is now derived from the model family and both vLLM flags are set, so tool calling works unasked. **Refusing** a rig when tool calling is *required* and no parser exists is still not enforced. |
 | FR-RT-11 | The runtime image is pinned by digest and the hardware floors are derived from it (`make refresh-image`). The images are still **stock upstream**, not project-maintained and pre-baked, so bring-up still discovers the launcher at runtime. |
 | FR-SUP-03 | Fallback picks the next-ranked offer without comparing its price to the original, so a silent upgrade is possible. |

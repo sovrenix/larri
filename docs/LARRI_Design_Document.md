@@ -121,9 +121,13 @@ internal/errs/          The error taxonomy (§16)
 internal/provider/      Provider interface, registry, normalization
     vastai/             Vast.ai adapter
     runpod/             RunPod adapter
-internal/runtime/       Runtime interface, selection heuristic
+internal/runtime/       Workload and Runtime interfaces, selection heuristic
     llamacpp/  ollama/  vllm/
-internal/sizing/        VRAM / KV-cache / context math; model fact catalogue
+internal/comfy/         ComfyUI workload: host install, model fetch, client,
+                        output retrieval (§6.7)
+internal/workflow/      ComfyUI graph parsing, model manifest, bundle measurement
+internal/sizing/        VRAM / KV-cache / context math; model fact catalogue;
+                        diffusion sizing (§7.4)
 internal/rank/          Offer scoring
 internal/state/         Durable store, journal, reconciliation
 internal/wire/          Tunnel manager, local proxy, client config writers
@@ -488,12 +492,13 @@ type Runtime interface { Workload }
 `Session` is an SSH exec session against the instance. `Progress` carries phase, percent,
 and bytes so a 40-GB weight download does not look like a hang (FR-RT-06).
 
-**Why the widening.** The lifecycle underneath this interface — renting, pinning a host
-key, tunnelling to a loopback bind, supervising on evidence, destroying with confirmation —
-never depended on the payload serving `/v1`. It was written as though it did because the
-only payloads were engines. The alternative to widening was an adapter whose `Ready()`
-returned something other than a completion while its interface promised one — a lie the
-type system would have helped nobody catch.
+**Why the widening (FR-APP-01).** The lifecycle underneath this interface — renting,
+pinning a host key, tunnelling to a loopback bind, supervising on evidence, destroying with
+confirmation — never depended on the payload serving `/v1`. It was written as though it did
+because the only payloads were engines. ComfyUI exercises every line of that lifecycle and
+serves no `/v1` at all, and the alternative to widening was an adapter whose `Ready()`
+returned an image while its interface promised a completion — a lie the type system would
+have helped nobody catch.
 
 **P2 is unchanged.** "`/v1` is the contract" is a statement about *inference clients*: the
 IDE wiring, the chat clients, and the chat pane all depend on it and always will. What
@@ -506,12 +511,6 @@ protocol rather than discover its absence on a rig that is already billing.
 consequences follow from that one bit: the local listener needs a cookie-shaped credential
 (§10.1.1), because neither a navigation nor a WebSocket handshake can carry an
 `Authorization` header; and the content it renders comes from a host with root (§15.4).
-
-**Failure classification.** `waitReady` cannot tell a dead host from a broken
-configuration, and its default — try another machine — is wrong for a payload that died on
-an import error, where the next machine runs the same image and dies identically
-(FR-PROV-05). A workload may implement `FailureClassifier` to read its own log and say
-which it was; returning `ClassUnknown` keeps the host-failure default.
 
 ### 6.2 Per-Runtime Differences
 
@@ -639,6 +638,134 @@ Two consequences the operator sees:
   rig and neither the catalogue nor the model's chat template indicates tool-calling support,
   that is `ErrModelFailure` before the create call, not a discovery made after paying to
   boot.
+
+### 6.7 ComfyUI: the First Application Workload (FR-APP-02)
+
+ComfyUI is an image-generation graph engine with its own HTTP API and its own bundled web
+frontend. It is a `Workload` and deliberately not a `Runtime`.
+
+| | Inference engines | ComfyUI |
+|---|---|---|
+| Wire format | OpenAI `/v1` | `POST /prompt`, `/history/{id}`, `/view`, `/queue`, `/ws` |
+| Reached by | a client the operator configures once | a browser the operator opens |
+| Payload | one model repository | a *bundle*: checkpoint, LoRAs, VAE, text encoders, upscalers |
+| Acquisition | the engine fetches its own weights at launch | nothing fetches them; LARRI must place them first |
+| Ready means | a completion round-trips | the operator's own graph produces a file |
+| Under-provisioned VRAM | vLLM dies at load; llama.cpp offloads | offloads to host RAM and renders slowly |
+| Server credential | vLLM `--api-key`; Ollama has none | **none**, and no setting for one |
+
+Four of those rows change how the lifecycle is driven, and each is handled in one place.
+
+**Models are placed before launch, not during it.** An engine downloads its own weights as
+it starts, which is why its progress is readable in its own log. ComfyUI fetches nothing and
+fails at the first node if a file is missing, so the bundle must be on disk before the
+server is worth starting. That makes `Bootstrap` the long, expensive, billed phase, and it
+carries the stall detection §12.2.1 built for readiness: progress is measured as **bytes on
+disk**, the wait ends on *silence* rather than on a clock, and a measurement that could not
+run proves nothing and advances nothing.
+
+The fetch is a detached script on the host, and every property of it is a lesson from
+elsewhere in this document. Sequential, because four half-finished files look exactly like
+one stalled one and a rig is torn down on evidence of a stall. Resumable and size-skipping,
+so a replaced rig does not pay for the same 7 GB twice. Size-verified *before* the rename,
+so a truncated checkpoint is never visible to ComfyUI under its real name — it would
+otherwise fail at load with a stack trace that says nothing about the network. And the
+Hugging Face credential reaches `curl` through a config file rather than a `-H` argument,
+because an argument lands in the process table and in the command string LARRI itself
+builds, which is the sort of thing that ends up in a debug log beside the error it explains.
+
+**Filenames from a workflow reach a shell running as root.** A workflow is an artefact
+operators download from strangers and open without reading. Every interpolated value is
+shell-quoted, and every model name is checked for path escape before the script is built —
+`../../../root/.ssh/authorized_keys` is not a hypothetical shape of attack.
+
+**No server-side credential.** ComfyUI has no API key and no setting for one, exactly as
+Ollama has none, so the rig-side half of the two-credential boundary (§15.5.3) does not
+exist here. `SecurityNotes()` says so at bring-up rather than letting an operator assume the
+stronger guarantee. What still holds is the part that matters most: the server binds
+loopback on the rented host, no port is published for it, the tunnel is the only route in,
+and the local listener is still credentialled.
+
+**Readiness renders the operator's own graph (FR-APP-10).** NFR-05 has always meant a real
+round-trip rather than a `/health` 200, and for this workload the round-trip is a finished
+image. So READY means "the workflow you asked for produced a file", which is a stronger
+claim than a synthetic warm-up would make and is the one worth making. Two caveats are
+stated rather than hidden: a graph in the UI serialisation cannot be submitted at all
+(§6.7.1), and a ComfyUI that found no CUDA device is refused outright — it starts happily on
+the CPU, looks entirely healthy, and is the most expensive way to render an image there is.
+
+#### 6.7.1 Two Serialisations, One of Which Can Be Run
+
+ComfyUI writes graphs two ways. The **API** format is an object of nodes each carrying a
+`class_type` and named inputs; it is what `/prompt` accepts and the only thing it accepts.
+The **UI** format is what the browser's save button writes: a node array with positional
+`widgets_values`.
+
+Converting UI to API needs each node's declared input order, which only a *running* ComfyUI
+can supply from `/object_info` — a chicken-and-egg that would require renting a GPU to find
+out what to rent one for. So the split is honest rather than papered over: **both formats
+can be planned against**, because the models and the resolution are readable from either,
+and **only the API format can be submitted**. The distinction is reported before anything is
+rented, since it changes what the session can do.
+
+The two formats also need different extraction. API inputs are named, so the loader table
+reads them directly. UI widgets are positional, so the file is recognised by shape — a
+value that ends in a weight-file extension, in a node whose class is a loader. That is
+looser, and it is the looseness the format forces: a per-class widget-index table would
+break silently the moment a node gained a widget.
+
+#### 6.7.2 Workflow to Criteria (FR-APP-03, FR-APP-04)
+
+This is §4a applied to a new payload, and it is the step the whole feature turns on. A
+workflow is a complete statement of what it needs; asking the operator to restate it as a
+GPU class invites them to get it wrong at their own expense.
+
+```
+workflow.json
+  → Parse           loaders → asset names + kinds; EmptyLatentImage → area; KSampler → steps
+  → Lookup          manifest first, built-in catalogue second   (never the reverse)
+  → Measure         HF ?blobs=true, one listing per repo, cached
+  → Bundle          total bytes, largest first
+  → PlanDiffusion   weights + workspace + area × per-pixel, × safety   (§7.4)
+  → CriteriaFor     VRAM per-GPU floor, host RAM, disk
+  → rank.Select     ColdStartBytes = bundle; SessionHours = --session   (§4b)
+```
+
+Every step is local, free, and before the create call. An unresolvable model, a moved
+repository, a pickle container, or a token that cannot read a gated repo each end the run
+here rather than forty minutes into a bootstrap on a rented H100.
+
+Three details earn their place:
+
+- **The manifest beats the catalogue, never the reverse.** The catalogue exists so the
+  common graphs need no manifest at all; a catalogue entry silently overriding an explicit
+  mapping would fetch a different model than the one asked for. A stale catalogue entry
+  fails at the size lookup — locally, freely — which is what makes shipping one defensible.
+- **The VRAM floor is per-GPU, not total.** ComfyUI executes a graph on one device, so two
+  12 GB cards do not hold a 20 GB bundle. Summing them would select hardware whose headroom
+  is arithmetic rather than real.
+- **Repeated assets are one download.** Two LoRA nodes loading the same file would otherwise
+  double the cold-start estimate and rank the market against a size that does not exist.
+
+#### 6.7.3 Outputs Are Retrieved Before the Destroy (FR-APP-09)
+
+Renders exist only on the rented host, and a destroy is irreversible. The order is therefore
+images first, destroy second, absence confirmed third.
+
+Read from the **filesystem**, not from `/history`: the operator spent the session in the
+browser queueing renders LARRI never saw, and a teardown that collected only what LARRI
+submitted would destroy the rest. Transferred over **SSH**, not through `/view`: this runs
+at teardown, which is frequently reached *because* something is wrong, and an HTTP route
+through a wedged ComfyUI would fail exactly when the images most need rescuing.
+Base64-encoded on the wire, because `Session.Run` merges stdout and stderr and a single
+warning would corrupt a PNG invisibly.
+
+And it **never blocks the teardown**. That is a real trade-off rather than an oversight, and
+it is decided the way §4 decides: files left behind are lost once, while a rig left alive
+because it is still copying them bills until somebody notices. So the retrieval is bounded
+by a budget, a failure is reported loudly and recorded on the `Termination`, and the destroy
+proceeds either way.
+
 
 ---
 
@@ -809,6 +936,52 @@ layer-splitting engine the report says what the extra cards buy: memory, not spe
 single request, since the cards take turns on each token. Tokens per second is not estimated;
 a live 2× A100 run decoded at 7.8 tok/s, far below any bandwidth figure, and a confident
 wrong number is worse than none.
+
+### 7.4 Diffusion Sizing (FR-APP-03)
+
+A diffusion graph has no KV cache and no context length, so `Plan()` would need every one of
+its terms replaced — a different function wearing the same name. `PlanDiffusion()` is that
+function, and it lives in this package for the reason invariant 5 gives: `(payload, shape) →
+required VRAM` is one computation consumed by the search filter, the ranking function and
+the launch decision, and splitting it across packages is how those three quietly stop
+agreeing.
+
+```
+required = (weights + workspace + area × perPixel + overhead) × safety
+
+weights   = the measured bundle, every file, in its published precision
+workspace = 1.0 GiB   — CUDA context, cuDNN and attention scratch, allocator arenas
+perPixel  = 3 KiB     — marginal cost of output area (width × height × batch)
+overhead  = max(1 GiB, 8% of weights + activations)     [shared with the LLM path]
+safety    = 1.10                                        [shared with the LLM path]
+```
+
+The two empirical constants are a fit, and saying so is more useful than implying a
+derivation. Two reference points set them: SD 1.5 at 512×512 runs in about 1.8 GB above its
+weights, and SDXL at 1024×1024 in about 4.1 GB above its own. A purely proportional model
+cannot reproduce both — the small case is dominated by a fixed component — which is why the
+workspace term exists and is separate. The peak being sized for is the **VAE decode** at the
+end of the graph rather than any sampling step, so this is the moment the run is largest
+rather than its average. `TestDiffusionSizingMatchesItsReferencePoints` pins both anchors.
+
+Two differences from the LLM path change what the number *means*:
+
+- **It is a target, not a floor.** vLLM must fit or it dies at load. ComfyUI does not: when
+  VRAM runs short it moves modules back to host RAM between nodes and carries on. So
+  `FitsInVRAM: false` is a warning rather than a pre-spend rejection — an undersized card
+  produces the right image slowly instead of no image at all. It is still worth computing,
+  because a rig thrashing weights across PCIe on every sampling step is one the operator is
+  paying full price for and getting a fraction of. That is a bad rental, not a failed one,
+  and the two deserve different words.
+- **Multi-GPU is not counted.** ComfyUI executes a graph on one device, so a second card
+  adds VRAM nothing in the graph can reach. Summing across cards here would select hardware
+  whose headroom is arithmetic rather than real, and the extra cards are reported as idle.
+
+Host RAM is derived rather than assumed, because the two are not independent: offload is
+ComfyUI's answer to insufficient VRAM, so a box with too little RAM turns that answer into
+swap. `DiffusionHostRAMBytes` is twice the bundle over a 16 GiB floor, which covers the
+checkpoint being resident in both places during a load.
+
 
 ---
 
@@ -993,6 +1166,66 @@ the port is reachable by anyone who finds it. Where an operator enables it delib
 runtime API key becomes load-bearing rather than defence in depth, and the choice is recorded
 in the journal. It is the one place in this design where the transport choice is *not*
 invisible above this layer, which is why it is opt-in.
+
+#### 10.1.1 A Browser Cannot Present a Bearer Token (FR-APP-07)
+
+The local API key is mandatory and stays mandatory (FR-SEC-09). Loopback is not a per-user
+boundary, any page in the operator's browser can fire requests at a loopback port, and for
+LARRI a request that fires is a request that spends.
+
+What a browser cannot do is *present* one. A top-level navigation carries no `Authorization`
+header, a WebSocket handshake carries no `Authorization` header, and neither can be made to.
+So a surface the operator **opens** — rather than one they configure into a client — needs a
+credential shaped like a cookie. This does not widen what can reach the rig; it narrows it,
+because the alternative for a browser-facing workload is opening the listener to
+unauthenticated traffic.
+
+The exchange is a one-time URL. LARRI prints a link carrying the token, the browser follows
+it once, the token is traded for an `HttpOnly; SameSite=Strict` cookie, and a 303 to `/`
+removes the token from the address bar, the history, and any `Referer` the page later sends.
+The cookie is the same secret, moved somewhere a browser will actually send it.
+
+Three overlapping controls guard the listener, and the overlap is deliberate because a
+control that depends on one browser behaviour is one deprecation away from not being a
+control:
+
+| Control | Closes |
+|---|---|
+| `Host` must be loopback | DNS rebinding — an attacker name resolved to 127.0.0.1 arrives with the wrong `Host` |
+| `Origin` absent or loopback | a page on the open web driving the rig with `fetch` or a `WebSocket` |
+| `SameSite=Strict` cookie | the browser attaching the credential to a cross-site request at all |
+
+`Origin` is checked **before** authentication, so a cross-origin request is refused whatever
+credential a browser was persuaded to attach to it. Absent is allowed, because a top-level
+navigation sends no `Origin` and that is exactly how the operator opens the page.
+
+Responses carry `nosniff`, `Referrer-Policy: no-referrer`, and `X-Frame-Options: DENY` — the
+last so another page cannot embed the rig's UI and drive it invisibly. Deliberately **not** a
+full content-security-policy: a CSP belongs on pages LARRI renders, where it knows what they
+load. This response is somebody else's application, and a policy written blind against it
+breaks it in ways that look like LARRI being broken. §15's two-origin rule is satisfied
+structurally instead — the proxied UI is the only thing on this port, and the daemon's
+control plane is not on it.
+
+**Only work resets the idle clock (FR-APP-08).** Idle reclamation destroys, so what counts
+as activity decides when a GPU stops being paid for, and a browser changes the question
+completely. ComfyUI's frontend reconnects a WebSocket, re-polls its queue, and refetches
+thumbnails for as long as a tab is open — on a laptop left open overnight, indefinitely. The
+proxy therefore takes a `CountsAsWork` predicate from its caller, so `wire` keeps no
+knowledge of any particular protocol's paths, and the rule is about intent: a request that
+asks the GPU to do something is work, one that asks what it has already done is not.
+Excluded requests are **counted**, not discarded, for the same reason probes are — an
+exclusion nobody can see is one nobody can check, and this one decides when a rig dies.
+
+That rule alone would be a trap. A render is one short `POST /prompt` followed by minutes of
+work with no request outstanding at all, so a graph slower than the idle timeout would be
+destroyed halfway through. The queue is therefore polled alongside it and the in-flight
+count held up while it is non-empty, using the bracket `wire` already provides for a
+supervisor holding a rig alive across work it knows about. A failed poll **releases** the
+hold rather than extending it: an unreachable workload is a rig in trouble, and the
+supervision paths are better placed to decide what to do about that than a helper whose only
+move is to keep paying.
+
 
 ### 10.2 Client Config Writers
 

@@ -32,6 +32,13 @@ divergence. **All of Q-01…Q-11 are now resolved** — see §13.1 of the requir
 which records the reasoning and not just the verdict. New questions go there rather than
 being assumed away; answer them with the operator.
 
+A ComfyUI rig is an **Application** workload, not a Runtime: readiness is a rendered image
+rather than a completion, the models are placed before launch because ComfyUI fetches none
+itself, only queueing counts toward the idle clock (an open tab polls forever), and a busy
+queue holds the rig open so a long render is not destroyed halfway through. Outputs are
+collected before the destroy and **never block it** — files left behind are lost once, a rig
+left alive bills until somebody notices.
+
 Decisions worth knowing before touching related code: IDEs are wired via **Continue.dev**
 (one file for VS Code and JetBrains) and VS Code BYOK; chat via **LibreChat** (primary),
 Open WebUI (conditionally), and AnythingLLM (self-hosted by file, desktop guided) — **not
@@ -63,6 +70,13 @@ Criteria are things like GPU model, VRAM, CPU cores, RAM, disk, region, max $/hr
 model to serve. Providers are Vast.ai and RunPod first, more later. Runtimes are llama.cpp,
 Ollama, and vLLM.
 
+The same lifecycle also carries payloads that are not inference engines. `larri comfy` rents
+for a **ComfyUI workflow**: the graph itself states what hardware it needs — the models it
+loads, their measured sizes, the latent area — so the criteria are derived rather than typed,
+the models are fetched onto the rented host, the operator works in their browser against the
+fixed local port, and the renders are pulled back to local disk before the host is destroyed.
+See invariant 1 for why that is the same abstraction rather than a second one.
+
 The user's mental model is a single toggle: `up` gives them a working local endpoint, `down`
 guarantees they stop paying. Every design decision below exists to protect that.
 
@@ -78,10 +92,11 @@ written down here instead.
 
 The second one has two tiers, and the tiers are not a third abstraction. A **Runtime** is a
 Workload that additionally serves OpenAI-compatible `/v1` — vLLM, llama.cpp, Ollama — and an
-**Application** is one that serves something else. The lifecycle underneath never depended
-on the wire format, which is why the widening cost nothing structural; what it bought is
-that a caller about to issue a completion can *ask* (`Protocol()`), rather than discover the
-answer from a 404 on a rig that is already billing. Provider-specific
+**Application** is one that serves something else. ComfyUI is the first Application and is
+deliberately *not* a Runtime: it has no `/v1` at all. The lifecycle underneath never
+depended on the wire format, which is why the widening cost nothing structural; what it
+bought is that a caller about to issue a completion can *ask* (`Protocol()`), rather than
+discover the answer from a 404 on a rig that is already billing. Provider-specific
 vocabulary — Vast's offers/asks and interruptible bids, RunPod's pods and Secure vs
 Community Cloud — is normalized at the provider boundary and must not leak upward. If
 core/ranking/wiring code has to branch on which provider it is talking to, the abstraction
@@ -98,9 +113,11 @@ depend on, and that has not changed: every **Runtime** serves `/v1`, and a test 
 for each compiled-in engine.
 
 What the widening in invariant 1 admits is that not every rentable payload is an inference
-engine. An **Application** workload serves its own API, and the rule that follows is simple:
-no inference client is ever pointed at one. `/v1` is still the only thing the IDE and chat
-wiring know how to speak.
+engine. An **Application** workload (ComfyUI) serves its own API and its own web frontend,
+and the rule that follows is simple: no inference client is ever pointed at one. `/v1` is
+still the only thing the IDE and chat wiring know how to speak; an Application is opened in
+a browser instead of configured into a client, and the local listener grows a cookie-shaped
+credential for it because a navigation cannot carry a bearer header.
 
 Runtimes differ in three places only, and those differences belong inside the
 Runtime implementation:
@@ -496,8 +513,10 @@ is importable.
 ```
 cmd/larri/            CLI entrypoint + subcommands (up, down, status, daemon, mcp, ui)
 internal/provider/    Provider interface + vastai/, runpod/ implementations
-internal/runtime/     Runtime interface + llamacpp/, ollama/, vllm/ implementations
-internal/sizing/      VRAM/context/quantization math (invariant 5)
+internal/runtime/     Workload + Runtime interfaces; llamacpp/, ollama/, vllm/
+internal/comfy/       ComfyUI workload: host install, model fetch, outputs
+internal/workflow/    ComfyUI graph parsing, model manifest, bundle measurement
+internal/sizing/      VRAM/context/quantization math, diffusion sizing (invariant 5)
 internal/rank/        Offer scoring: fit, price, reliability, region
 internal/state/       Durable lifecycle state + reconciliation
 internal/wire/        Tunnel/proxy + IDE and chat client configuration
@@ -515,6 +534,7 @@ go build ./...                                    # build
 go run ./cmd/larri -- up --help                   # run the CLI
 go test ./...                                     # all tests
 go test ./internal/sizing -run TestKVCacheFit -v  # a single test
+go run ./cmd/larri -- comfy --workflow w.json --dry-run   # price a workflow, spend nothing
 go test -race ./...                               # race detector
 go vet ./...
 gofmt -l .                                        # must print nothing
