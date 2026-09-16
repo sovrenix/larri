@@ -53,6 +53,19 @@ type Kind struct {
 	bundle *workflow.Bundle
 	urls   map[string]string
 	name   string
+
+	// sizer measures the files and says where they come from. Nil means
+	// Hugging Face, which is the only source there is; a test supplies its
+	// own, so the whole of §4a — parse, resolve, measure, size, choose the
+	// hardware — can be exercised without a network.
+	sizer Sizer
+}
+
+// Sizer resolves a bundle's files: how large each one is, and where its bytes
+// come from.
+type Sizer interface {
+	workflow.Sizer
+	DownloadURL(workflow.Source) string
 }
 
 var (
@@ -108,7 +121,10 @@ func (k *Kind) Plan(ctx context.Context, cfg *claw.Config, opt claw.Options) (*c
 			return nil, err
 		}
 	}
-	sizer := workflow.NewHFSizer(opt.HFToken)
+	sizer := k.sizer
+	if sizer == nil {
+		sizer = workflow.NewHFSizer(opt.HFToken)
+	}
 	bundle, err := workflow.Resolve(ctx, graph, sizer, workflow.ResolveOptions{
 		Manifest: manifest, AllowPickle: k.cfg.AllowPickle,
 	})
