@@ -121,8 +121,10 @@ internal/errs/          The error taxonomy (§16)
 internal/provider/      Provider interface, registry, normalization
     vastai/             Vast.ai adapter
     runpod/             RunPod adapter
-internal/runtime/       Runtime interface, selection heuristic
+internal/runtime/       Workload and Runtime interfaces, selection heuristic
     llamacpp/  ollama/  vllm/
+internal/claw/          Claw contract and registry (§6.8)
+    <name>/             One application each
 internal/sizing/        VRAM / KV-cache / context math; model fact catalogue
 internal/rank/          Offer scoring
 internal/state/         Durable store, journal, reconciliation
@@ -639,6 +641,97 @@ Two consequences the operator sees:
   rig and neither the catalogue nor the model's chat template indicates tool-calling support,
   that is `ErrModelFailure` before the create call, not a discovery made after paying to
   boot.
+
+---
+
+### 6.8 Claws: Applications on Rented Hardware (FR-CLAW)
+
+LARRI is an inference engine. `larri up` is what that means, and it is unchanged. But the
+lifecycle underneath it — renting, pinning a host key, tunnelling to a loopback bind,
+supervising on evidence, destroying with confirmation — never depended on the payload being
+an engine, and a **claw** is any other application that wants exactly that lifecycle.
+
+The word is deliberately not "workload", which already means something one layer down. A
+`runtime.Workload` is the process that ends up running on the rented box; a claw is the job
+the operator asked for. One `claw.Kind` produces one of the other.
+
+```
+larri claw --type <name> --config job.yml
+  │
+  ▼
+internal/claw         the contract: registry, Kind, Plan, Result
+  │                   internal/claw/<name>/ implements it
+  ▼
+internal/runtime      Workload / Runtime — what runs on the box (§6.1)
+  ▼
+internal/daemon       the rental lifecycle — imports the contract, never an implementation
+```
+
+That last line is the property the layer exists for, and it is enforced by a test rather
+than a comment. The state it replaces had thirteen references to one application inside the
+daemon and a bespoke command per type; the coupling decays silently, because reaching into
+an implementation for a single field compiles, works, and licenses the next exception.
+
+#### 6.8.1 Two Sites
+
+A claw declares where the application runs, and every difference in handling follows from
+that one declaration.
+
+| | remote | local |
+|---|---|---|
+| Runs on the box | the application | an inference engine |
+| Operator reaches it | the fixed local port, usually a browser | their own client, configured once |
+| Sizing | often the claw's own (a measured bundle) | the standard transformer path |
+| Idle clock | needs a rule for what counts as work | ordinary `/v1` traffic *is* the work |
+| Before the destroy | **collect results** | **revert client wiring** |
+| The host sees | the application, its inputs and its outputs | prompts and completions only |
+
+Both pre-destroy steps are bounded, reported loudly, and **must never block the teardown**.
+The asymmetry is the reason: what is left on a destroyed host is lost once, a configuration
+that could not be restored is recoverable from its backup, and a rig left alive bills until
+somebody notices (§4). Reverting first also closes the window in which a client points at a
+dead endpoint, which is invariant 3 applied to teardown.
+
+The local site is where §10.2 lands. A local claw returns `wire.ClientWriter`s rather than
+an Apply/Revert pair of its own, so every one of them gets detect-back-up-write-record-
+revert-probe and the A/B/C writability tiers without being able to invent a weaker version.
+
+#### 6.8.2 Everything Before the Money
+
+`Kind.Plan` is produced without spending, which is the whole point of separating it from the
+rest. §4a says a precondition establishable without renting must be, and a claw has a great
+many: which files it needs, whether they exist, how large they are, what VRAM that implies,
+whether the operator's token can read them. All of it is local, free, and before the create
+call — which is also what lets `--dry-run` print a real report rather than a rehearsal.
+
+`Plan.Sizing` is the one field worth explaining. Nil is the common case and means the
+standard path sizes the model from live facts, re-planning per candidate offer so shard
+degree and per-card headroom are accounted for (§4a). A claw that measured its own bundle
+sets it, and fit becomes a fixed requirement against a single card. `Plan.ColdStartBytes`
+exists for the same reason: "weights" is the wrong word for a bundle of unrelated files, and
+ranking on a number derived from a field that does not describe it would sort the market
+against a size that does not exist (§4b).
+
+`Plan.Criteria` may raise the operator's floors and never lower them. An operator who asked
+for 80 GB has said something about the hardware they want, and renting something smaller
+than what was asked for is the one direction that cannot be undone after the fact.
+
+#### 6.8.3 The Job File
+
+One file rather than a flag per application, because a generic command that grows a
+`--workflow` the day something wants one is not a generic command. The type owns everything
+below `type:` and decodes it itself; this layer never learns the shape.
+
+```yaml
+type: <name>
+# ... whatever that type needs
+```
+
+Relative paths resolve against the file's own directory, not the working directory: a job
+that only works from one place breaks the first time it runs anywhere else. A `--type` flag
+may supply the type when the file omits it, and disagreeing with the file is refused rather
+than resolved — the two disagreeing means one of them is a mistake, and guessing which would
+run the wrong application against somebody's configuration.
 
 ---
 

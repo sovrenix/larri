@@ -24,6 +24,7 @@ and "shown to work" are different claims and are recorded as such.
 
 | Area | Reqs | ✅ live | ☑️ done | 🟡 part | ⬜ plan | Complete |
 |---|---:|---:|---:|---:|---:|---:|
+| Claws | 8 | 0 | 8 | 0 | 0 | **100%** |
 | Criteria | 6 | 3 | 3 | 0 | 0 | **100%** |
 | Provisioning | 12 | 11 | 1 | 0 | 0 | **100%** |
 | State | 5 | 4 | 1 | 0 | 0 | **100%** |
@@ -37,13 +38,18 @@ and "shown to work" are different claims and are recorded as such.
 | Surfaces | 15 | 3 | 2 | 3 | 7 | 33% |
 | Endpoint & client wiring | 14 | 3 | 0 | 1 | 10 | 21% |
 | Observability | 10 | 0 | 1 | 0 | 9 | 10% |
-| **Total** | **185** | **84** | **44** | **18** | **39** | **69%** |
+| **Total** | **193** | **84** | **52** | **18** | **39** | **70%** |
 
-Sixty-eight per cent of requirements are implemented, and **the lifecycle is the part
+Seventy per cent of requirements are implemented, and **the lifecycle is the part
 that is done.** Criteria, provisioning and state are at 100%; search, selection and the
 runtimes are near it. What is missing clusters into the same three areas as before —
 client wiring, the browser surfaces, and observability — none of which a rig needs in
 order to serve.
+
+**The claw layer is `done`, not `live`.** It is implemented and unit-tested, both sites
+included, and **no claw type is compiled in yet** — so nothing has rented a GPU through it.
+On this project that distinction has repeatedly been the whole story, so it is recorded
+rather than rounded up.
 
 Eight requirements were added rather than reclassified. They record behaviour that was
 built during a long run of live failures and had no requirement to point at: ranking on time-and-cost to a working endpoint, the host-verification tier, the link floor, the
@@ -101,7 +107,7 @@ FR-SEC-17, so templates were evaluated and rejected in favour of installing sshd
 
 ## 🟡 Partial — what is missing, specifically
 
-Seventeen requirements are partly met. The gap for each:
+Eighteen requirements are partly met. The gap for each:
 
 | ID | Gap |
 |---|---|

@@ -95,6 +95,7 @@ has round-tripped) and **cost safety** (LARRI never loses track of a billable re
 |---|---|
 | Providers | Vast.ai, RunPod. Pluggable interface for others. |
 | Runtimes | llama.cpp (`llama-server`), Ollama, vLLM. |
+| Claws | Applications on rented hardware, remote or local (§7.13). The layer; no types yet. |
 | Selection criteria | GPU model, GPU count, VRAM, CPU cores, RAM, disk, region, max price/hr, reliability, interruptible vs on-demand, target model. |
 | Lifecycle | Search, rank, provision, bootstrap, verify, wire, supervise, destroy. |
 | Local integration | Stable local `/v1` endpoint; automated IDE and chat-client configuration. |
@@ -472,6 +473,31 @@ All four surfaces are clients of one daemon API. No lifecycle logic lives in a s
 | FR-OBS-08 | S | `plan` | Collect inference throughput, latency, queue depth, and KV-cache utilisation for every runtime, including runtimes that expose no metrics endpoint of their own. |
 | FR-OBS-09 | M | `plan` | Redact secrets in span and metric attributes by the same structural mechanism used for logs (FR-SEC-02). |
 | FR-OBS-10 | M | `plan` | Persist collected metrics across daemon restarts, downsampled as they age, retained in step with terminated-rig retention (FR-DEL-09) so a post-mortem shows both why a rig ended and the series leading up to it. Persistence is best-effort and subordinate (FR-OBS-03): a failed or corrupt write yields a truncated graph, never a startup failure or a state change. |
+
+---
+
+### 7.13 Claws — Applications on Rented Hardware (FR-CLAW)
+
+LARRI is an inference engine, and `larri up` is what that means: rent, serve a model,
+publish a stable `/v1`. The lifecycle underneath it — renting, pinning, tunnelling,
+supervising on evidence, destroying with confirmation — never depended on the payload being
+an engine, and a **claw** is any other application that wants it.
+
+A claw declares where it runs, and that decides what happens either side of the rental. A
+*remote* claw runs on the rented box; a *local* one runs on the operator's machine and rents
+only the inference. The distinction is not cosmetic: it is the difference between results
+that exist nowhere else and configuration that was changed on somebody's own computer.
+
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-CLAW-01 | M | `done` | Model applications as claws behind one registry, so adding one is a package plus a registry entry rather than an edit to the lifecycle. The daemon imports the contract and never an implementation, enforced by a build-time guard — the coupling decays silently otherwise, since reaching into one implementation for a single field compiles, works, and licenses the next exception. |
+| FR-CLAW-02 | M | `done` | Distinguish where the application runs. A remote claw runs on the rented box; a local claw runs on the operator's machine and rents only the inference. Every difference in handling follows from this one declaration rather than from a per-type branch. |
+| FR-CLAW-03 | M | `done` | Derive the hardware from the claw's own configuration, **before the create call**. What it must fetch, how large that is, and what VRAM it implies are all established locally, and a claw that cannot be satisfied refuses without spending (§4a). |
+| FR-CLAW-04 | M | `done` | Never lower the operator's hardware floors. A claw may raise them — it knows what it needs — but renting something smaller than what was asked for is the one direction that cannot be undone after the fact. |
+| FR-CLAW-05 | M | `done` | Collect a remote claw's results before the destroy, bounded by a budget, reporting exactly what could not be brought back. Collection must never prevent a teardown: what is left behind is lost once, while a rig left alive bills until somebody notices. |
+| FR-CLAW-06 | M | `done` | Revert a local claw's client configuration **before** the instance is destroyed, so no client is ever left pointing at a dead endpoint, and persist the records so what must be undone survives the process dying. A failed revert must not prevent the teardown: the configuration is recoverable from its backup and the rig is not recoverable at all. |
+| FR-CLAW-07 | M | `done` | One command for every claw type, with type-specific settings in a job file rather than in flags — a generic command that grows a flag per application is not generic. Relative paths in a job file resolve against the file, so a job that works in one working directory works in every other. A flag that cannot apply to the chosen site is refused rather than ignored. |
+| FR-CLAW-08 | S | `done` | Authenticate a browser-opened claw with a credential a browser will actually send, since neither a navigation nor a WebSocket handshake carries an `Authorization` header, and count only real work toward the idle clock — an open tab polls indefinitely. Hold the clock open while the claw has outstanding work, because a job submitted in one short call and computed for minutes is indistinguishable from an abandoned rig to a timer counting requests. |
 
 ---
 
