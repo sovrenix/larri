@@ -270,6 +270,9 @@ func TestOneWorkflowAllTheWayThrough(t *testing.T) {
 	// ---- the session renders --------------------------------------------
 	png := []byte("\x89PNG\r\n\x1a\nrendered pixels")
 	host.render("ComfyUI_00001_.png", png)
+	// ComfyUI ships this zero-byte placeholder in its output directory. A live
+	// run collected it beside the one real image and reported "2 saved".
+	host.render("_output_images_will_be_put_here", nil)
 
 	// ---- collect before teardown ----------------------------------------
 	local := t.TempDir()
@@ -281,7 +284,10 @@ func TestOneWorkflowAllTheWayThrough(t *testing.T) {
 		t.Fatalf("collection incomplete: %+v", res.Failed)
 	}
 	if len(res.Saved) != 1 {
-		t.Fatalf("saved %d files, want 1", len(res.Saved))
+		t.Fatalf("saved %d files, want 1: %v", len(res.Saved), res.Saved)
+	}
+	if _, err := os.Stat(filepath.Join(local, "_output_images_will_be_put_here")); err == nil {
+		t.Error("the empty placeholder was collected and counted as a render")
 	}
 	got, err := os.ReadFile(filepath.Join(local, "ComfyUI_00001_.png"))
 	if err != nil {

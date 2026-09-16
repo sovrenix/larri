@@ -121,6 +121,13 @@ func List(ctx context.Context, sess runtime.Session, dir string) ([]Artifact, er
 		if rel == "" {
 			continue
 		}
+		// An empty file is never a render. ComfyUI ships a zero-byte
+		// `_output_images_will_be_put_here` in its output directory, and a
+		// live run collected it beside the one real image and reported "2
+		// saved" — a count the operator reads as two renders.
+		if size == 0 {
+			continue
+		}
 		arts = append(arts, Artifact{
 			Path:    dir + "/" + rel,
 			Rel:     rel,
