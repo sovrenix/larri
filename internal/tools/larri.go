@@ -107,10 +107,12 @@ func larriTools(d Deps) []Tool {
 		},
 		{
 			Name: "larri_logs",
-			Description: "Read the runtime log from the rig this server is serving — the account of what a " +
-				"launch is doing, or why it failed. Only available once SSH is up.",
+			Description: "Read a rig's log. For the rig this server is serving, the inference engine's own log " +
+				"(source: runtime) — what a launch is doing, or why it failed; available once SSH is up. For a rig " +
+				"another larri process holds, such as one started with larri up -d, larri's own log of it " +
+				"(source: larri) — bring-up, supervision and teardown.",
 			Schema: Object(map[string]Property{
-				"rig":  {Type: "string", Description: "rig id (default: the serving rig)"},
+				"rig":  {Type: "string", Description: "rig id or a unique prefix (default: the serving rig, else the newest rig with a log)"},
 				"tail": {Type: "integer", Description: "lines to return (default 100)"},
 			}),
 			Handler: d.logs,
@@ -199,7 +201,7 @@ func (d Deps) status(ctx context.Context, raw json.RawMessage) (any, error) {
 		}
 		// The same summary `larri status` renders, so an agent and an
 		// operator asking about one rig get one answer.
-		sm := state.Summarise(r, entries, now)
+		sm := d.Store.Describe(r, entries, now)
 		row := map[string]any{
 			"rig":       sm.ID,
 			"state":     string(sm.State),
@@ -215,7 +217,27 @@ func (d Deps) status(ctx context.Context, raw json.RawMessage) (any, error) {
 			"price_hr":  round4(sm.PriceHr),
 			"quoted_hr": round4(sm.QuotedHr),
 			"billable":  sm.State.Billable(),
+			"held":      sm.Held,
 			"created":   sm.CreatedAt.UTC().Format(time.RFC3339),
+		}
+		// Who holds it, as `larri status` says: the pid to stop, and where
+		// a detached holder's log is. Unknown is reported as unknown.
+		switch {
+		case sm.HolderErr != "":
+			row["held"] = nil
+			row["holder_error"] = sm.HolderErr
+		case sm.Held:
+			holder := map[string]any{
+				"pid": sm.Holder.PID, "detached": sm.Holder.Detached,
+				"since": sm.Holder.Started.UTC().Format(time.RFC3339),
+			}
+			if sm.Holder.Log != "" {
+				holder["log"] = sm.Holder.Log
+			}
+			row["holder"] = holder
+		}
+		if logs := sm.Holder.Logs(); len(logs) > 0 {
+			row["logs"] = logs
 		}
 		if sm.Instance != "" {
 			row["instance"] = sm.Instance

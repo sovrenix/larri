@@ -113,6 +113,8 @@ type Reason string
 const (
 	ReasonEligible      Reason = ""
 	ReasonVRAM          Reason = "insufficient-vram"
+	ReasonEngine        Reason = "engine-unsupported"  // vendor, compute capability or driver the engine's image cannot run on
+	ReasonNetwork       Reason = "network-below-floor" // a download link under --min-netspeed
 	ReasonReliability   Reason = "reliability-below-floor"
 	ReasonPriceOutlier  Reason = "price-outlier"
 	ReasonDeverified    Reason = "verification-withdrawn"
@@ -154,9 +156,17 @@ func (r Result) Excluded() []Candidate {
 	return out
 }
 
-// FitFunc reports whether an offer can hold the model, and why not if it
-// cannot. Supplied by the caller so this package does not depend on sizing.
-type FitFunc func(core.Offer) (ok bool, detail string)
+// FitFunc reports why an offer cannot serve the model — ReasonEligible when it
+// can — and the evidence. Supplied by the caller so this package does not
+// depend on sizing or on any runtime.
+//
+// The reason is the caller's to name because the caller knows which question
+// failed. It used to return only whether the offer fit, and every refusal was
+// filed as insufficient VRAM: a 1660 the vLLM image has no kernels for, a CUDA
+// driver too old for it, and a link under the network floor all read
+// "excluded 38 offers: insufficient-vram" beside an example that said nothing
+// about memory.
+type FitFunc func(core.Offer) (Reason, string)
 
 // Select applies the filters and returns the cheapest survivor.
 //
@@ -228,8 +238,8 @@ func classify(o core.Offer, c core.Criteria, fits FitFunc, p Policy,
 		return ReasonInterruptible, "interruptible offers are opt-in"
 	}
 	if c.MaxPriceHr > 0 && o.PriceHr > c.MaxPriceHr {
-		return ReasonMaxPrice, fmt.Sprintf("$%.3f/hr above the $%.2f/hr ceiling",
-			o.PriceHr, c.MaxPriceHr)
+		return ReasonMaxPrice, fmt.Sprintf("$%.3f/hr above the $%s/hr ceiling",
+			o.PriceHr, ceilingDollars(c.MaxPriceHr))
 	}
 	// Enforced here as well as in the provider's own query, for the same
 	// reason the reliability floor is: one provider filters server-side and
@@ -254,8 +264,8 @@ func classify(o core.Offer, c core.Criteria, fits FitFunc, p Policy,
 			o.VRAMTotalGB(), c.VRAMTotalGB)
 	}
 	if fits != nil {
-		if ok, detail := fits(o); !ok {
-			return ReasonVRAM, detail
+		if reason, detail := fits(o); reason != ReasonEligible {
+			return reason, detail
 		}
 	}
 	// The floor applies only where there is a score to apply it to. A
@@ -340,4 +350,16 @@ func sessionHours(p Policy) float64 {
 		return 1
 	}
 	return p.SessionHours
+}
+
+// ceilingDollars prints a price ceiling to the precision it was set with, and
+// to the cent at least. A detached launch sets one to a tenth of a cent above
+// the agreed price, and at two places "$0.043/hr above the $0.04/hr ceiling"
+// excludes an offer for exceeding a figure it does not exceed.
+func ceilingDollars(v float64) string {
+	s := strings.TrimRight(fmt.Sprintf("%.4f", v), "0")
+	if i := strings.IndexByte(s, '.'); i >= 0 && len(s)-i-1 < 2 {
+		s += strings.Repeat("0", 2-(len(s)-i-1))
+	}
+	return s
 }

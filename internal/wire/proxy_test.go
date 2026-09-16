@@ -264,3 +264,29 @@ func TestProbeHeaderMatchesTheRuntimeConstant(t *testing.T) {
 			ProbeHeader, runtime.ProbeHeader)
 	}
 }
+
+// staticKeys stands in for the stored client keys.
+type staticKeys map[string]string // value -> name
+
+func (k staticKeys) Match(v string) (string, bool) { n, ok := k[v]; return n, ok }
+
+// Stored client keys are accepted on every rig, beside the keys the proxy
+// holds itself — and are stripped at the boundary like any other, never
+// reaching the host.
+func TestStoredClientKeysAreAcceptedAndStripped(t *testing.T) {
+	up := newUpstream(t)
+	p, base := startProxy(t, up, "RIG")
+	p.AddClient("larri-probe", secret.New("PROBE"))
+	p.SetKeys(staticKeys{"STORED-KEY": "continue"})
+
+	for tok, want := range map[string]int{"STORED-KEY": http.StatusOK, "PROBE": http.StatusOK, "OTHER": http.StatusUnauthorized} {
+		r := post(t, base, tok, nil)
+		r.Body.Close()
+		if r.StatusCode != want {
+			t.Errorf("key %s: status %d, want %d", tok, r.StatusCode, want)
+		}
+	}
+	if got := up.lastAuth(); got != "Bearer RIG" {
+		t.Errorf("upstream saw %q; a client key must never reach the host", got)
+	}
+}

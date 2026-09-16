@@ -217,7 +217,7 @@ larri up --model Qwen/Qwen3-Coder-30B \
 
 | Command | Does |
 |---|---|
-| `larri up` | Search, rank, provision, bootstrap, serve, supervise |
+| `larri up` | Search, rank, provision, bootstrap, serve, supervise — `-d` returns once it is serving |
 | `larri status` | State, provider, hardware and card count, instance, hourly rate (and the quote when the bill differs), model, elapsed time, accrued cost — and why a past rig ended |
 | `larri down` | Destroy through the rig's own provider, **confirm absence**, report total cost. `--nothing-created "how you checked" <rig>` corrects an old record of a rig that never had an instance |
 | `larri resume` | Rebuild the tunnel to a rig that outlived the last process |
@@ -227,6 +227,8 @@ larri up --model Qwen/Qwen3-Coder-30B \
 | `larri tui` | The same lifecycle under a live dashboard: cost, idle, health, `d` to destroy |
 | `larri mcp` | Expose the lifecycle as MCP tools for Claude Code and other agents |
 | `larri privacy` | What the machine you rent can see, in full |
+| `larri logs` | What LARRI wrote while holding a rig started with `-d`, like `docker logs`: `-f` follows, `-n 50` tails |
+| `larri token` | Client API keys: `create <name>` (shown once), `list`, `revoke <name>` |
 | `larri label-key` | Generate a key that seals provider-side labels |
 
 A web console with graphs and a chat pane is designed (§14.4) but not built.
@@ -245,7 +247,7 @@ download weights.
 
 ### Flags worth knowing
 
-`larri up --help` lists all 26. These are the ones that change what you pay or whether
+`larri up --help` lists them all. These are the ones that change what you pay or whether
 it works at all.
 
 | Flag | Why |
@@ -355,8 +357,9 @@ larri up --idle-timeout 30m --idle-action destroy   # default
 larri up --budget 5.00                              # destroys on breach, after warning
 ```
 
-Both are enforced by a supervisor that runs for as long as `larri up` (or `larri tui`) does.
-If that process dies, the host itself stops serving after a longer deadline — but **that is
+Both are enforced by a supervisor that runs for as long as `larri up` (or `larri tui`, or a
+detached holder) does. `larri status` names the process holding each billing rig, and says
+plainly when none is — no endpoint, nothing reclaiming it. If that process dies, the host itself stops serving after a longer deadline — but **that is
 containment, not a refund**: a rented container cannot end its own billing (measured, §12.4.1).
 The remedy for a rig orphaned by a crash is `larri orphans`, which finds instances by their
 provider-side label even when local state is gone.
@@ -401,6 +404,34 @@ larri_down    → { destroyed: true, ran: "2m24s", total_usd: 0.0068 }
 If your agent host disconnects, the tunnel closes but **the rig is not destroyed** — it is
 still billing and may still be wanted. `larri resume` reattaches; `larri down` stops it.
 
+#### Without MCP: detached
+
+An agent that drives a shell needs a command that returns. `larri up -d` does the whole
+bring-up in a larri process of its own and exits once the rig is serving — or with the error
+if it is not — leaving that process holding the tunnel and running the supervisor, so idle
+reclamation and the budget still apply. `larri down` ends it the same way.
+
+```bash
+larri up -d --yes --json --model Qwen/Qwen2.5-1.5B-Instruct --max-price 0.30
+# {"ok":true,"rig":"01K…","endpoint":"http://127.0.0.1:8000/v1","model":"qwen2.5-1.5b-instruct",
+#  "hardware":"vastai RTX 3090 24GB","price_hr":0.14,
+#  "key_line":"your client keys: default   (larri token create <name> adds one)",
+#  "pid":41822,"log":"…/logs/up-….log"}
+larri status        # held      by larri pid 41822 since 15:04 (detached; log …)
+larri logs -f 01K   # its bring-up, supervision and teardown, as it happens
+larri down 01K…
+```
+
+From a terminal, `-d` still shows the offer and asks, and the process it starts will rent
+nothing dearer than the price you agreed to — including when it falls back, so if the host you
+agreed to fails and nothing else is that cheap, it stops and says so. Without a terminal it
+needs `--yes`. With `--json`, stdout is the one object — `"ok":false` with the error when it
+fails, is refused, or you decline — and the notices go to stderr. Stopping a detached process
+that is serving tears its rig down, as Ctrl-C does to `larri up`. The log is
+`0600` and never holds a key: a key shown for the first time is printed by the command you
+ran and nowhere else. `larri resume -d` reconnects the same way. A rig has one holder at a
+time, so `resume` refuses a rig another larri process is already serving and names it.
+
 ### Your tools, configured by hand
 
 > **Not implemented yet.** LARRI serves an OpenAI-compatible endpoint on a fixed loopback
@@ -413,17 +444,23 @@ three values every client asks for:
 ```
   ✓ rig 01M0ZXE8… READY   http://127.0.0.1:8000/v1   model: qwen2.5-1.5b-instruct
     vastai RTX 3060 at $0.047/hr
-    key: fKLtIo4OscEe1W7a0TYJasIlaH6Q0tc530Vi-n5n7Ow
+    key: fKLtIo4OscEe1W7a0TYJasIlaH6Q0tc530Vi-n5n7Ow   (client key "default", created now — shown once; larri token list)
 ```
 
 | Field | Value | Where it comes from |
 |---|---|---|
 | Base URL | `http://127.0.0.1:8000/v1` | Always the same, whichever provider or GPU won |
-| API key | the `key:` line | Minted per bring-up — **it changes every time** |
+| API key | the `key:` line | A stored client key — **the same on every rig**, so a client is configured once |
 | Model | the `model:` line | Your `--served-name`, or derived from the model reference |
 
-**Copy the key when it appears.** It is printed once, at bring-up; `larri
-status` does not repeat it. Lose it and the quickest fix is a fresh rig.
+**Copy the key when it appears.** The first `larri up` creates a client key
+called `default` and shows it once; later rigs accept it and name it instead of
+showing it. LARRI keeps only a hash, so a lost key is replaced, not recovered:
+`larri token revoke default` and `larri token create <name>`. Give each client
+its own key with `larri token create continue`, so one can be revoked without
+rewiring the rest — revoking takes effect on a rig that is already serving.
+`--new-key` adds a key for one rig only, for a client that should not keep one;
+the MCP server gives agents one of those by default.
 
 | Client | Where it goes |
 |---|---|

@@ -77,6 +77,7 @@ footer{margin-top:48px;text-align:center;font-size:var(--text-sm);color:var(--co
     <a href="#first">first rig</a><span class="dim">·</span>
     <a href="#clients">wire a client</a><span class="dim">·</span>
     <a href="#stop">stop paying</a><span class="dim">·</span>
+    <a href="#background">in the background</a><span class="dim">·</span>
     <a href="#daily">daily use</a><span class="dim">·</span>
     <a href="#trouble">when it fails</a>
   </nav>
@@ -111,7 +112,7 @@ bin/larri up --model Qwen/Qwen2.5-1.5B-Instruct             # rents, serves, hol
   <div class="note">
     Two habits worth forming immediately: run <b>--dry-run</b> first, every time —
     it shows the hardware, the wait and the bill without renting anything. And
-    <b>copy the key when it appears</b>: it is minted per bring-up and printed once.
+    <b>copy the key when it appears</b>: it is shown once, and every later rig accepts it.
   </div>
 
   <p class="dim" style="font-size:var(--text-sm);margin:14px 0 0">
@@ -120,6 +121,7 @@ bin/larri up --model Qwen/Qwen2.5-1.5B-Instruct             # rents, serves, hol
     <a href="#first" style="text-decoration:underline">first rig</a> ·
     <a href="#clients" style="text-decoration:underline">wiring a client</a> ·
     <a href="#stop" style="text-decoration:underline">stopping</a> ·
+    <a href="#background" style="text-decoration:underline">in the background</a> ·
     <a href="#daily" style="text-decoration:underline">daily commands</a> ·
     <a href="#trouble" style="text-decoration:underline">failures</a>
   </p>
@@ -210,14 +212,17 @@ export LARRI_LABEL_KEY=...</code></div>
   an actual generated token.</p>
   <div class="out">  ✓ rig 01M0ZXE8… <b>READY</b>   http://127.0.0.1:8000/v1   model: <i>qwen2.5-1.5b-instruct</i>
     vastai RTX 3060 12GB at $0.047/hr
-    key: <i>fKLtIo4OscEe1W7a0TYJasIlaH6Q0tc530Vi-n5n7Ow</i>
+    key: <i>fKLtIo4OscEe1W7a0TYJasIlaH6Q0tc530Vi-n5n7Ow</i>   (client key "default", created now — shown once)
 
   policy: idle 30m0s → destroy · no budget ceiling
   holding the tunnel — Ctrl-C to tear down and stop paying</div>
   <div class="note">
-    <b>Copy the key now.</b> It is minted per bring-up and printed once;
-    <b>larri status</b> does not repeat it. Leave this terminal open — it is holding
-    the tunnel and supervising the rig.
+    <b>Copy the key now.</b> The first rig creates a client key and shows it once;
+    every later rig accepts the same key, so a client is configured once. LARRI keeps
+    only a hash — a lost key is replaced with <b>larri token create</b>. Leave this
+    terminal open — it is holding the tunnel and supervising the rig. Or add <b>-d</b>:
+    it asks the same question, returns once the rig is serving, and leaves a larri
+    process of its own holding it, which <b>larri status</b> names.
   </div>
 </section>
 
@@ -231,9 +236,20 @@ export LARRI_LABEL_KEY=...</code></div>
   <table>
     <tr><th>Field</th><th>Value</th></tr>
     <tr><td>Base URL</td><td><b>http://127.0.0.1:8000/v1</b></td></tr>
-    <tr><td>API key</td><td>the <b>key:</b> line — changes every bring-up</td></tr>
+    <tr><td>API key</td><td>the <b>key:</b> line — the same on every rig; <b>larri token</b> makes one per client</td></tr>
     <tr><td>Model</td><td>the <b>model:</b> line</td></tr>
   </table>
+
+  <h3>One key per client</h3>
+  <p style="margin:0 0 10px">The first rig makes a key called <b>default</b>. Give each
+  client its own instead, so one can be revoked without rewiring the rest:</p>
+  <div class="cmd"><button class="copy">copy</button><code>bin/larri token create continue   # shown once — paste it into that client
+bin/larri token list              # names and dates, never values
+bin/larri token revoke default    # refused from the next request, even on a rig serving now</code></div>
+  <p class="dim" style="font-size:var(--text-sm);margin:0 0 16px">Every rig accepts every
+  key, so a client is configured once. LARRI stores only a hash: a lost key is revoked and
+  replaced, never shown again. <b>--new-key</b> on <b>larri up</b> makes a key for that rig
+  alone, for a client that should not keep one.</p>
 
   <h3>Check it before configuring anything</h3>
   <div class="cmd"><button class="copy">copy</button><code>curl -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
@@ -261,13 +277,21 @@ export LARRI_LABEL_KEY=...</code></div>
 
 <section id="stop">
   <h2>Stop paying</h2>
-  <p style="margin:0 0 10px"><b>Ctrl-C</b> in the terminal holding the rig, or from anywhere:</p>
+  <p style="margin:0 0 10px"><b>Ctrl-C</b> in the terminal holding the rig, or from anywhere —
+  and for a rig started with <b>-d</b>, this is the way:</p>
   <div class="cmd"><button class="copy">copy</button><code>bin/larri down</code></div>
   <p style="margin:0 0 10px">It destroys the rig, <b>re-queries the provider to confirm
   it is actually gone</b>, and reports the total. A 200 from a delete endpoint is a
   claim; absence from the inventory is evidence.</p>
 
   <h3>If a LARRI process ever dies unexpectedly</h3>
+  <p style="margin:0 0 10px"><b>larri status</b> says so: a billing rig with no process
+  holding it reads <b>held by no larri process — no endpoint, no idle reclamation</b>.
+  Reconnect to it, or end it:</p>
+  <div class="cmd"><button class="copy">copy</button><code>bin/larri resume -d     # Vast.ai: rebuild the tunnel, supervised again
+bin/larri down</code></div>
+  <p style="margin:0 0 10px">And if local state itself is gone, find what is still billing
+  by its provider-side label:</p>
   <div class="cmd"><button class="copy">copy</button><code>bin/larri orphans
 bin/larri orphans --destroy</code></div>
   <div class="note">
@@ -283,20 +307,73 @@ bin/larri orphans --destroy</code></div>
 
 <hr class="rule">
 
+<section id="background">
+  <h2>In the background</h2>
+  <p style="margin:0 0 10px">A foreground <b>larri up</b> holds your terminal for as long
+  as the rig lives. Add <b>-d</b> and it returns once the rig is serving, leaving a larri
+  process of its own holding the tunnel and supervising — idle timeout and budget still
+  apply, and <b>larri down</b> still ends it.</p>
+  <div class="cmd"><button class="copy">copy</button><code>bin/larri up -d --model Qwen/Qwen2.5-1.5B-Instruct</code></div>
+  <div class="out">  rent RTX A4000 15GB at $0.102/hr? [y/N] y
+  detached    larri pid 405493 is renting and will hold the rig — log ~/.local/state/larri/logs/up-….log
+  …
+  ✓ rig 01M2H0VBCZ… <b>READY</b>   http://127.0.0.1:8000/v1   model: <i>qwen2.5-1.5b-instruct</i>
+    vastai RTX A4000 15GB at $0.102/hr
+    key: your client keys: default   (larri token create &lt;name&gt; adds one)
+
+  detached: larri pid 405493 holds the rig and supervises it — log …
+  larri status shows it; larri down 01M2H0VBCZ… ends it and stops the bill</div>
+  <p style="margin:0 0 10px">It still asks before it spends, and the process it starts will
+  rent nothing dearer than the price you said yes to — including when a host fails and it
+  falls back, so if nothing else is that cheap it stops and tells you to run it again.</p>
+
+  <h3>Watch it, reconnect to it</h3>
+  <div class="cmd"><button class="copy">copy</button><code>bin/larri status              # held by larri pid 405493 (detached; log …)
+bin/larri logs -f 01m2h0      # its bring-up, supervision and teardown, as they happen
+bin/larri logs -n 50          # the last 50 lines of the newest rig with a log
+bin/larri resume -d 01M2H0…   # after its holder died: take the rig back, in the background</code></div>
+  <p class="dim" style="font-size:var(--text-sm);margin:0 0 16px">A rig has one holder at a
+  time: <b>resume</b> refuses a rig another larri process is serving and names its pid.
+  <b>larri logs</b> takes an id or any unique prefix of it, keeps every holder's log oldest
+  first, and <b>-f</b> stops when the rig has ended and its holder has exited. Stopping a
+  detached process that is serving — <b>kill</b>, logout, shutdown — tears its rig down,
+  whether <b>up -d</b> or <b>resume -d</b> started it.</p>
+
+  <h3>From a script or an agent</h3>
+  <p style="margin:0 0 10px">Without a terminal there is no one to ask, so <b>-d</b> needs
+  <b>--yes</b> and never assumes it. <b>--json</b> makes stdout one object — success or
+  failure — and sends every notice to stderr:</p>
+  <div class="cmd"><button class="copy">copy</button><code>bin/larri up -d --yes --json --model Qwen/Qwen2.5-1.5B-Instruct --max-price 0.30</code></div>
+  <div class="out">{"ok":true,"rig":"01M2H0GKP6…","endpoint":"http://127.0.0.1:8000/v1",
+ "model":"qwen2.5-1.5b-instruct","hardware":"vastai RTX A4000 15GB","price_hr":0.1018,
+ "key_line":"your client keys: default   (larri token create &lt;name&gt; adds one)",
+ "pid":398547,"log":"…/logs/up-….log"}</div>
+  <div class="note">
+    A key made for the first time — <b>default</b> on a first run, or a <b>--new-key</b> —
+    appears once, in that output, as <b>"key"</b>. It is never written to the log, the
+    state directory or anywhere else. An agent that drives LARRI through MCP instead uses
+    <b>larri mcp</b>, which holds the rig in the server itself.
+  </div>
+</section>
+
+<hr class="rule">
+
 <section id="daily">
   <h2>Daily use</h2>
   <table>
     <tr><th>Command</th><th>Does</th></tr>
-    <tr><td><b>larri up</b></td><td>Search, rank, provision, serve, supervise</td></tr>
-    <tr><td><b>larri status</b></td><td>State, provider, hardware and card count, instance, the billed rate beside the quoted one, accrued cost — and why a past rig ended</td></tr>
+    <tr><td><b>larri up</b></td><td>Search, rank, provision, serve, supervise — <b>-d</b> returns once it is serving and leaves a larri process holding the rig</td></tr>
+    <tr><td><b>larri status</b></td><td>State, provider, hardware and card count, instance, the billed rate beside the quoted one, accrued cost, which larri process holds it — and why a past rig ended</td></tr>
     <tr><td><b>larri down</b></td><td>Destroy, confirm absence, report total cost</td></tr>
-    <tr><td><b>larri resume</b></td><td>Rebuild the tunnel to a rig that outlived the last process</td></tr>
+    <tr><td><b>larri resume</b></td><td>Rebuild the tunnel to a rig that outlived the last process, supervised again — <b>-d</b> in the background (Vast.ai)</td></tr>
     <tr><td><b>larri offers</b></td><td>Search and rank without spending anything</td></tr>
     <tr><td><b>larri orphans</b></td><td>Find and destroy what local state cannot account for</td></tr>
     <tr><td><b>larri config</b></td><td>Save criteria as profiles, so <b>larri up</b> needs no flags</td></tr>
     <tr><td><b>larri tui</b></td><td>The same lifecycle under a live dashboard</td></tr>
     <tr><td><b>larri mcp</b></td><td>Hand the lifecycle to Claude Code as MCP tools</td></tr>
     <tr><td><b>larri privacy</b></td><td>What the machine you rent can see, in full</td></tr>
+    <tr><td><b>larri logs</b></td><td>What LARRI wrote while holding a rig started with <b>-d</b>, like docker logs: <b>-f</b> follows, <b>-n 50</b> tails</td></tr>
+    <tr><td><b>larri token</b></td><td>API keys for your clients: <b>create &lt;name&gt;</b> (shown once), <b>list</b>, <b>revoke &lt;name&gt;</b></td></tr>
     <tr><td><b>larri label-key</b></td><td>Generate a key that seals provider-side labels</td></tr>
   </table>
 
@@ -317,6 +394,15 @@ bin/larri orphans --destroy</code></div>
     <tr><td><b>--tool-parser</b></td><td>Override the parser derived from the model, or <b>none</b> to disable tool calling.</td></tr>
     <tr><td><b>--deadline 75m</b> · <b>--ssh-timeout 3m</b></td><td>Ceilings for a slow host. Stall detection ends a bad attempt sooner.</td></tr>
     <tr><td><b>--port 8080</b> · <b>--idle-timeout 15m</b></td><td>When 8000 is taken; destroy sooner when idle.</td></tr>
+  </table>
+  <h3>Flags for running unattended</h3>
+  <table>
+    <tr><th>Flag</th><th>Why</th></tr>
+    <tr><td><b>-d</b> · <b>--detach</b></td><td>On <b>up</b> and <b>resume</b>: return once the rig is serving and leave a larri process holding it.</td></tr>
+    <tr><td><b>--yes</b></td><td>Rent without asking. Required for <b>-d</b> without a terminal; never implied.</td></tr>
+    <tr><td><b>--json</b></td><td>With <b>-d</b>: one JSON object on stdout, <b>"ok":false</b> with the error when it fails.</td></tr>
+    <tr><td><b>--new-key</b></td><td>A client key for this rig only, shown once, gone with the rig.</td></tr>
+    <tr><td><b>-f</b> · <b>-n 50</b></td><td>On <b>logs</b>: follow while a process holds the rig; show only the last lines (<b>-n 0 -f</b>: new lines only).</td></tr>
   </table>
   <p style="margin:12px 0 0">Ready-made commands per task — chat, coding, reasoning,
   documents, vision — are in the <a href="./cookbook.html" style="text-decoration:underline">cookbook</a>.</p>
@@ -342,12 +428,34 @@ bin/larri orphans --destroy</code></div>
     <tr><td><b>provider gave up on the instance</b></td>
         <td>The provider's own container runtime failed — often GPUs that could not be
         attached. Nothing you can fix; LARRI moves on immediately.</td></tr>
+    <tr><td><b>engine-unsupported</b></td>
+        <td>Not an error. The card cannot run the engine's image — the wrong vendor, too old a
+        compute capability, or too old a driver — so LARRI skips it before renting.
+        <b>--runtime llamacpp</b> runs on many cards vLLM cannot.</td></tr>
+    <tr><td><b>network-below-floor</b></td>
+        <td>The host's download link is under your <b>--min-netspeed</b>. The download is billed,
+        so a slow link is a dear rig.</td></tr>
     <tr><td><b>verification-withdrawn</b></td>
         <td>Not an error. The provider granted this host verification and later took it
         back, so LARRI skips it. <b>--allow-deverified</b> to include them anyway.</td></tr>
     <tr><td><b>local port 8000 is already in use</b></td>
-        <td>Something else holds the port. Use <b>--port 8080</b>. Checked before
-        renting, so it costs nothing.</td></tr>
+        <td>Something else holds the port. Use <b>--port 8080</b>, or set <b>local_port</b>
+        in the config. Checked before renting — and before <b>-d</b> asks — so it costs nothing.</td></tr>
+    <tr><td><b>--detach without a terminal needs --yes</b></td>
+        <td>A detached rental from a script has no one to confirm it. Add <b>--yes</b> if
+        renting without a prompt is what you mean.</td></tr>
+    <tr><td><b>rig … is already served by larri pid …</b></td>
+        <td>Another larri process holds that rig — a <b>-d</b> holder, or <b>larri up</b> in
+        another terminal. It is already serving; <b>larri down</b> ends it.</td></tr>
+    <tr><td><b>held by no larri process — no endpoint, no idle reclamation</b></td>
+        <td>In <b>larri status</b>: the process holding a billing rig died. Nothing is serving
+        or watching it. <b>larri resume -d</b> takes it back; <b>larri down</b> ends it.</td></tr>
+    <tr><td><b>the detached rental was held to the $… you agreed to</b></td>
+        <td>The host you said yes to failed, and nothing else was that cheap. Nothing is left
+        billing. Run <b>larri up -d</b> again to be asked about the next offer.</td></tr>
+    <tr><td><b>logs: rig … has no log</b></td>
+        <td>That rig was held in the foreground, whose output went to its terminal. Only
+        rigs started or resumed with <b>-d</b> have a log.</td></tr>
     <tr><td><b>At low stock: … would fit — --allow-low-stock considers it</b></td>
         <td>Nothing in stock can hold the model, but a card the provider lists at low stock can.
         Add <b>--allow-low-stock</b> to try it. If the provider refuses, nothing is created and

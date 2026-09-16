@@ -14,6 +14,9 @@ package wire
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -111,7 +114,16 @@ type Proxy struct {
 
 	mu       sync.RWMutex
 	upstream Upstream
-	clients  map[string]secret.Secret // token -> client name
+	clients  map[string]string // sha256 of a token -> client name
+	keys     KeySet
+}
+
+// KeySet is a store of client keys the proxy accepts beside the ones added to
+// it directly — the keys operators configure clients with once, which outlive
+// any one rig (invariant 3).
+type KeySet interface {
+	// Match reports the name of the key a presented value is, if any.
+	Match(presented string) (name string, ok bool)
 }
 
 // NewProxy binds the local port. Binding here, before anything is declared
@@ -122,7 +134,7 @@ func NewProxy(localPort int) (*Proxy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("wire: bind local port %d: %w", localPort, err)
 	}
-	return &Proxy{ln: ln, clients: map[string]secret.Secret{}}, nil
+	return &Proxy{ln: ln, clients: map[string]string{}}, nil
 }
 
 // LocalPort reports the bound port.
@@ -147,10 +159,25 @@ func (p *Proxy) SetUpstream(u Upstream) {
 // Per-client rather than one shared secret (FR-SEC-23): a single client can be
 // revoked without rewiring the others, a leaked config burns one credential,
 // and requests carry an identity, so cost can be attributed per tool.
+//
+// Held as a hash, like a stored key, so the proxy keeps no copy of a value a
+// client could present.
 func (p *Proxy) AddClient(name string, token secret.Secret) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.clients[token.Reveal()] = secret.New(name)
+	p.clients[hashToken(token.Reveal())] = name
+}
+
+// SetKeys adds a store of client keys to those the proxy accepts.
+func (p *Proxy) SetKeys(k KeySet) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.keys = k
+}
+
+func hashToken(t string) string {
+	sum := sha256.Sum256([]byte(t))
+	return hex.EncodeToString(sum[:])
 }
 
 // authenticate resolves a presented token to a client name.
@@ -160,13 +187,23 @@ func (p *Proxy) authenticate(header string) (string, bool) {
 	if tok == "" {
 		return "", false
 	}
+	h := []byte(hashToken(tok))
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-	for known, name := range p.clients {
-		// Constant time, so a token cannot be recovered a byte at a time.
-		if secret.New(known).Equal(secret.New(tok)) {
-			return name.Reveal(), true
+	keys := p.keys
+	name, ok := "", false
+	for known, n := range p.clients {
+		// Constant time, and over every entry, so neither a token nor its
+		// position can be recovered from the timing.
+		if subtle.ConstantTimeCompare(h, []byte(known)) == 1 {
+			name, ok = n, true
 		}
+	}
+	p.mu.RUnlock()
+	if ok {
+		return name, true
+	}
+	if keys != nil {
+		return keys.Match(tok)
 	}
 	return "", false
 }

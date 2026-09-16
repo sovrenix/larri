@@ -53,6 +53,15 @@ type Summary struct {
 	CreatedAt time.Time
 	Cost      core.CostSummary
 	End       *core.Termination
+
+	// Held says a larri process is serving and supervising the rig now, and
+	// Holder who it is. A billing rig nobody holds has no endpoint and no
+	// supervisor — idle reclamation is not running for it.
+	Held   bool
+	Holder Holder
+	// HolderErr is why whether a process holds the rig could not be told.
+	// Set, Held means nothing: an unreadable hold is not an absent one.
+	HolderErr string
 }
 
 // Summarise renders a rig and its journal for display.
@@ -78,6 +87,27 @@ func Summarise(r *core.Rig, entries []Entry, now time.Time) Summary {
 		s.Endpoint = fmt.Sprintf("http://127.0.0.1:%d/v1", r.LocalPort)
 	}
 	return s
+}
+
+// Describe is Summarise with what only the store knows: whether a process
+// holds the rig. Every surface uses it, so an agent and an operator are told
+// the same thing about a rig nobody is serving.
+func (s *Store) Describe(r *core.Rig, entries []Entry, now time.Time) Summary {
+	sm := Summarise(r, entries, now)
+	h, held, err := s.HolderOf(r.ID)
+	if err != nil {
+		// Unknown, and said so. Reporting it as unheld would call a rig
+		// something is supervising an orphan, which is the decision this
+		// line exists to inform.
+		sm.HolderErr = err.Error()
+		return sm
+	}
+	sm.Held, sm.Holder = held, h
+	// An endpoint is only there while a process serves it.
+	if !sm.Held {
+		sm.Endpoint = ""
+	}
+	return sm
 }
 
 // PriceDiffers reports whether the provider bills a different rate from the

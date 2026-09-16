@@ -314,7 +314,23 @@ func TestPrivacyNoticeNamesTheHost(t *testing.T) {
 // not abandon it. A half-provisioned rig that nobody tears down is the exact
 // outcome this product exists to prevent.
 func TestFailedBringUpTearsDownRatherThanAbandoning(t *testing.T) {
-	o, p, st := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	// Held while the teardown runs: a rig that read as held by no one while
+	// it was destroyed was one `larri resume` could reconnect to.
+	var st *state.Store
+	destroys, heldThroughout := 0, true
+	watch := pfake.Behaviour{BeforeDestroy: func(string) {
+		rigs, _ := st.List()
+		for _, r := range rigs {
+			if r.State == core.StateDestroyed {
+				continue
+			}
+			destroys++
+			if _, held, _ := st.HolderOf(r.ID); !held {
+				heldThroughout = false
+			}
+		}
+	}}
+	o, p, st := newOrch(t, watch, rfake.Behaviour{})
 	// The instance is created; the host then never becomes reachable, which
 	// is what a dead sshd looks like.
 	o.Deadline = 3 * time.Second
@@ -340,6 +356,15 @@ func TestFailedBringUpTearsDownRatherThanAbandoning(t *testing.T) {
 	}
 	if !strings.Contains(last.End.Summary, "bring-up failed") {
 		t.Errorf("summary = %q", last.End.Summary)
+	}
+	if destroys == 0 || !heldThroughout {
+		t.Errorf("destroys seen %d; held throughout the teardown: %v", destroys, heldThroughout)
+	}
+	// Nor does a rig that has ended stay held, by any of the attempts.
+	for _, r := range rigs {
+		if _, held, _ := st.HolderOf(r.ID); held {
+			t.Errorf("rig %s ended and is still held", r.ID)
+		}
 	}
 }
 

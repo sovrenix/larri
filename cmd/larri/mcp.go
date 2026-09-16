@@ -70,7 +70,15 @@ func cmdMCP(ctx context.Context, args []string) error {
 		Session: sess,
 		HFToken: secret.New(os.Getenv("HF_TOKEN")),
 		NewOrchestrator: func(kind, prov string, model core.ModelSpec) (*daemon.Orchestrator, error) {
-			return newOrchestrator(st, kind, prov, model, events)
+			o, err := newOrchestrator(st, kind, prov, model, events)
+			if err != nil {
+				return nil, err
+			}
+			// An agent gets a key for its rig alone, returned by
+			// larri_status, which goes with the rig. Stored keys are
+			// accepted too, so the operator's own clients keep working.
+			o.OneRigKey = true
+			return o, nil
 		},
 		Providers: func() []string {
 			provs, err := providersToSweep("")
@@ -128,6 +136,7 @@ func newOrchestrator(st *state.Store, runtimeKind, providerName string, model co
 	return &daemon.Orchestrator{
 		Store: st, Provider: prov, Runtime: eng,
 		LabelSealer: sealer,
+		ClientKeys:  openClientKeys(),
 		Resolver:    sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
 		Policy:      rank.DefaultPolicy(),
 		// Matches the CLI's default rather than undercutting it. An agent

@@ -231,6 +231,7 @@
         <a href="#docs">documents</a><span class="dim">·</span>
         <a href="#vision">vision</a><span class="dim">·</span>
         <a href="#cheap">cheapest</a><span class="dim">·</span>
+        <a href="#background">in the background</a><span class="dim">·</span>
         <a href="#cannot">what it cannot do</a>
       </nav>
     </header>
@@ -251,7 +252,8 @@
         to a single card.</p>
       <div class="note">
         ⚠ These commands spend money. A rig bills from the moment it is created —
-        including while it downloads. <b>Ctrl-C</b> tears it down;
+        including while it downloads. <b>Ctrl-C</b> tears it down, and
+        <b>larri down</b> ends one started with <b>-d</b>;
         <b>larri orphans</b> catches anything a crash left behind.
       </div>
     </section>
@@ -399,6 +401,42 @@
 
     <hr class="rule">
 
+    <section id="background">
+      <h2>In the background &amp; from an agent</h2>
+      <p class="dim" style="margin:0 0 16px">Rigs that outlive the command that started them.</p>
+
+      <h3>Get your terminal back</h3>
+      <div class="cmd"><button
+          class="copy">copy</button><code>larri up -d --runtime llamacpp --model Qwen/Qwen2.5-1.5B-Instruct-GGUF --quantization Q4_K_M --gpu "RTX A4000" --verified-only --min-netspeed 1000</code></div>
+      <p class="lands">Lands on <b>RTX A4000 15GB · ~$0.10/hr</b> · 1.0 GB of weights ·
+        ready in 3–7 min. It asks, as <b>larri up</b> always does, then returns at READY and
+        leaves a larri process holding the tunnel, with the idle timeout and budget still
+        watching. A verified card on a fast link: without those filters, the same model on vLLM
+        landed on a $0.038/hr host that was still pulling the image after 25 minutes.</p>
+
+      <h3>Follow it, then end it</h3>
+      <div class="cmd"><button class="copy">copy</button><code>larri logs -f 01m2h2    # bring-up to READY, then supervision — a prefix of the rig id will do
+larri down 01M2H2AP7E…</code></div>
+      <p class="lands"><b>logs -f</b> keeps going through the teardown — the idle warning,
+        "confirmed absent", DESTROYED — and exits with the process that held the rig.</p>
+
+      <h3>From an agent that runs shell commands</h3>
+      <div class="cmd"><button
+          class="copy">copy</button><code>larri up -d --yes --json --runtime llamacpp --model Qwen/Qwen2.5-1.5B-Instruct-GGUF --quantization Q4_K_M --max-price 0.40 --gpu "RTX A4000" --min-netspeed 1000 --verified-only</code></div>
+      <p class="lands">One JSON object on stdout — <b>rig</b>, <b>endpoint</b>, <b>model</b>,
+        <b>price_hr</b>, <b>pid</b>, <b>log</b> — or <b>"ok":false</b> with the error. Without a
+        terminal, <b>-d</b> refuses to rent unless <b>--yes</b> is there. A client key made for
+        the first time comes back once, as <b>"key"</b>, and nowhere else.</p>
+
+      <h3>After the holding process died</h3>
+      <div class="cmd"><button class="copy">copy</button><code>larri resume -d --json 01M2H0GKP6…</code></div>
+      <p class="lands">Reconnected in <b>20 s</b> without restarting the model, supervised
+        again, on the same endpoint and the same client keys. Vast.ai only: RunPod cannot add a
+        key to a running pod.</p>
+    </section>
+
+    <hr class="rule">
+
     <section id="cannot">
       <h2>What LARRI cannot do</h2>
       <p style="margin:0 0 12px">Worth stating plainly, so you do not spend money
@@ -478,6 +516,14 @@
         <tr>
           <td><b>--port 8080</b></td>
           <td>When something else already holds 8000.</td>
+        </tr>
+        <tr>
+          <td><b>-d</b></td>
+          <td>Return once the rig is serving; a larri process holds it. <b>--yes --json</b> for scripts and agents.</td>
+        </tr>
+        <tr>
+          <td><b>--new-key</b></td>
+          <td>A client key for this rig only, instead of the one every rig accepts.</td>
         </tr>
         <tr>
           <td><b>--context 32768</b></td>

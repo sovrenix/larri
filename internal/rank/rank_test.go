@@ -19,11 +19,11 @@ func offer(id, model string, price, rel float64, vram int) core.Offer {
 
 // needs builds a FitFunc requiring at least gb of total VRAM.
 func needs(gb int) FitFunc {
-	return func(o core.Offer) (bool, string) {
+	return func(o core.Offer) (Reason, string) {
 		if o.VRAMTotalGB() >= gb {
-			return true, ""
+			return ReasonEligible, ""
 		}
-		return false, "needs " + itoa(gb) + " GB, offer has " + itoa(o.VRAMTotalGB())
+		return ReasonVRAM, "needs " + itoa(gb) + " GB, offer has " + itoa(o.VRAMTotalGB())
 	}
 }
 
@@ -245,11 +245,14 @@ func TestHardwareTooOldForTheRuntimeIsExcluded(t *testing.T) {
 	volta.ComputeCapability = 700
 
 	// The FitFunc the orchestrator builds: capability first, then VRAM.
-	fits := func(o core.Offer) (bool, string) {
+	fits := func(o core.Offer) (Reason, string) {
 		if o.ComputeCapability > 0 && o.ComputeCapability < 700 {
-			return false, "compute capability too low for vLLM"
+			return ReasonEngine, "compute capability too low for vLLM"
 		}
-		return o.VRAMTotalGB() >= 5, "too small"
+		if o.VRAMTotalGB() < 5 {
+			return ReasonVRAM, "too small"
+		}
+		return ReasonEligible, ""
 	}
 	r := Select([]core.Offer{pascal, volta}, core.Criteria{}, fits, DefaultPolicy())
 	if r.Selected == nil || r.Selected.Offer.OfferID != "works" {
@@ -261,8 +264,8 @@ func TestHardwareTooOldForTheRuntimeIsExcluded(t *testing.T) {
 			ex = &r.Candidates[i]
 		}
 	}
-	if ex == nil || ex.Reason != ReasonVRAM {
-		t.Fatalf("the Pascal card must be excluded with a reason, got %v", ex)
+	if ex == nil || ex.Reason != ReasonEngine {
+		t.Fatalf("the Pascal card must be excluded as unsupported by the engine, not short of memory, got %v", ex)
 	}
 	if !strings.Contains(ex.Detail, "compute capability") {
 		t.Errorf("the reason should name the constraint, got %q", ex.Detail)
@@ -457,6 +460,17 @@ func TestPerCardVRAMIsEnforcedInRanking(t *testing.T) {
 	for _, c := range res.Candidates {
 		if c.Offer.OfferID == "small" && (c.Reason != ReasonHardware || !strings.Contains(c.Detail, "per card")) {
 			t.Errorf("excluded as %s (%s); the per-card floor should say so", c.Reason, c.Detail)
+		}
+	}
+}
+
+// A ceiling prints as precisely as it was set: rounded to the cent, a detached
+// launch's $0.0383 read as $0.04 and an offer below that looked excluded for
+// exceeding it.
+func TestCeilingsPrintToThePrecisionTheyWereSetWith(t *testing.T) {
+	for v, want := range map[float64]string{0.0383: "0.0383", 0.5: "0.50", 0.25: "0.25", 2: "2.00", 1.105: "1.105"} {
+		if got := ceilingDollars(v); got != want {
+			t.Errorf("ceilingDollars(%v) = %q, want %q", v, got, want)
 		}
 	}
 }

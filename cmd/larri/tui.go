@@ -171,7 +171,11 @@ func runRig(ctx context.Context, cancel context.CancelFunc, prog *term.Program,
 		return
 	}
 	rig := live.Rig
-	prog.Send(tuiReady(rig, live.Endpoint, live.ClientToken.Reveal()))
+	line, kerr := keyLine(live, openClientKeys())
+	if kerr != nil {
+		line = kerr.Error()
+	}
+	prog.Send(tuiReady(rig, live.Endpoint, line))
 
 	// Sampling is what keeps the dashboard honest: cost comes from the
 	// journal and activity from the proxy, so nothing on screen is a number
@@ -182,10 +186,11 @@ func runRig(ctx context.Context, cancel context.CancelFunc, prog *term.Program,
 	term := o.Supervise(ctx, live, daemon.SupervisePolicy{Idle: cfg.Idle, Budget: cfg.Budget})
 	stopSampling()
 
-	live.Close()
+	release := live.EndServing()
 	dctx, dcancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer dcancel()
 	derr := o.Down(dctx, rig, term)
+	release()
 
 	cost := core.CostSummary{}
 	if rig.End != nil {

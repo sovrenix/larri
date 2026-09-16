@@ -798,10 +798,16 @@ actual reason rather than a score.
 | Gate | Rejects | Rationale |
 |---|---|---|
 | **Criteria** | GPU model, count, region, disk, max price | What the operator asked for |
-| **Fit** | Offers whose VRAM cannot hold the model | §7's plan; a rig that OOMs is not cheap |
+| **Fit** | Offers the engine cannot run on (`engine-unsupported`: vendor, compute capability, driver), whose link is under the network floor (`network-below-floor`), or whose VRAM cannot hold the model (`insufficient-vram`) | §7's plan and the pinned image's floors; a rig that OOMs or cannot load is not cheap |
 | **Reliability floor** | Below `reliability_floor`, default 0.90 | A host that vanishes mid-run costs more than it saved |
 | **Price outlier** | Anomalously below the class median | §8.2 |
 | **Interruptible** | Bid offers unless required (Q-04) | A preempted instance still bills storage |
+
+The fit gate asks three questions, and the function that answers them names the one that
+failed rather than reporting only that one did. It once reported only a boolean and every
+refusal was filed as insufficient VRAM: a survey for a 1.5B model reported 410 offers short of
+memory, of which 409 were cards the vLLM image has no kernels or driver for, and a network
+floor's refusals appeared under the same heading beside examples about link speed.
 
 Fit is a *filter* here rather than a scoring term. It answers one question — will the model
 run — and once answered it has no further business competing with price. An 80 GB card
@@ -2177,6 +2183,150 @@ nothing alike:
 The second is the one that costs money, and it is invisible by construction. A line of output
 is a cheap price for making it visible.
 
+### 14.2.3 A Rig Has One Holder, and It May Be Detached
+
+Serving a rig is a process, not a record: a tunnel, a proxy on the local port, a supervisor
+with an idle clock. §14.2.1 put that process inside the MCP server because the server is long
+running. The CLI had only the foreground — `larri up` returns when the operator presses
+Ctrl-C — and that makes the CLI useless to an agent driving a shell, whose command must
+finish before it can run the next one.
+
+**Detaching moves the process, and changes nothing it does.** `larri up -d` and
+`larri resume -d` start `larri up` / `larri resume` again as a child in its own session
+(`setsid`, stdin from `/dev/null`, `SIGHUP` ignored), then wait. The child is an ordinary
+bring-up: the same orchestrator, the same fallback, the same supervision, idle reclamation
+and budget. When it reaches READY or fails, it writes one JSON report on descriptor 3, a pipe
+inherited from the launcher, and the launcher prints it — or, with `--json`, emits it as one
+object — and exits. A launcher that sees the pipe close without a report says the holder
+ended before the rig was ready. A Ctrl-C in the launcher before then sends `SIGTERM` to the
+child, which ends the bring-up and tears down what it rented, as a foreground Ctrl-C does.
+
+```
+launcher ── survey + confirm (terminal) ──▶ spawn holder --yes --max-price <agreed>
+   │                                              │ search, rent, boot, serve
+   │◀──────── fd 3: {"ok":true,"rig":…,"key":…} ──┤ READY
+   ▼ exit 0                                       ▼ holds tunnel, supervises; log 0600
+```
+
+**Confirmation stays where the terminal is.** The holder has no terminal, so it cannot
+prompt, and a holder that rented without asking would turn `-d` into a silent `--yes`. From a
+terminal the launcher runs the survey and the ordinary prompt itself and declines the
+rental; if the operator agreed, the holder is started with `--yes` and `--max-price` set to
+the agreed price (to a tenth of a cent, or the operator's own ceiling if lower). The holder
+searches again, and a market that moved in the seconds between must not rent something
+dearer than what was agreed to — so the ceiling does the work a second prompt would.
+Without a terminal, `--detach` requires `--yes` and says so; it never implies it.
+
+The ceiling has a consequence a foreground `up` does not have. A foreground fallback runs the
+survey again and asks about the next offer; a holder cannot ask, so its fallback is confined to
+offers at or below the agreed price. In a live run the agreed host failed pulling the image and
+nothing else was that cheap, so the holder's survey reported the criteria unsatisfiable and
+suggested a smaller quantisation — true of the criteria it was given, and no help to the
+operator. The holder reports its error's class over the pipe, and the launcher, which is the
+only process that knows it set a ceiling, says so and names `larri up -d` as the way to be
+asked about the next offer. Falling back to a dearer offer without asking was the alternative,
+and invariant 4 rules it out.
+
+**What the launcher can settle, it settles before starting anything.** The local port is one:
+a live run confirmed a purchase and then watched the holder refuse it over a port that was
+taken all along, so the launcher checks it before the prompt as well. Flag conflicts —
+`--detach` with `--dry-run`, `--detach` without a terminal or `--yes`, `--json` without
+`--detach` — are refused right after parsing, ahead of the first-run notice and the privacy
+headline, where a refusal would otherwise arrive too late to read. `larri resume -d` chooses
+the rig and checks its hold in the launcher, so "nothing billable to resume" and "already
+served by larri pid N" are answers rather than a process started to discover them; the rig it
+chose is passed to the holder by id.
+
+**The launcher shows the holder's log up to the report, exactly.** The launcher follows the
+log so a terminal sees the bring-up, and the holder then prints its own READY block into the
+log — which, copied on a timer, put two READY blocks on the operator's screen. The holder
+therefore sends its report before printing anything about readiness, with its log offset in
+the report, and the launcher reads the pipe itself rather than through a goroutine: it takes
+the log's size before each read, so a read that finds no report proves nothing past that size
+followed one, and a read that finds one is shown to its offset. With `--json`, stdout carries
+the single report object and nothing else — the first-run notice and the privacy headline are
+printed to stderr — and `resume -d --json` with nothing to resume prints `{"ok":false,…}`
+rather than an empty stdout and a zero exit.
+
+**The key reaches the launcher and nothing else.** The holder's stdout and stderr go to
+`<state>/logs/<command>-<time>-<pid>.log`, created `0600` with `O_EXCL`. A key shown for the
+first time — the `default` client key, or a `--new-key` one-rig key — is sent over the pipe
+and printed by the launcher; the holder writes a line saying where it went instead. A log
+file outlives the rig, gets attached to bug reports, and is read by whatever tails it, so it
+is the wrong place for a credential.
+
+**One holder per rig.** Nothing stopped two: `larri resume` would adopt a rig a detached
+`larri up` was serving and start a second tunnel and supervisor, each with its own idle clock
+counting the other's probes as not operator traffic. `state.Store.Hold` takes an exclusive
+non-blocking `flock` on `rigs/.<id>.hold`, then publishes the holder's pid, start time and log
+paths as `rigs/.<id>.holder.json`, written beside the old record and renamed over it. The lock
+is the kernel's, so a holder that crashes or is `kill -9`ed frees the rig by dying, with no
+stale-pid logic and nothing to clean up. The record is kept after release, so the last
+holder's log can still be found, and a record that cannot be written fails the hold.
+
+The record was first the lock file's own contents, truncated and rewritten under the lock, and
+a status taken mid-write named pid 0 as the holder. Separating them leaves one instant — the
+lock taken, the record not yet renamed — which a reader recognises as a held lock under a
+record naming no live process, and reads again. The probe itself takes the lock shared for an
+instant, and a `resume` attempted in that instant was refused as though a process held the
+rig; `Hold` waits out a lock for a tenth of a second, which a probe never lasts and a holder
+always does. A hold that cannot be inspected at all is reported as unknown, never as absent.
+
+The hold is taken the moment `Up` mints the rig's id — before the intent is journalled — and
+handed to the `Serve` that follows, not taken afresh there. Most of a bring-up is a download,
+and that is when `larri status` most needs to say who is renting the rig and where its log
+is. **The hold outlasts the teardown.** A process that ends a rig it holds — supervision
+ending it in `up`, `resume`, the TUI or an MCP session, or a failed attempt in `UpAndServe` —
+calls `Live.EndServing`, which closes the tunnel and proxy and hands back the hold, and
+releases it once `Down` has confirmed absence. `Live.Close` used to release it first, so for
+the seconds a destroy takes the rig read as held by no one, `larri resume` could reconnect to
+a rig being destroyed, and a follower of its log stopped before the lines that said how it
+ended. `Adopt` takes the hold after its checks and refuses a held rig by naming the pid.
+`larri down` from another process, and `larri_down`, never hold the rig: ending one must not
+wait on the process serving it.
+
+**Status reads the lock, not the record.** `Store.Describe` — used by `larri status` and
+`larri_status` alike — probes with a shared non-blocking lock, which is granted only when
+nobody holds the exclusive one. A billing rig reports who holds it, and a billing rig nobody
+holds reports **no endpoint and no idle reclamation**, because that is the truth: its holder
+died, the local port is closed, and nothing is watching the bill. The endpoint is omitted
+rather than shown stale, and the line names `larri resume` and `larri down` (only `down` for a
+FAILED rig).
+
+**A resumed rig is supervised.** `larri resume` used to reconnect and hold with no
+supervisor, so a detached resume would have been exactly the unwatched, billing rig
+reclamation exists for. It now runs the same supervisor as `up`, with the configured idle
+timeout and budget; a policy termination tears the rig down. An interrupt to a foreground
+`resume` leaves the rig running, as it always did, but a *detached* holder that is stopped
+tears its rig down whichever command started it. Its interrupt is a kill, a logout or a
+shutdown, with no one at a terminal to read that the rig kept running, and the alternative
+made the outcome of a reboot depend on whether a rig had last been brought up or resumed. The
+teardown is recorded as "the detached larri process holding it was stopped".
+
+`larri_down` in an MCP session stops the session with `StopForTeardown`, which takes the hold
+from the live rig *before* cancelling the bring-up — cancelling first lets the supervisor end
+serving and release the hold itself — and releases it once `Down` returns. `Live.Close` and
+`Live.EndServing` are serialised and one-shot, since in a session they run on the tool call's
+goroutine and the supervisor's at once.
+
+`larri down` from another process is unaffected by the hold and does not wait for it: ending
+a rig must never depend on the process serving it. The holder learns of it through the store
+(§13) and exits.
+
+**`larri logs` reads what the holders wrote.** The hold record keeps the log of every detached
+holder a rig has had, oldest first — a rig resumed after its holder died would otherwise lose
+the log that says why — and `larri logs [-f] [-n N] [rig]` prints them the way `docker logs`
+prints a container's: a rig named by its id or a unique prefix (the newest rig with a log when
+none is named), `--tail` counted from the end of all of them, and `--follow` carrying on while
+a process holds the rig. Following does not stop at the release, since a holder lets go before
+it prints the teardown's last lines; it stops once nobody holds the rig *and* its last holder
+has exited, and moves to the new log when another process takes the rig over. A foreground
+`larri up` has no log — it writes to its terminal — and `larri logs` says so rather than
+printing nothing. `larri_logs` answers from the same logs for a rig the MCP server is not
+serving, labelled `source: larri`; for the rig it serves it still returns the engine's log,
+`source: runtime`, read over its own SSH session. A CLI process has no such session, and the
+engine's log from a rig held elsewhere waits on the daemon API (§14.1).
+
 ### 14.3 TUI
 
 **Rendered by `internal/term`, not a framework.** The surfaces here used two calls from a
@@ -2713,8 +2863,25 @@ proxy on the UI listener (§14.4.2), which injects the credential server-side. A
 page JavaScript would be readable by anything that achieved script execution there.
 
 Mechanically: tokens are 256-bit random values, compared in constant time, typed `Secret` so
-`String()` and `MarshalJSON()` redact them (§15.2), held in state and never in the journal,
-and removed from client configs by `Revert` (§10.2).
+`String()` and `MarshalJSON()` redact them (§15.2), never in the journal, and removed from
+client configs by `Revert` (§10.2).
+
+**Stored as hashes, and shown once.** `internal/clientkeys` keeps a client key's name and its
+SHA-256 in `client-keys.json` (`0600`, state directory); the value is printed when the key is
+created and exists nowhere after. A 256-bit random value needs no slow hash — there is nothing
+to guess. `larri token create|list|revoke` manage them, and the first `larri up` with none
+stored creates `default` once the rig is ready. The proxy accepts every stored key through a
+`KeySet` that re-reads the file when its modification time or size changes, so a revocation
+reaches a rig already serving on its next request. It holds the keys it mints itself as hashes
+too: a *probe key*, per process and never shown, which is what LARRI's readiness and health
+checks present, so they never depend on which client keys exist; and, with `--new-key` or from
+the MCP server, a *one-rig key*, shown once and gone with the rig. A key file that cannot be
+read matches no key, so `UpAndServe` and a detached launch refuse it before renting and name
+`--new-key`; a rig wired after the file broke, and a READY rig whose `default` key cannot be
+written, get a one-rig key instead (`Live.AddRigKey`) — a rig billing while it admits no
+client is worse than a key shown once. Until this existed every
+bring-up minted the client key, contradicting the lifetime in the table above, and `larri
+resume` minted one it never printed.
 
 **Why not something stronger than a bearer token inside the tunnel?** Because it would defend
 against nobody. The channel is already authenticated and encrypted by SSH, terminating on a

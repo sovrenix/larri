@@ -355,6 +355,67 @@ func TestStatusSaysWhenNoInstanceIsRecorded(t *testing.T) {
 	}
 }
 
+// A billing rig says who holds it, and a detached holder where its log is. One
+// nobody holds is the state a rig is in after its holder died: billing, with no
+// endpoint and nothing reclaiming it, and the line says so. A failed rig is
+// not one to reconnect to, so it is not offered.
+func TestStatusSaysWhoHoldsABillingRig(t *testing.T) {
+	started := time.Date(2026, 9, 14, 9, 30, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name string
+		s    state.Summary
+		want []string
+		not  []string
+	}{
+		{"detached", state.Summary{ID: "r1", State: core.StateReady, Held: true,
+			Holder: state.Holder{PID: 77, Started: started, Detached: true, Log: "/s/logs/up.log"}},
+			[]string{"held      by larri pid 77 since " + started.Local().Format("15:04"), "(detached; log /s/logs/up.log)"}, nil},
+		{"orphaned", state.Summary{ID: "r2", State: core.StateReady},
+			[]string{"no endpoint, no idle reclamation", "larri resume r2, or larri down r2"}, nil},
+		{"failed", state.Summary{ID: "r3", State: core.StateFailed},
+			[]string{"nothing supervises it: larri down r3"}, []string{"resume"}},
+		{"destroyed", state.Summary{ID: "r4", State: core.StateDestroyed}, nil, []string{"held"}},
+	} {
+		var b strings.Builder
+		printRig(&b, c.s)
+		out := b.String()
+		for _, w := range c.want {
+			if !strings.Contains(out, w) {
+				t.Errorf("%s: status lacks %q:\n%s", c.name, w, out)
+			}
+		}
+		for _, n := range c.not {
+			if strings.Contains(out, n) {
+				t.Errorf("%s: status says %q:\n%s", c.name, n, out)
+			}
+		}
+	}
+}
+
+// The local port resolves like every other setting — flag, then profile, then
+// file — and the file's is not ignored.
+func TestTheLocalPortComesFromTheFileWhenNothingElseNamesOne(t *testing.T) {
+	file := config.Config{LocalPort: 8123}
+	for _, c := range []struct {
+		name string
+		set  map[string]bool
+		p    config.Profile
+		flag int
+		want int
+	}{
+		{"file", map[string]bool{}, config.Profile{}, 8000, 8123},
+		{"flag", map[string]bool{"port": true}, config.Profile{}, 9000, 9000},
+		{"profile", map[string]bool{}, config.Profile{LocalPort: 8200}, 8200, 8200},
+	} {
+		if got := localPort(c.set, c.p, file, c.flag); got != c.want {
+			t.Errorf("%s: port %d, want %d", c.name, got, c.want)
+		}
+	}
+	if got := localPort(map[string]bool{}, config.Profile{}, config.Config{}, 8000); got != 8000 {
+		t.Errorf("no file port: %d, want the flag default", got)
+	}
+}
+
 func TestServedNameForAFileRefIsTheModelNotTheFile(t *testing.T) {
 	for ref, want := range map[string]string{
 		"Qwen/Qwen3-8B":                            "qwen3-8b",

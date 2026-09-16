@@ -121,6 +121,42 @@ func TestAnAMDCardIsNotAFitForACUDAImage(t *testing.T) {
 	}
 }
 
+// Every refusal is filed under the question that failed. They were all filed
+// as insufficient VRAM, so a live survey reported "38 offers:
+// insufficient-vram" with examples about a network floor, and an AMD card with
+// 192 GB read as too small for the model.
+func TestEachExcludedOfferNamesTheQuestionItFailed(t *testing.T) {
+	market := []core.Offer{
+		{Provider: "fake", OfferID: "amd", GPUModel: "MI300X", GPUCount: 1, VRAMPerGPUGB: 192,
+			PriceHr: 2.39, Reliability: 0.99, MachineID: "m1", NetDownMbps: 1000, GPUVendor: "amd"},
+		{Provider: "fake", OfferID: "slow", GPUModel: "B200", GPUCount: 2, VRAMPerGPUGB: 180,
+			PriceHr: 9.10, Reliability: 0.99, MachineID: "m2", NetDownMbps: 60, GPUVendor: "nvidia"},
+		{Provider: "fake", OfferID: "small", GPUModel: "RTX 4090", GPUCount: 1, VRAMPerGPUGB: 24,
+			PriceHr: 0.40, Reliability: 0.99, MachineID: "m3", NetDownMbps: 1000, GPUVendor: "nvidia"},
+		{Provider: "fake", OfferID: "b200", GPUModel: "B200", GPUCount: 2, VRAMPerGPUGB: 180,
+			PriceHr: 13.58, Reliability: 0.99, MachineID: "m4", NetDownMbps: 1000, GPUVendor: "nvidia"},
+	}
+	o, _ := multiGPUOrch(t, market, bigModel)
+	o.Runtime = rfake.New(rfake.Behaviour{Vendor: "nvidia"})
+	req := bigModelReq()
+	req.Criteria.MinNetMbps = 500
+	sv, err := o.Offers(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]rank.Reason{
+		"amd": rank.ReasonEngine, "slow": rank.ReasonNetwork, "small": rank.ReasonVRAM,
+	}
+	for _, c := range sv.Selection.Candidates {
+		if w, ok := want[c.Offer.OfferID]; ok && c.Reason != w {
+			t.Errorf("%s excluded as %q (%s), want %q", c.Offer.OfferID, c.Reason, c.Detail, w)
+		}
+	}
+	if got := sv.Selection.Selected.Offer.OfferID; got != "b200" {
+		t.Errorf("selected %s", got)
+	}
+}
+
 // RunPod refuses the criteria itself when every type it lists is filtered
 // out, and that refusal was returned before any advice: `--gpu B200` answered
 // "nothing rentable" while B200s were listed at low stock.

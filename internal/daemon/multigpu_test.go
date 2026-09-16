@@ -548,6 +548,13 @@ func TestFallbackMovesOnWhenThereIsNoMachineToExclude(t *testing.T) {
 		t.Errorf("attempted %v of 3 listings; a refused create must not send the "+
 			"fallback back to one already tried", tried)
 	}
+	// A refused create ends its rig, and a rig that has ended is held by no
+	// one — the last attempt's included, which no later attempt clears.
+	for _, r := range rigs {
+		if _, held, _ := st.HolderOf(r.ID); held {
+			t.Errorf("rig %s was refused and is still held", r.ID)
+		}
+	}
 }
 
 // hourly makes every journal entry an hour after the last, so a rig that
@@ -587,6 +594,11 @@ func TestACreateThatNeverLandedClosesTheRig(t *testing.T) {
 	}
 	if rig == nil {
 		t.Fatal("no rig to inspect")
+	}
+	// Up called on its own has no Serve to hand its hold to: a create that
+	// failed must not leave this process named as the rig's holder.
+	if _, held, _ := st.HolderOf(rig.ID); held {
+		t.Error("a refused create left the rig held")
 	}
 	// The snapshot and the journal agree, and both say it is over.
 	if rig.State != core.StateDestroyed {

@@ -47,7 +47,7 @@ func TestHostSelfStopPowers(t *testing.T) {
 		t.Fatal(err)
 	}
 	sel := rank.Select(offers, core.Criteria{MaxPriceHr: 0.20, MinReliability: 0.95},
-		func(core.Offer) (bool, string) { return true, "" }, rank.DefaultPolicy())
+		func(core.Offer) (rank.Reason, string) { return rank.ReasonEligible, "" }, rank.DefaultPolicy())
 	if sel.Selected == nil {
 		t.Fatal("no offer")
 	}

@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"go.sovrenix.com/larri/internal/config"
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
+	"go.sovrenix.com/larri/internal/errs"
 	"go.sovrenix.com/larri/internal/notice"
 	"go.sovrenix.com/larri/internal/provider"
 	"go.sovrenix.com/larri/internal/rank"
@@ -42,10 +44,12 @@ const usage = `larri — Local Agent for Remote Rigging of Inference
   larri orphans find and destroy resources local state does not account for
   larri privacy what the machine you rent can see, in full
   larri label-key generate a key that seals provider-side labels
+  larri token   API keys for the local endpoint: create, list, revoke
   larri config  edit saved criteria, previewing what they would rent
   larri tui     bring a rig up under a live dashboard
   larri mcp     expose the lifecycle as MCP tools for Claude Code and other agents
   larri status  what is running, what it costs, and why past rigs ended
+  larri logs    what larri wrote while holding a rig; -f follows it
   larri version build metadata
 
 Run 'larri <command> -h' for the flags of each.
@@ -121,6 +125,7 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
+	setupDetachedHolder()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -140,6 +145,10 @@ func main() {
 		err = cmdConfig(ctx, os.Args[2:])
 	case "label-key":
 		err = cmdLabelKey(os.Args[2:])
+	case "logs":
+		err = cmdLogs(ctx, os.Args[2:])
+	case "token":
+		err = cmdToken(os.Args[2:])
 	case "privacy":
 		// The full explanation, on demand. Every run still carries the rule
 		// in one line; this is where the reasoning behind it lives once the
@@ -166,6 +175,14 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
+		// A detached holder that fails before it is ready says so to the
+		// command waiting on it, not only to its log.
+		r := detachReport{Error: err.Error()}
+		if c := errs.ClassOf(err); c != errs.ClassUnknown {
+			r.Class = c.String()
+		}
+		reportDetached(r)
+		reportFailure(err)
 		fmt.Fprintf(os.Stderr, "\nlarri: %v\n", err)
 		os.Exit(1)
 	}
@@ -245,6 +262,8 @@ func cmdUp(ctx context.Context, args []string) error {
 	// for eight cards to hold a model that fits on two.
 	gpus := fs.Int("gpus", 0, "minimum GPUs per host (0: any)")
 	maxGPUs := fs.Int("max-gpus", 0, "most GPUs per host (0: no ceiling)")
+	newKey := fs.Bool("new-key", false,
+		"also mint an API key for this rig only, shown once, instead of relying on stored client keys")
 	allowLowStock := fs.Bool("allow-low-stock", false,
 		"consider offers the provider reports at low stock; a create against one may be refused")
 	vramPerGPU := fs.Int("vram-per-gpu", 0, "minimum VRAM per card in GB (0: any)")
@@ -287,7 +306,12 @@ func cmdUp(ctx context.Context, args []string) error {
 	allowDeverified := fs.Bool("allow-deverified", false, "include hosts whose verification was withdrawn")
 	port := fs.Int("port", 8000, "fixed local port clients are wired against")
 	yes := fs.Bool("yes", false, "do not prompt before spending")
+	detach := fs.Bool("detach", false,
+		"return once the rig is ready, leaving a larri process of its own holding it (needs --yes without a terminal)")
+	fs.BoolVar(detach, "d", false, "shorthand for --detach")
+	jsonOut := fs.Bool("json", false, "with --detach: print the outcome as one JSON object")
 	dryRun := fs.Bool("dry-run", false, "search, size and select without spending")
+	// Flags are checked against --detach once they are all parsed, below.
 	engine := fs.String("runtime", "", "vllm, llamacpp or ollama (default: chosen from the model)")
 	idleFor := fs.Duration("idle-timeout", 0, "reclaim after this long without operator inference (0: use the default)")
 	idleAct := fs.String("idle-action", "", "destroy or warn (default: destroy)")
@@ -298,6 +322,15 @@ func cmdUp(ctx context.Context, args []string) error {
 		"how long the host waits without hearing from larri before stopping itself "+
 			"(0: derive from --idle-timeout; -1: disable)")
 	_ = fs.Parse(args)
+	// Before the checks, so a refused flag is reported as the object --json
+	// promises rather than only on stderr.
+	if *jsonOut && detachedHolder == nil {
+		jsonOnStdout()
+	}
+	if err := checkDetach("up", *detach, *jsonOut, *dryRun, *yes,
+		config.DetectMode(config.Invocation{ForceNonInteractive: *yes}, os.Getenv).Interactive()); err != nil {
+		return err
+	}
 	if *sshTimeout < 0 {
 		return errors.New("ssh-timeout must not be negative")
 	}
@@ -323,6 +356,7 @@ func cmdUp(ctx context.Context, args []string) error {
 		fmt.Printf("              edit it with: larri config\n")
 	}
 	applyProfile(res.Profile, set, model, quant, ctxLen, gpu, maxPrice, disk, minRel, port, engine, allowLowStock)
+	*port = localPort(set, res.Profile, res.Config, *port)
 	if res.Name != "" {
 		// FR-CRIT-05 forbids *silently* reusing criteria. A named default
 		// profile may apply to a bare `larri up` only because this line makes
@@ -462,10 +496,13 @@ func cmdUp(ctx context.Context, args []string) error {
 		}
 	}
 
+	keys := openClientKeys()
 	o := &daemon.Orchestrator{
 		Store: st, Provider: p, Runtime: eng,
 		LabelSealer: sealer,
 		Resolver:    resolver,
+		ClientKeys:  keys, OneRigKey: *newKey,
+		Detached: detachedHolder != nil, HolderLog: os.Getenv(detachLogEnv),
 		Policy: rank.Policy{
 			ReliabilityFloor: *minRel,
 			OutlierFactor:    rank.DefaultPolicy().OutlierFactor,
@@ -505,6 +542,12 @@ func cmdUp(ctx context.Context, args []string) error {
 		HFToken:   secret.New(os.Getenv("HF_TOKEN")),
 		LocalPort: *port,
 	}
+	if *detach && detachedHolder == nil {
+		return launchDetachedUp(ctx, o, req, args, detachOptions{
+			interactive: mode.Interactive(), yes: *yes, dryRun: *dryRun,
+			maxPrice: *maxPrice, json: *jsonOut, prompts: prompts,
+		})
+	}
 	if *dryRun {
 		req.Confirm = func(o core.Offer, p core.SizingPlan) bool {
 			fmt.Printf("\n  dry run: would rent %s %s at $%.3f/hr%s — nothing spent\n",
@@ -532,18 +575,19 @@ func cmdUp(ctx context.Context, args []string) error {
 		return err
 	}
 	rig := live.Rig
+	key, keyErr := readyKey(live, keys, rig.Offer.Provider+" "+rig.Offer.Hardware(), rig.Offer.PriceHr)
 	fmt.Printf("\n  ✓ rig %s READY   %s   model: %s\n",
 		rig.ID, live.Endpoint, rig.Model.ServedName)
 	fmt.Printf("    %s %s at $%.3f/hr\n",
 		rig.Offer.Provider, rig.Offer.Hardware(), rig.Offer.PriceHr)
-	fmt.Printf("    key: %s\n", live.ClientToken.Reveal())
+	printKey(key, keyErr)
 	fmt.Printf("\n  %s\n", daemon.PrivacyNotice(rig))
 
 	// M1 has no daemon, so `up` holds the tunnel in the foreground. That is
 	// honest rather than convenient: a tunnel is a live process, and exiting
 	// while the rig bills would make `up` look successful and cost money.
 	fmt.Printf("\n  %s\n", describePolicy(cfg))
-	fmt.Printf("  holding the tunnel — Ctrl-C to tear down and stop paying\n\n")
+	fmt.Printf("  %s\n\n", holdingLine(rig.ID))
 
 	// The supervisor decides; it does not destroy. A nil return means the
 	// operator interrupted, and an interrupt is not a reason to end a rig.
@@ -552,11 +596,13 @@ func cmdUp(ctx context.Context, args []string) error {
 	})
 	if term == nil {
 		fmt.Printf("\n  interrupted; tearing down\n")
+		term = interruptedTermination()
 	} else {
 		fmt.Printf("\n  ! %s — %s\n", term.Code, term.Summary)
 	}
 
-	live.Close()
+	release := live.EndServing()
+	defer release()
 	dctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	if err := o.Down(dctx, rig, term); err != nil {
@@ -684,12 +730,34 @@ func cmdStatus(ctx context.Context, args []string) error {
 			continue
 		}
 		shown++
-		printRig(os.Stdout, state.Summarise(r, entries, now))
+		printRig(os.Stdout, st.Describe(r, entries, now))
 	}
 	if shown == 0 {
 		fmt.Println("  no rigs")
 	}
 	return nil
+}
+
+// holderLine says who is serving a billing rig, or that nobody is.
+func holderLine(s state.Summary) string {
+	if s.HolderErr != "" {
+		return "unknown — the hold could not be read: " + s.HolderErr
+	}
+	if !s.Held {
+		if s.State == core.StateFailed {
+			return fmt.Sprintf("by no larri process — nothing supervises it: larri down %s", s.ID)
+		}
+		return fmt.Sprintf("by no larri process — no endpoint, no idle reclamation: larri resume %s, or larri down %s", s.ID, s.ID)
+	}
+	line := fmt.Sprintf("by larri pid %d since %s", s.Holder.PID, s.Holder.Started.Local().Format("15:04"))
+	if s.Holder.Detached {
+		line += " (detached"
+		if s.Holder.Log != "" {
+			line += "; log " + s.Holder.Log
+		}
+		line += ")"
+	}
+	return line
 }
 
 // printRig renders one rig for `larri status`.
@@ -742,6 +810,9 @@ func printRig(w io.Writer, s state.Summary) {
 	if s.Endpoint != "" {
 		fmt.Fprintf(w, "      endpoint  %s\n", s.Endpoint)
 	}
+	if s.State.Billable() && s.State != core.StateDestroyed {
+		fmt.Fprintf(w, "      held      %s\n", holderLine(s))
+	}
 	if !s.CreatedAt.IsZero() {
 		fmt.Fprintf(w, "      created   %s\n", s.CreatedAt.UTC().Format("2006-01-02 15:04 UTC"))
 	}
@@ -773,7 +844,16 @@ func printRig(w io.Writer, s state.Summary) {
 // to comes back at the same address.
 func cmdResume(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("resume", flag.ExitOnError)
+	detach := fs.Bool("detach", false, "return once reconnected, leaving a larri process of its own holding the rig")
+	fs.BoolVar(detach, "d", false, "shorthand for --detach")
+	jsonOut := fs.Bool("json", false, "with --detach: print the outcome as one JSON object")
 	_ = fs.Parse(args)
+	if *jsonOut && detachedHolder == nil {
+		jsonOnStdout()
+	}
+	if err := checkDetach("resume", *detach, *jsonOut, false, true, true); err != nil {
+		return err
+	}
 
 	st, err := openStore()
 	if err != nil {
@@ -781,24 +861,33 @@ func cmdResume(ctx context.Context, args []string) error {
 	}
 	defer st.Close()
 
-	rigs, err := st.List()
+	target, err := resumeTarget(st, fs.Arg(0))
 	if err != nil {
 		return err
 	}
-	var target *core.Rig
-	want := fs.Arg(0)
-	for _, r := range rigs {
-		if want != "" && r.ID != want {
-			continue
-		}
-		if r.State.Billable() {
-			target = r
-			break
-		}
-	}
 	if target == nil {
+		if detachedHolder != nil {
+			return errors.New("resume: nothing billable to resume")
+		}
 		fmt.Println("  nothing billable to resume")
+		if *jsonOut {
+			_ = json.NewEncoder(reportOut).Encode(detachReport{Error: "nothing billable to resume"})
+		}
 		return nil
+	}
+	if *detach && detachedHolder == nil {
+		// Nothing is rented, so nothing is confirmed. What can be known here
+		// is settled here, rather than by starting a process to find it out:
+		// the rig to reconnect to, and whether another process holds it.
+		if h, held, _ := st.HolderOf(target.ID); held {
+			return fmt.Errorf("resume: rig %s is already served by larri pid %d: larri down %s ends it",
+				target.ID, h.PID, target.ID)
+		}
+		childArgs := withoutFlags(args, "d", "detach", "json")
+		if fs.Arg(0) == "" {
+			childArgs = append(childArgs, target.ID) // the holder resumes the rig chosen here
+		}
+		return spawnDetached(ctx, "resume", childArgs, *jsonOut)
 	}
 	prov, err := openProvider(target.ProviderName())
 	if err != nil {
@@ -827,9 +916,12 @@ func cmdResume(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	keys := openClientKeys()
 	o := &daemon.Orchestrator{
 		Store: st, Provider: prov,
 		Runtime: eng, Events: events,
+		ClientKeys: keys,
+		Detached:   detachedHolder != nil, HolderLog: os.Getenv(detachLogEnv),
 	}
 	live, err := o.Adopt(ctx, target.ID)
 	if err != nil {
@@ -842,14 +934,91 @@ func cmdResume(ctx context.Context, args []string) error {
 	}
 	defer live.Close()
 
+	key, keyErr := readyKey(live, keys, target.Offer.Provider+" "+target.Offer.Hardware(), target.Offer.PriceHr)
 	fmt.Printf("\n  ✓ rig %s READY   %s   model: %s\n",
 		target.ID, live.Endpoint, target.Model.ServedName)
-	fmt.Printf("    $%.3f/hr · reconnected without restarting the model\n\n", target.Offer.PriceHr)
+	fmt.Printf("    $%.3f/hr · reconnected without restarting the model\n", target.Offer.PriceHr)
+	printKey(key, keyErr)
+	fmt.Println()
 	fmt.Println(notice.PrivacyHeadline)
 
-	<-ctx.Done()
-	fmt.Println("\n  interrupted — the rig keeps running; 'larri down' destroys it")
+	// Supervised like a rig brought up here. A reconnected rig used to be held
+	// with no supervisor, so idle reclamation and the budget did not apply to
+	// it — and a detached holder is the rig likeliest to be forgotten.
+	cfg := config.Default()
+	if res, err := config.Resolve(config.Request{}); err == nil && res != nil {
+		cfg = res.Config
+	}
+	fmt.Printf("\n  %s\n", describePolicy(cfg))
+	term := o.Supervise(ctx, live, daemon.SupervisePolicy{Idle: cfg.Idle, Budget: cfg.Budget})
+	switch {
+	case term == nil && !detachedMode:
+		fmt.Println("\n  interrupted — the rig keeps running; 'larri down' destroys it")
+		return nil
+	case term == nil:
+		// A detached holder stopped by a signal ends its rig, whichever
+		// command started it. Its interrupt is a kill, a logout or a
+		// shutdown, with no one at a terminal to read that the rig kept
+		// running — and after a reboot, a resumed rig would otherwise be the
+		// one left billing with nothing watching it while one brought up
+		// with -d was destroyed.
+		fmt.Println("\n  stopped; tearing down")
+		term = interruptedTermination()
+	default:
+		fmt.Printf("\n  ! %s — %s\n", term.Code, term.Summary)
+	}
+	release := live.EndServing()
+	defer release()
+	dctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if err := o.Down(dctx, target, term); err != nil {
+		return err
+	}
+	c := target.End.Cost
+	fmt.Printf("\n  ✓ rig %s DESTROYED  ran %s  total $%.4f\n",
+		target.ID, c.Ran.Round(time.Second), c.TotalUSD)
 	return nil
+}
+
+// interruptedTermination records an interrupted holder's teardown: an
+// operator's Ctrl-C in the foreground, or a signal to a detached holder, which
+// no one typed at a terminal and which "requested from the CLI" would misstate.
+func interruptedTermination() *core.Termination {
+	summary := "interrupted from the CLI"
+	if detachedMode {
+		summary = "the detached larri process holding it was stopped"
+	}
+	return &core.Termination{Actor: core.ActorOperator, Code: core.ReasonOperatorRequest,
+		At: time.Now().UTC(), Summary: summary}
+}
+
+// localPort resolves the local port as every other setting resolves: a flag,
+// then the profile, then the file. The file's local_port was shown by `larri
+// config --show` and read by nothing, so a port chosen there was ignored until a
+// live run collided with whatever held the default.
+func localPort(set map[string]bool, p config.Profile, cfg config.Config, flagPort int) int {
+	if set["port"] || p.LocalPort > 0 || cfg.LocalPort <= 0 {
+		return flagPort
+	}
+	return cfg.LocalPort
+}
+
+// resumeTarget is the rig `larri resume` reconnects to: the one named, or the
+// first billing rig, or nil when there is none.
+func resumeTarget(st *state.Store, want string) (*core.Rig, error) {
+	rigs, err := st.List()
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rigs {
+		if want != "" && r.ID != want {
+			continue
+		}
+		if r.State.Billable() {
+			return r, nil
+		}
+	}
+	return nil, nil
 }
 
 // refuseIfAlreadyBilling stops a second rig from being rented while a first

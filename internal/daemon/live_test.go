@@ -5,10 +5,14 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"go.sovrenix.com/larri/internal/errs"
 	"go.sovrenix.com/larri/internal/runtime"
+	"go.sovrenix.com/larri/internal/wire"
 	"net"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -166,7 +170,7 @@ func TestLocalPortIsCheckedBeforeSpending(t *testing.T) {
 	defer ln.Close()
 	taken := ln.Addr().(*net.TCPAddr).Port
 
-	if err := checkLocalPort(taken); err == nil {
+	if err := CheckLocalPort(taken); err == nil {
 		t.Fatal("an occupied port must be refused")
 	} else {
 		if !errs.Is(err, errs.ClassWiring) {
@@ -180,14 +184,14 @@ func TestLocalPortIsCheckedBeforeSpending(t *testing.T) {
 
 	// A free port passes, and the check must not leave the port held.
 	ln.Close()
-	if err := checkLocalPort(taken); err != nil {
+	if err := CheckLocalPort(taken); err != nil {
 		t.Errorf("a free port must pass: %v", err)
 	}
-	if err := checkLocalPort(taken); err != nil {
+	if err := CheckLocalPort(taken); err != nil {
 		t.Errorf("the check must release the port it tested: %v", err)
 	}
 	// Port 0 means "anything free", which cannot collide.
-	if err := checkLocalPort(0); err != nil {
+	if err := CheckLocalPort(0); err != nil {
 		t.Errorf("port 0 must pass: %v", err)
 	}
 }
@@ -637,5 +641,93 @@ func TestASilentSessionIsNotAStalledRuntime(t *testing.T) {
 	// Nor is a host whose log is being read fine but is simply not growing.
 	if silent(dead, 4096, "") {
 		t.Error("a readable log means the connection is alive")
+	}
+}
+
+// A rig being torn down stays held until the teardown is done: EndServing
+// closes the transport and hands the hold back, and Close after it does not
+// release what it no longer has.
+func TestEndServingKeepsTheHoldForTheTeardown(t *testing.T) {
+	released := 0
+	l := &Live{release: func() { released++ }}
+	release := l.EndServing()
+	if released != 0 {
+		t.Fatal("ending service released the hold before the teardown")
+	}
+	_ = l.Close()
+	if released != 0 {
+		t.Fatal("Close released a hold EndServing had handed over")
+	}
+	release()
+	if released != 1 {
+		t.Errorf("released %d times, want once", released)
+	}
+}
+
+// Close and EndServing race in an MCP session — the tool call stopping the
+// session, the supervisor returning — and between them the hold is released
+// exactly once, and the transport closed once.
+func TestClosingAndEndingServiceTogetherReleaseTheHoldOnce(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		var released atomic.Int32
+		l := &Live{release: func() { released.Add(1) }}
+		var wg sync.WaitGroup
+		var handed func()
+		wg.Add(2)
+		go func() { defer wg.Done(); _ = l.Close() }()
+		go func() { defer wg.Done(); handed = l.EndServing() }()
+		wg.Wait()
+		handed()
+		if n := released.Load(); n != 1 {
+			t.Fatalf("released %d times", n)
+		}
+	}
+}
+
+// A serving rig whose stored keys cannot be used is given a key of its own —
+// once — rather than being left READY and admitting no client.
+func TestARigCanBeGivenAKeyOfItsOwn(t *testing.T) {
+	proxy, err := wire.NewProxy(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+	l := &Live{proxy: proxy}
+	first, err := l.AddRigKey()
+	if err != nil || first.Empty() {
+		t.Fatalf("key %v, err %v", first, err)
+	}
+	again, _ := l.AddRigKey()
+	if again.Reveal() != first.Reveal() || l.RigKey().Reveal() != first.Reveal() {
+		t.Error("a second call made a second key")
+	}
+	_ = l.Close()
+	if _, err := (&Live{proxy: proxy, closed: true}).AddRigKey(); err == nil {
+		t.Error("gave a key to a rig no longer serving")
+	}
+}
+
+type brokenKeys struct{ err error }
+
+func (brokenKeys) Match(string) (string, bool) { return "", false }
+func (b brokenKeys) Check() error              { return b.err }
+
+// Stored keys that cannot be read are refused before renting, and a rig wired
+// after they broke gets a key of its own instead of none.
+func TestUnreadableClientKeysAreCaughtBeforeTheMoney(t *testing.T) {
+	o := &Orchestrator{ClientKeys: brokenKeys{errors.New("clientkeys: parse client-keys.json: unexpected end of JSON input")}}
+	if err := o.CheckClientKeys(); err == nil || !strings.Contains(err.Error(), "--new-key") {
+		t.Errorf("err = %v; want the store refused with a remedy", err)
+	}
+	if !o.needsRigKey() {
+		t.Error("a rig wired with unreadable keys was given no key of its own")
+	}
+	o.OneRigKey = true
+	if err := o.CheckClientKeys(); err != nil {
+		t.Errorf("--new-key does not use the store, and was refused over it: %v", err)
+	}
+	o = &Orchestrator{ClientKeys: brokenKeys{}}
+	if err := o.CheckClientKeys(); err != nil || o.needsRigKey() {
+		t.Errorf("readable keys: err %v, own key %v", err, o.needsRigKey())
 	}
 }

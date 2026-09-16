@@ -37,12 +37,15 @@ bin/larri up --model Qwen/Qwen2.5-1.5B-Instruct --dry-run
 
 ```
   sizing     Qwen/Qwen2.5-1.5B-Instruct needs ~4.6 GB VRAM
-  search     278 offers satisfy the criteria
-  excluded   62 offers: insufficient-vram
-  excluded   120 offers: verification-withdrawn
-  select     vastai RTX 4070S 11GB $0.090/hr (reliability 0.99)
-  plan       ready in ~9m0s (2m0s bringup + 7m0s fetching 10.9 GB over a 221 Mbps link)
-  plan       cost: $0.01 to reach ready, $0.09 for 1h of use, $0.10 total
+  search     1854 offers satisfy the criteria
+  excluded   409 offers: engine-unsupported
+  excluded   1 offers: insufficient-vram
+  excluded   323 offers: verification-withdrawn
+  excluded   137 offers: network-below-floor
+  excluded   11 offers: price-outlier
+  select     vastai GTX 1660 S 6GB $0.037/hr (reliability 0.99)
+  plan       ready in ~4m0s (2m0s bringup + 2m0s fetching 10.9 GB over a 642 Mbps link)
+  plan       cost: $0.00 to reach ready, $0.04 for 1h of use, $0.04 total
 ```
 
 Read the `plan` lines before anything else. They are the whole decision: what
@@ -85,13 +88,16 @@ completion to come back — not a health check, an actual generated token.
 ```
   ✓ rig 01M0ZXE8… READY   http://127.0.0.1:8000/v1   model: qwen2.5-1.5b-instruct
     vastai RTX 3060 at $0.047/hr
-    key: fKLtIo4Osc…
+    key: fKLtIo4Osc…   (client key "default", created now — shown once; larri token list)
 
   policy: idle 30m0s → destroy · no budget ceiling
   holding the tunnel — Ctrl-C to tear down and stop paying
 ```
 
 Leave that terminal open. It is holding the tunnel and supervising the rig.
+To get the terminal back instead, add `-d`: it asks the same question, then
+returns once the rig is serving and leaves a larri process of its own holding
+it. `larri status` shows that process and its log.
 
 ## 5. Use it
 
@@ -109,7 +115,7 @@ For a chat app, use `Generic OpenAI` / `OpenAI-compatible` and give it:
 | | |
 |---|---|
 | Base URL | `http://127.0.0.1:8000/v1` |
-| API key | the `key:` printed above |
+| API key | the `key:` printed above — the same on every later rig; `larri token` manages keys |
 | Model | the `model:` printed above |
 
 If the client runs in Docker, it needs `--network=host`. The endpoint binds
