@@ -123,11 +123,11 @@ func cmdClaw(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// The header only. Summary and Caveats belong to the daemon, which emits
+	// them to every front-end before the confirmation — printing our own copy
+	// as well showed the operator the same eight lines twice.
 	fmt.Printf("  claw        %s (%s) — %s\n", cfg.Type, kind.Site(), kind.Describe())
 	fmt.Printf("  config      %s\n", cfg.Path)
-	for _, line := range plan.Summary {
-		fmt.Printf("              %s\n", line)
-	}
 	if plan.Sizing != nil {
 		fmt.Printf("  vram        ~%s\n", sizing.HumanBytes(plan.Sizing.RequiredVRAMBytes))
 	}
@@ -136,9 +136,6 @@ func cmdClaw(ctx context.Context, args []string) error {
 	}
 	if kind.Site() == claw.SiteRemote {
 		fmt.Printf("  output      %s\n", out)
-	}
-	for _, c := range plan.Caveats {
-		fmt.Printf("  ! claw       %s\n", c)
 	}
 
 	// ---- the rest of the setup -------------------------------------------

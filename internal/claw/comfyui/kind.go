@@ -176,8 +176,9 @@ func (k *Kind) summary(plan core.SizingPlan) []string {
 		}
 		out = append(out, line)
 	}
-	out = append(out, fmt.Sprintf("%d models, %s to fetch",
-		len(k.bundle.Items), sizing.HumanBytes(k.bundle.TotalBytes)))
+	out = append(out, fmt.Sprintf("%d %s, %s to fetch",
+		len(k.bundle.Items), plural(len(k.bundle.Items), "model"),
+		sizing.HumanBytes(k.bundle.TotalBytes)))
 	for _, it := range k.bundle.Items {
 		out = append(out, fmt.Sprintf("  %-16s %s (%s)",
 			it.Asset.Kind, it.Asset.Name, sizing.HumanBytes(it.Bytes)))
@@ -206,7 +207,10 @@ func (k *Kind) caveats() []string {
 			"pickle containers were allowed: a .ckpt or .pth executes code on load, "+
 				"on the host holding your hugging face token")
 	}
-	if k.cfg.Image != "" {
+	// Only when it actually differs. The example job names the default
+	// explicitly, which is good practice and is not an override, and a caveat
+	// that fires on every run is one nobody reads by the third.
+	if k.image() != DefaultImage {
 		out = append(out,
 			"the image was overridden: the hardware floors were derived from a "+
 				"different build, so re-derive them if this one differs")
@@ -265,6 +269,13 @@ func (k *Kind) image() string {
 		return k.cfg.Image
 	}
 	return DefaultImage
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
 }
 
 // workflowName is what the rig is called in the journal and in status output.
