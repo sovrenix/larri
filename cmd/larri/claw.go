@@ -40,7 +40,20 @@ func cmdClaw(ctx context.Context, args []string) error {
 	cfgPath := fs.String("config", "", "claw job file")
 	typeName := fs.String("type", "", "claw type, when the job file does not say")
 	outDir := fs.String("output", "", "where a remote claw's results are saved (default: ./claw-output)")
-	port := fs.Int("port", 0, "fixed local port the session is published on")
+	// Fixed, not kernel-chosen. Invariant 3 is about the local address being
+	// the stable half of the pair, and a port that differs every session is a
+	// bookmark that rots and a client that has to be reconfigured — which is
+	// the churn the invariant exists to prevent. `up` defaults to 8000 for the
+	// same reason; this is a different number so the two can coexist.
+	//
+	// 8188 is ComfyUI's own port, so a generic command is taking its default
+	// from its first type. That is a memorability argument rather than a
+	// design one, and the real answer, once a second type disagrees, is to let
+	// the Kind declare a preferred port.
+	//
+	// Zero still means kernel-chosen, which is what the tests pass so a stray
+	// local ComfyUI cannot fail a run.
+	port := fs.Int("port", 8188, "fixed local port the session is published on (0: kernel-chosen)")
 
 	gpu := fs.String("gpu", "", "GPU model filter, e.g. 'RTX 4090'")
 	maxPrice := fs.Float64("max-price", 0, "ceiling in $/hr")
