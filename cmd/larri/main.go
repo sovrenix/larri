@@ -38,6 +38,7 @@ import (
 const usage = `larri — Local Agent for Remote Rigging of Inference
 
   larri up      rent a GPU, serve a model, wire local clients
+  larri claw    rent a GPU for an application (--list for the types)
   larri down    revert wiring, destroy the rig, confirm it is gone
   larri resume  rebuild the tunnel to a rig that outlived the last process
   larri offers  search and rank without spending anything
@@ -133,6 +134,8 @@ func main() {
 	switch os.Args[1] {
 	case "up":
 		err = cmdUp(ctx, os.Args[2:])
+	case "claw":
+		err = cmdClaw(ctx, os.Args[2:])
 	case "down":
 		err = cmdDown(ctx, os.Args[2:])
 	case "resume":
