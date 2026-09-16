@@ -126,6 +126,15 @@ engine. An **Application** workload serves its own API, and the rule that follow
 no inference client is ever pointed at one. `/v1` is still the only thing the IDE and chat
 wiring know how to speak.
 
+**"OpenAI-compatible" and "answers a completion" are not the same claim**, and the protocol
+is what separates them. OpenAI's `/v1` is a family of surfaces — `/v1/chat/completions` is
+one, `/v1/audio/transcriptions` another — sharing a base path, a bearer credential and a
+client ecosystem while answering entirely different requests. So a payload declares which it
+serves, and callers ask the question they actually have: `RequireOpenAI` means *chat*, while
+`Protocol.BasePath` means *where*. Testing `!= ProtocolOpenAI` conflates the two and gets the
+second one wrong, which is why both questions are methods on the protocol rather than
+comparisons against one constant.
+
 Runtimes differ in three places only, and those differences belong inside the
 Runtime implementation:
 

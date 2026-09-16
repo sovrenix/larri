@@ -33,6 +33,15 @@ const (
 	// Runtime serves it, and it is what the IDE and chat wiring depend on.
 	ProtocolOpenAI Protocol = "openai-v1"
 
+	// ProtocolOpenAIAudio is OpenAI's /v1/audio surface — transcriptions and
+	// translations. The same base path, the same bearer auth and the same
+	// clients as ProtocolOpenAI, and deliberately not the same constant:
+	// nothing here answers a chat completion. Collapsing the two would make
+	// RequireOpenAI true for a server that 404s the first completion sent to
+	// it, on a rig that is already billing, which is the discovery this type
+	// exists to prevent.
+	ProtocolOpenAIAudio Protocol = "openai-audio"
+
 	// ProtocolComfyUI is ComfyUI's HTTP API plus its bundled web frontend:
 	// POST /prompt to enqueue, /history to poll, /view to fetch an output,
 	// and a WebSocket at /ws carrying execution progress.
@@ -48,6 +57,43 @@ const (
 // renders comes from a host with root (§15.4). Both consequences follow from
 // this one bit, so it is asked rather than inferred at each site.
 func (p Protocol) Browser() bool { return p == ProtocolComfyUI }
+
+// BasePath is where the endpoint is published under the local port.
+//
+// Asked of the protocol rather than tested against ProtocolOpenAI, which is
+// what the wiring layer did and what a third protocol broke: the audio surface
+// lives at /v1/audio/transcriptions, so "not chat" and "not /v1" are different
+// questions and only the second one decides the path. A binary answers the
+// first and gets the second wrong.
+func (p Protocol) BasePath() string {
+	switch p {
+	case ProtocolOpenAI, ProtocolOpenAIAudio:
+		return "/v1"
+	default:
+		return "/"
+	}
+}
+
+// RoundTrip names the exchange that readiness performs, for the operator
+// watching it happen.
+//
+// The messages around readiness once said "completion" unconditionally, which
+// was true while every workload was an inference engine and a plain falsehood
+// on a rig that renders images. Replacing that with a binary only moved the
+// falsehood: a transcription rig would have announced it was waiting for a
+// render. Each protocol names its own.
+func (p Protocol) RoundTrip() string {
+	switch p {
+	case ProtocolOpenAI:
+		return "a completion"
+	case ProtocolOpenAIAudio:
+		return "a transcription"
+	case ProtocolComfyUI:
+		return "a render"
+	default:
+		return "a response"
+	}
+}
 
 // Workload is anything LARRI can stand up on a rented host and hold open.
 //

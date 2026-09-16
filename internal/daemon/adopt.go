@@ -260,10 +260,11 @@ func (o *Orchestrator) dialPinned(ctx context.Context, inst *core.Instance,
 // Asked of the workload rather than branched on its kind, so a future
 // protocol answers this without editing the wiring layer.
 func (o *Orchestrator) endpointURL(port int) string {
-	if o.Runtime != nil && o.Runtime.Protocol() != runtime.ProtocolOpenAI {
-		return fmt.Sprintf("http://127.0.0.1:%d/", port)
+	base := runtime.ProtocolOpenAI.BasePath()
+	if o.Runtime != nil {
+		base = o.Runtime.Protocol().BasePath()
 	}
-	return fmt.Sprintf("http://127.0.0.1:%d/v1", port)
+	return fmt.Sprintf("http://127.0.0.1:%d%s", port, base)
 }
 
 // attachTunnel opens the forward and proxy for an endpoint and records them on

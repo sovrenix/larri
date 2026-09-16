@@ -332,17 +332,13 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 }
 
 // roundTrip names what READY proves, in the vocabulary of whatever is running.
-//
-// The messages around readiness said "completion" unconditionally, which was
-// true while every workload was an inference engine and is a plain falsehood
-// on a rig that renders images. An operator reading "waiting for a completion"
-// while ComfyUI loads a checkpoint would reasonably conclude something had
-// been configured wrong.
+// The protocol answers it; see runtime.Protocol.RoundTrip for why each one
+// names its own.
 func (o *Orchestrator) roundTrip() string {
-	if o.Runtime != nil && o.Runtime.Protocol() != runtime.ProtocolOpenAI {
-		return "a render"
+	if o.Runtime == nil {
+		return runtime.ProtocolOpenAI.RoundTrip()
 	}
-	return "a completion"
+	return o.Runtime.Protocol().RoundTrip()
 }
 
 // waitForSSH waits for the host to become usable, driven by what the provider
