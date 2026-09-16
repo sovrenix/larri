@@ -48,6 +48,8 @@ func cmdClaw(ctx context.Context, args []string) error {
 	minNet := fs.Float64("min-netspeed", 200, "minimum host download link, Mbps (0 disables)")
 	disk := fs.Int("disk", 0, "disk in GB (default: whatever the claw asks for)")
 	verifiedOnly := fs.Bool("verified-only", false, "rent only hosts the provider has verified")
+	allowLowStock := fs.Bool("allow-low-stock", false,
+		"consider offers the provider reports at low stock; a create against one may be refused")
 	allowDeverified := fs.Bool("allow-deverified", false, "include hosts whose verification was withdrawn")
 	providerName := fs.String("provider", "", "which provider to rent from")
 
@@ -107,7 +109,7 @@ func cmdClaw(ctx context.Context, args []string) error {
 	crit := core.Criteria{
 		MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk,
 		MinNetMbps: *minNet, CertifiedOnly: *verifiedOnly,
-		AllowDeverified: *allowDeverified,
+		AllowDeverified: *allowDeverified, AllowLowStock: *allowLowStock,
 	}
 	if *gpu != "" {
 		crit.GPUModel = splitList(*gpu)
