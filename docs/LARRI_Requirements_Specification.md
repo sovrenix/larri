@@ -488,15 +488,20 @@ A claw declares where it runs, and that decides what happens either side of the 
 only the inference. The distinction is not cosmetic: it is the difference between results
 that exist nowhere else and configuration that was changed on somebody's own computer.
 
+The remote half is `live`: one paid run rented an RTX 2000 Ada through `larri claw`, brought
+ComfyUI up on it, collected the render and destroyed the host — $0.0582 over 14m13s. The
+local half is not, because no local claw exists yet: FR-CLAW-06 is proven against a fake and
+stays `done` until a real client writer lands.
+
 | ID | Pri | Status | Requirement |
 |---|---|---|---|
-| FR-CLAW-01 | M | `done` | Model applications as claws behind one registry, so adding one is a package plus a registry entry rather than an edit to the lifecycle. The daemon imports the contract and never an implementation, enforced by a build-time guard — the coupling decays silently otherwise, since reaching into one implementation for a single field compiles, works, and licenses the next exception. |
-| FR-CLAW-02 | M | `done` | Distinguish where the application runs. A remote claw runs on the rented box; a local claw runs on the operator's machine and rents only the inference. Every difference in handling follows from this one declaration rather than from a per-type branch. |
-| FR-CLAW-03 | M | `done` | Derive the hardware from the claw's own configuration, **before the create call**. What it must fetch, how large that is, and what VRAM it implies are all established locally, and a claw that cannot be satisfied refuses without spending (§4a). |
-| FR-CLAW-04 | M | `done` | Never lower the operator's hardware floors. A claw may raise them — it knows what it needs — but renting something smaller than what was asked for is the one direction that cannot be undone after the fact. |
-| FR-CLAW-05 | M | `done` | Collect a remote claw's results before the destroy, bounded by a budget, reporting exactly what could not be brought back. Collection must never prevent a teardown: what is left behind is lost once, while a rig left alive bills until somebody notices. |
+| FR-CLAW-01 | M | `live` | Model applications as claws behind one registry, so adding one is a package plus a registry entry rather than an edit to the lifecycle. The daemon imports the contract and never an implementation, enforced by a build-time guard — the coupling decays silently otherwise, since reaching into one implementation for a single field compiles, works, and licenses the next exception. |
+| FR-CLAW-02 | M | `live` | Distinguish where the application runs. A remote claw runs on the rented box; a local claw runs on the operator's machine and rents only the inference. Every difference in handling follows from this one declaration rather than from a per-type branch. |
+| FR-CLAW-03 | M | `live` | Derive the hardware from the claw's own configuration, **before the create call**. What it must fetch, how large that is, and what VRAM it implies are all established locally, and a claw that cannot be satisfied refuses without spending (§4a). |
+| FR-CLAW-04 | M | `live` | Never lower the operator's hardware floors. A claw may raise them — it knows what it needs — but renting something smaller than what was asked for is the one direction that cannot be undone after the fact. |
+| FR-CLAW-05 | M | `live` | Collect a remote claw's results before the destroy, bounded by a budget, reporting exactly what could not be brought back. Collection must never prevent a teardown: what is left behind is lost once, while a rig left alive bills until somebody notices. |
 | FR-CLAW-06 | M | `done` | Revert a local claw's client configuration **before** the instance is destroyed, so no client is ever left pointing at a dead endpoint, and persist the records so what must be undone survives the process dying. A failed revert must not prevent the teardown: the configuration is recoverable from its backup and the rig is not recoverable at all. |
-| FR-CLAW-07 | M | `done` | One command for every claw type, with type-specific settings in a job file rather than in flags — a generic command that grows a flag per application is not generic. Relative paths in a job file resolve against the file, so a job that works in one working directory works in every other. A flag that cannot apply to the chosen site is refused rather than ignored. |
+| FR-CLAW-07 | M | `live` | One command for every claw type, with type-specific settings in a job file rather than in flags — a generic command that grows a flag per application is not generic. Relative paths in a job file resolve against the file, so a job that works in one working directory works in every other. A flag that cannot apply to the chosen site is refused rather than ignored. |
 | FR-CLAW-08 | S | `done` | Authenticate a browser-opened claw with a credential a browser will actually send, since neither a navigation nor a WebSocket handshake carries an `Authorization` header, and count only real work toward the idle clock — an open tab polls indefinitely. Hold the clock open while the claw has outstanding work, because a job submitted in one short call and computed for minutes is indistinguishable from an abandoned rig to a timer counting requests. |
 
 ### 7.14 ComfyUI — The First Claw (FR-COMFY)
@@ -506,20 +511,22 @@ runs on the rented box, serves its own HTTP API and its own web frontend, and wh
 exists nowhere else until it is collected.
 
 Everything generic about it is FR-CLAW. What is left here is what is true of ComfyUI in
-particular, and most of it was learned by paying for it. The behaviour below has been
-exercised on a rented RTX 4090, through the command that preceded the claw layer; it has not
-yet been re-run end to end through `larri claw`, which is why these rows read `done` rather
-than `live`.
+particular, and most of it was learned by paying for it. It has now been run end to end
+through `larri claw` on a rented RTX 2000 Ada: graph parsed and models measured before the
+create call, 6.5 GB fetched on the host, readiness proven by a render that round-tripped in
+55 seconds, the image collected, and the instance destroyed and confirmed absent — $0.0582
+over 14m13s. The two rows that stay `done` are the refusal path, which that run had no
+reason to take, and the digest pin, which is not built.
 
 | ID | Pri | Status | Requirement |
 |---|---|---|---|
-| FR-COMFY-01 | M | `done` | Run ComfyUI on the rented host and publish its own web frontend at the fixed local port (P3), so the operator opens a browser rather than configuring a client. Nothing may issue a completion against it: it serves its own API and not `/v1`, and says so when asked. |
-| FR-COMFY-02 | M | `done` | Derive hardware from the **workflow itself** — the models it loads, their measured sizes, and the latent area it renders — rather than from an operator-supplied GPU class. A workflow is a complete statement of what it needs; asking the operator to restate it in hardware terms invites them to get it wrong at their own expense. The VRAM floor is per-GPU rather than a total, because a graph executes on one device. |
-| FR-COMFY-03 | M | `done` | Resolve every model a graph names to a concrete repository and **measure it before the create call**. An unresolvable model, a moved repository, or a token that cannot read a gated one are each a reason not to rent, and each costs nothing to discover locally (§4a). |
+| FR-COMFY-01 | M | `live` | Run ComfyUI on the rented host and publish its own web frontend at the fixed local port (P3), so the operator opens a browser rather than configuring a client. Nothing may issue a completion against it: it serves its own API and not `/v1`, and says so when asked. |
+| FR-COMFY-02 | M | `live` | Derive hardware from the **workflow itself** — the models it loads, their measured sizes, and the latent area it renders — rather than from an operator-supplied GPU class. A workflow is a complete statement of what it needs; asking the operator to restate it in hardware terms invites them to get it wrong at their own expense. The VRAM floor is per-GPU rather than a total, because a graph executes on one device. |
+| FR-COMFY-03 | M | `live` | Resolve every model a graph names to a concrete repository and **measure it before the create call**. An unresolvable model, a moved repository, or a token that cannot read a gated one are each a reason not to rent, and each costs nothing to discover locally (§4a). |
 | FR-COMFY-04 | M | `done` | Refuse model containers that deserialise as code — `.ckpt`, `.pt`, `.pth`, `.bin` — requiring `safetensors` unless the operator opts in explicitly. Torch executes a pickle on load, on the host holding the operator's Hugging Face token. The opt-in exists because ComfyUI's ecosystem publishes some models no other way, and it is disclosed at bring-up when used. |
-| FR-COMFY-05 | M | `done` | Acquire models **on the rented host**, never relayed through the operator's link, with progress driven by bytes on disk, sizes verified before a file is given its name, and an already-present file skipped. The wait ends on *silence*, not on a clock (FR-RT-15). |
-| FR-COMFY-06 | M | `done` | Declare readiness only after the operator's **own** graph has produced a file, and refuse a server that found no CUDA device. ComfyUI starts perfectly well with no usable GPU and falls back to the CPU, where a render takes minutes per step — a rig paying GPU rates for nothing, which looks entirely healthy from outside. Where the graph's serialisation cannot be submitted, say so explicitly rather than let READY mean two different things. |
-| FR-COMFY-07 | M | `done` | Pin the container image and the ComfyUI revision **as a pair**, and prove the pairing before anything large is downloaded. The image supplies torch and the revision supplies the nodes that call it; a combination nobody has run fails at `import nodes`, which a rig discovers after 6.5 GB and twenty minutes of billing. Classify that failure as a fault of the configuration rather than of the host, so it is not retried on three more machines. |
+| FR-COMFY-05 | M | `live` | Acquire models **on the rented host**, never relayed through the operator's link, with progress driven by bytes on disk, sizes verified before a file is given its name, and an already-present file skipped. The wait ends on *silence*, not on a clock (FR-RT-15). |
+| FR-COMFY-06 | M | `live` | Declare readiness only after the operator's **own** graph has produced a file, and refuse a server that found no CUDA device. ComfyUI starts perfectly well with no usable GPU and falls back to the CPU, where a render takes minutes per step — a rig paying GPU rates for nothing, which looks entirely healthy from outside. Where the graph's serialisation cannot be submitted, say so explicitly rather than let READY mean two different things. |
+| FR-COMFY-07 | M | `live` | Pin the container image and the ComfyUI revision **as a pair**, and prove the pairing before anything large is downloaded. The image supplies torch and the revision supplies the nodes that call it; a combination nobody has run fails at `import nodes`, which a rig discovers after 6.5 GB and twenty minutes of billing. Classify that failure as a fault of the configuration rather than of the host, so it is not retried on three more machines. |
 | FR-COMFY-08 | S | `part` | Pin the image by content digest and derive the hardware floors from that exact build, refreshed together (FR-RT-16). |
 
 ---

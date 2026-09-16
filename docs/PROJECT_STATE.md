@@ -24,12 +24,12 @@ and "shown to work" are different claims and are recorded as such.
 
 | Area | Reqs | ✅ live | ☑️ done | 🟡 part | ⬜ plan | Complete |
 |---|---:|---:|---:|---:|---:|---:|
-| Claws | 8 | 0 | 8 | 0 | 0 | **100%** |
+| Claws | 8 | 6 | 2 | 0 | 0 | **100%** |
 | Criteria | 6 | 3 | 3 | 0 | 0 | **100%** |
 | Provisioning | 12 | 11 | 1 | 0 | 0 | **100%** |
 | State | 5 | 4 | 1 | 0 | 0 | **100%** |
 | Search & selection | 14 | 10 | 3 | 0 | 1 | **93%** |
-| ComfyUI | 8 | 0 | 7 | 1 | 0 | 88% |
+| ComfyUI | 8 | 6 | 1 | 1 | 0 | 88% |
 | Runtimes | 22 | 17 | 2 | 3 | 0 | 86% |
 | Non-functional | 12 | 6 | 4 | 1 | 1 | 83% |
 | Configuration | 10 | 0 | 8 | 1 | 1 | 80% |
@@ -39,7 +39,7 @@ and "shown to work" are different claims and are recorded as such.
 | Surfaces | 15 | 3 | 2 | 3 | 7 | 33% |
 | Endpoint & client wiring | 14 | 3 | 0 | 1 | 10 | 21% |
 | Observability | 10 | 0 | 1 | 0 | 9 | 10% |
-| **Total** | **201** | **84** | **59** | **19** | **39** | **71%** |
+| **Total** | **201** | **96** | **47** | **19** | **39** | **71%** |
 
 Seventy-one per cent of requirements are implemented, and **the lifecycle is the part
 that is done.** Criteria, provisioning and state are at 100%; search, selection and the
@@ -47,12 +47,15 @@ runtimes are near it. What is missing clusters into the same three areas as befo
 client wiring, the browser surfaces, and observability — none of which a rig needs in
 order to serve.
 
-**The claw layer is `done`, not `live`.** It is implemented and unit-tested, both sites
-included, and ComfyUI is compiled in as the first type — but **nothing has rented a GPU
-through it**. The ComfyUI behaviour itself was exercised on a rented RTX 4090 through the
-command that preceded the layer; driving it through `larri claw` is a paid run that has not
-happened. On this project that distinction has repeatedly been the whole story, so it is
-recorded rather than rounded up.
+**The claw layer's remote half is `live`.** One paid run took `larri claw --config
+examples/comfyui/job.yml` all the way: an RTX 2000 Ada rented at $0.250/hr, ComfyUI installed
+and smoke-tested, 6.5 GB of SDXL fetched on the host, readiness proven by a render that
+round-tripped in 55 seconds, the image collected to `claw-output/`, and the instance destroyed
+and confirmed absent. $0.0582 over 14m13s.
+
+**The local half is not**, and is the honest gap: no claw runs on the operator's machine yet,
+so FR-CLAW-06 is proven against a fake and nothing has reverted a real client's configuration.
+That waits on the first `wire.ClientWriter`, which is the same thing FR-WIRE-04/05 wait on.
 
 Eight requirements were added rather than reclassified. They record behaviour that was
 built during a long run of live failures and had no requirement to point at: ranking on time-and-cost to a working endpoint, the host-verification tier, the link floor, the

@@ -11,10 +11,12 @@ the status column in the requirements spec, which is the source of truth and is 
 by `internal/lint`.
 
 Above that sits the **claw** layer (invariant 1), which rents the same lifecycle for
-applications that are not inference engines. **ComfyUI** is the first and only type
-compiled in: `larri claw --config job.yml`. The layer is `done` rather than `live` — its
-ComfyUI half was exercised on a rented RTX 4090 through the command that preceded it, and
-nothing has yet rented a GPU through `larri claw` itself.
+applications that are not inference engines. **ComfyUI** is the first and only type compiled
+in, and it is **live**: `larri claw --config examples/comfyui/job.yml` rented an RTX 2000 Ada,
+installed ComfyUI, fetched 6.5 GB of SDXL on the host, rendered, collected the image and
+destroyed the instance for $0.0582. What is *not* live is the **local site** — no claw runs on
+the operator's machine yet, so nothing has reverted a real client's configuration, and that
+half is proven only against a fake.
 
 What is missing is the half an operator touches after the endpoint exists: client
 wiring, the browser surfaces, and observability. What is present is everything up to and
