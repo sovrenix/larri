@@ -292,6 +292,13 @@ const (
 	// type would fork the journal, the snapshot, and every surface reading
 	// them.
 	RuntimeComfyUI RuntimeKind = "comfyui"
+
+	// RuntimeWhisper is a speech-to-text server. Like ComfyUI it is a
+	// Workload and not a Runtime, and unlike ComfyUI its surface is
+	// OpenAI-shaped — /v1/audio/transcriptions — which is compatibility with
+	// the clients and not with the chat contract. See
+	// runtime.ProtocolOpenAIAudio.
+	RuntimeWhisper RuntimeKind = "whisper"
 )
 
 // ServesInference reports whether this kind is an inference engine.
