@@ -265,6 +265,15 @@ type Orchestrator struct {
 	// Zero disables it, which is the historical behaviour.
 	BudgetUSD float64
 
+	// ColdStart overrides what a fresh rental is expected to download before
+	// it can work. Zero derives it from the plan's weights.
+	//
+	// It exists because "weights" is the wrong word for some payloads. A claw
+	// that fetches a bundle of unrelated files knows the total exactly, and
+	// ranking on a number derived from a field that does not describe it
+	// would sort the market against a size that does not exist (§4b).
+	ColdStart uint64
+
 	// OutputBudget bounds how long a teardown spends retrieving rendered
 	// files before it destroys anyway. Zero means ten minutes.
 	//
@@ -599,6 +608,9 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 	// that kept selecting hosts too slow to deliver.
 	policy := o.Policy
 	policy.ColdStartBytes = coldStartBytes(plan)
+	if o.ColdStart > 0 {
+		policy.ColdStartBytes = o.ColdStart
+	}
 	// A scheme the engine cannot load is a model failure, not a host failure:
 	// every offer in the market would fail it identically, so the refusal
 	// belongs here rather than after a rental has paid to discover it. A live

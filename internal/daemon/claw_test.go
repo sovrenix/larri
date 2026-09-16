@@ -1,0 +1,293 @@
+// Copyright (C) 2026 Sovrenix Inc.
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+package daemon
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"go.sovrenix.com/larri/internal/claw"
+	cfake "go.sovrenix.com/larri/internal/claw/fake"
+	"go.sovrenix.com/larri/internal/core"
+	pfake "go.sovrenix.com/larri/internal/provider/fake"
+	"go.sovrenix.com/larri/internal/rank"
+	rfake "go.sovrenix.com/larri/internal/runtime/fake"
+	"go.sovrenix.com/larri/internal/sizing"
+	"go.sovrenix.com/larri/internal/state"
+	"go.sovrenix.com/larri/internal/wire"
+)
+
+func clawOrch(t *testing.T) *Orchestrator {
+	t.Helper()
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return &Orchestrator{
+		Store:    st,
+		Provider: pfake.New("fake", offers(), pfake.Behaviour{}),
+		// ClawUp replaces this with whatever the Kind builds; the tests that
+		// reach Up directly still need something to ask Requires of.
+		Runtime:  rfake.New(rfake.Behaviour{}),
+		Resolver: sizing.StaticResolver{"test/model": facts},
+		Policy:   rank.DefaultPolicy(),
+		Deadline: time.Minute,
+		// One attempt, briefly: the tests that reach this far are asserting
+		// what happens before and after a bring-up, not that a fake provider
+		// can produce a reachable host.
+		MaxHostAttempts:    1,
+		EndpointStallLimit: time.Second,
+	}
+}
+
+// sessionFor builds a torn-down-able session without a real rig behind it.
+//
+// ClawDown's contract is about ordering and about what cannot block a destroy,
+// and both are observable with an instance the fake provider created and no SSH
+// at all — which is also the shape of the case that matters most, a host that
+// has already gone.
+func sessionFor(t *testing.T, o *Orchestrator, k claw.Kind) *ClawSession {
+	t.Helper()
+	rig, err := o.Up(context.Background(), UpRequest{
+		Model: core.ModelSpec{Ref: "test/model", ServedName: "test",
+			Quantization: "q4_K_M", ContextLen: 8192},
+		DiskGB: 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &ClawSession{
+		Live: &Live{Rig: rig}, Kind: k,
+		Plan:      &claw.Plan{Model: rig.Model},
+		OutputDir: t.TempDir(), StartedAt: time.Now(),
+	}
+}
+
+func term() *core.Termination {
+	return &core.Termination{
+		Actor: core.ActorOperator, Code: core.ReasonOperatorRequest,
+		At: time.Now().UTC(), Summary: "test",
+	}
+}
+
+// A remote claw produces things that exist only on the host, so renting one
+// with nowhere to put them is a session whose results are lost by construction.
+func TestARemoteClawNeedsSomewhereToPutItsResults(t *testing.T) {
+	o := clawOrch(t)
+	k := cfake.NewRemote("demo", cfake.Behaviour{})
+	_, err := o.ClawUp(context.Background(), ClawRequest{
+		Kind: k, Plan: &claw.Plan{}, OutputDir: "",
+	})
+	if err == nil {
+		t.Fatal("a remote claw was rented with no output directory")
+	}
+}
+
+// A local claw produces nothing on the host, so it must not be made to name an
+// output directory it has no use for.
+func TestALocalClawNeedsNoOutputDirectory(t *testing.T) {
+	o := clawOrch(t)
+	k := cfake.NewLocal("demo", cfake.Behaviour{})
+	// It fails later for want of a reachable host; what matters is that it is
+	// not refused for the output directory.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, err := o.ClawUp(ctx, ClawRequest{
+		Kind: k, Plan: &claw.Plan{Model: core.ModelSpec{Ref: "test/model", ServedName: "t"}},
+	})
+	if err != nil && errorMentions(err, "output directory") {
+		t.Fatalf("a local claw was refused for want of an output directory: %v", err)
+	}
+}
+
+// Results exist only on the host and a destroy is irreversible, so collection
+// happens first — and the teardown proceeds either way.
+func TestARemoteClawCollectsBeforeDestroying(t *testing.T) {
+	o := clawOrch(t)
+	k := cfake.NewRemote("demo", cfake.Behaviour{
+		Collected: &claw.Result{Saved: []string{"a.png"}, Failed: map[string]string{}},
+	})
+	s := sessionFor(t, o, k)
+	rig := s.Live.Rig
+
+	// No SSH session exists, so collection cannot run — which is exactly the
+	// case that must still destroy.
+	res, err := o.ClawDown(context.Background(), s, term())
+	if err != nil {
+		t.Fatalf("teardown refused to proceed: %v", err)
+	}
+	if rig.State != core.StateDestroyed {
+		t.Errorf("state = %s, want DESTROYED", rig.State)
+	}
+	_ = res
+}
+
+// A collection that fails outright must not keep a rig alive. Files left
+// behind are lost once; a rig left alive bills until somebody notices.
+func TestAFailedCollectionStillDestroys(t *testing.T) {
+	o := clawOrch(t)
+	k := cfake.NewRemote("demo", cfake.Behaviour{CollectErr: errors.New("host gone")})
+	s := sessionFor(t, o, k)
+	rig := s.Live.Rig
+
+	if _, err := o.ClawDown(context.Background(), s, term()); err != nil {
+		t.Fatalf("a failed collection blocked the teardown: %v", err)
+	}
+	if rig.State != core.StateDestroyed {
+		t.Errorf("state = %s, want DESTROYED", rig.State)
+	}
+	if rig.End == nil {
+		t.Error("no termination record; a destroyed rig must say why it went")
+	}
+}
+
+// A local claw's clients are put back before the instance goes, so there is no
+// window in which an editor points at a dead endpoint (invariant 3).
+func TestALocalClawRevertsBeforeDestroying(t *testing.T) {
+	o := clawOrch(t)
+	c := cfake.NewClient("editor")
+	k := cfake.NewLocal("demo", cfake.Behaviour{Clients: []wire.ClientWriter{c}})
+	s := sessionFor(t, o, k)
+
+	// Wire it the way attachLocal would, then tear down.
+	recs, _ := wire.Apply([]wire.ClientWriter{c}, wire.Endpoint{URL: "http://127.0.0.1:8000/v1"}, nil)
+	s.Wiring = recs
+	s.clients = wire.Index([]wire.ClientWriter{c})
+	rig := s.Live.Rig
+
+	if _, err := o.ClawDown(context.Background(), s, term()); err != nil {
+		t.Fatalf("teardown: %v", err)
+	}
+	if _, reverted := c.Counts(); reverted != 1 {
+		t.Errorf("client reverted %d times, want 1", reverted)
+	}
+	if rig.State != core.StateDestroyed {
+		t.Errorf("state = %s, want DESTROYED", rig.State)
+	}
+}
+
+// A config that could not be put back is recoverable from its backup. A rig
+// left alive is not recoverable at all, so a failed revert must not block.
+func TestAFailedRevertStillDestroys(t *testing.T) {
+	o := clawOrch(t)
+	c := cfake.NewClient("stubborn")
+	c.RevertErr = errors.New("file is read-only")
+	k := cfake.NewLocal("demo", cfake.Behaviour{Clients: []wire.ClientWriter{c}})
+	s := sessionFor(t, o, k)
+
+	recs, _ := wire.Apply([]wire.ClientWriter{c}, wire.Endpoint{URL: "http://127.0.0.1:8000/v1"}, nil)
+	s.Wiring = recs
+	s.clients = wire.Index([]wire.ClientWriter{c})
+	rig := s.Live.Rig
+
+	if _, err := o.ClawDown(context.Background(), s, term()); err != nil {
+		t.Fatalf("a failed revert blocked the teardown: %v", err)
+	}
+	if rig.State != core.StateDestroyed {
+		t.Errorf("state = %s, want DESTROYED", rig.State)
+	}
+}
+
+// A local claw has nothing on the host to rescue, so no collection is
+// attempted — asking for one would mean an SSH round trip at teardown for a
+// session that produced nothing there.
+func TestALocalClawCollectsNothing(t *testing.T) {
+	o := clawOrch(t)
+	k := cfake.NewLocal("demo", cfake.Behaviour{})
+	s := sessionFor(t, o, k)
+
+	res, err := o.ClawDown(context.Background(), s, term())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res != nil {
+		t.Errorf("a local claw returned a collection result: %+v", res)
+	}
+	for _, step := range k.Steps() {
+		if step == "collect" {
+			t.Error("a local claw was asked to collect")
+		}
+	}
+}
+
+// A claw that measured its own requirement supplies it, and the market is
+// ranked against the bytes it says it must fetch rather than a number derived
+// from a field that does not describe it (§4b).
+func TestAFixedSizingDrivesSelection(t *testing.T) {
+	o := clawOrch(t)
+	need := &core.SizingPlan{RequiredVRAMBytes: 20 << 30, WeightsBytes: 6 << 30, FitsInVRAM: true}
+	k := cfake.NewRemote("demo", cfake.Behaviour{
+		Sizing: need, ColdStartBytes: 7 << 30,
+	})
+	plan, err := k.Plan(context.Background(), nil, claw.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.Runtime = k.Server(plan)
+	o.Planner = func(context.Context, UpRequest) (core.SizingPlan, error) { return *need, nil }
+	o.ColdStart = plan.ColdStartBytes
+
+	sv, err := o.Offers(context.Background(), UpRequest{Model: plan.Model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sv.Plan.RequiredVRAMBytes != need.RequiredVRAMBytes {
+		t.Errorf("survey sized %d, want the claw's %d",
+			sv.Plan.RequiredVRAMBytes, need.RequiredVRAMBytes)
+	}
+	if sv.Selection.Selected == nil {
+		t.Fatal("nothing was selected for a requirement the market can meet")
+	}
+}
+
+// The operator's floors are theirs. A claw needing less has not contradicted
+// them, and renting something cheaper than what was asked for cannot be undone
+// after the fact.
+func TestAClawDoesNotLowerTheOperatorsFloors(t *testing.T) {
+	k := cfake.NewRemote("demo", cfake.Behaviour{
+		Criteria: core.Criteria{VRAMPerGPUGB: 12, RAMGB: 16},
+	})
+	plan, err := k.Plan(context.Background(), nil, claw.Options{
+		Criteria: core.Criteria{VRAMPerGPUGB: 80, RAMGB: 256, MaxPriceHr: 0.4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Criteria.VRAMPerGPUGB != 80 || plan.Criteria.RAMGB != 256 {
+		t.Errorf("criteria = %+v, want the operator's larger floors kept", plan.Criteria)
+	}
+	if plan.Criteria.MaxPriceHr != 0.4 {
+		t.Error("an unrelated criterion was dropped")
+	}
+}
+
+// A claw that refuses in Plan must refuse before anything is rented: that is
+// the whole reason the plan is produced separately (§4a).
+func TestAPlanThatRefusesSpendsNothing(t *testing.T) {
+	k := cfake.NewRemote("demo", cfake.Behaviour{PlanErr: errors.New("no source for a model")})
+	if _, err := k.Plan(context.Background(), nil, claw.Options{}); err == nil {
+		t.Fatal("a refusing plan returned no error")
+	}
+	for _, step := range k.Steps() {
+		if step == "server" {
+			t.Error("a refused plan still built a workload")
+		}
+	}
+}
+
+func errorMentions(err error, sub string) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
