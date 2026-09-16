@@ -6,6 +6,8 @@ package daemon
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	pfake "go.sovrenix.com/larri/internal/provider/fake"
 	"go.sovrenix.com/larri/internal/rank"
 	rfake "go.sovrenix.com/larri/internal/runtime/fake"
+	"go.sovrenix.com/larri/internal/secret"
 	"go.sovrenix.com/larri/internal/sizing"
 	"go.sovrenix.com/larri/internal/state"
 	"go.sovrenix.com/larri/internal/wire"
@@ -290,4 +293,85 @@ func errorMentions(err error, sub string) bool {
 		}
 	}
 	return false
+}
+
+// A claw the operator opens rather than configures needs two things no engine
+// does, and neither can be inferred: a credential a browser will actually send,
+// and a rule for what counts as work.
+func TestABrowserClawGetsASessionAndAWorkRule(t *testing.T) {
+	o := clawOrch(t)
+	k := cfake.NewBrowser("demo", cfake.Behaviour{})
+
+	proxy, err := wire.NewProxy(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	token, err := secret.Generate(16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &ClawSession{
+		Live: &Live{proxy: proxy, ClientToken: token, Rig: &core.Rig{}},
+		Kind: k, Plan: &claw.Plan{},
+	}
+	if err := o.attachRemote(s); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	t.Cleanup(func() {
+		if s.hold != nil {
+			s.hold()
+		}
+	})
+
+	// A browser cannot present a bearer token, so a one-time link has to exist
+	// for it to trade for a cookie.
+	if s.URL == "" {
+		t.Error("no session link; a browser has no way to authenticate")
+	}
+	if proxy.CountsAsWork == nil {
+		t.Fatal("no work rule; an open tab polling would hold the rig forever")
+	}
+	if proxy.CountsAsWork(httptest.NewRequest(http.MethodGet, "/queue", nil)) {
+		t.Error("idle chatter was counted as work")
+	}
+	if !proxy.CountsAsWork(httptest.NewRequest(http.MethodPost, "/submit", nil)) {
+		t.Error("real work was not counted")
+	}
+
+	// Work producing no requests still has to hold the clock.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !k.Holding() {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !k.Holding() {
+		t.Error("the idle clock was never held; a long job would be destroyed mid-way")
+	}
+}
+
+// A remote claw that is not opened in a browser must not be given a browser
+// credential: the cookie path exists for surfaces that cannot send a header,
+// and widening it would weaken the local listener for no reason.
+func TestAPlainRemoteClawGetsNoBrowserSession(t *testing.T) {
+	o := clawOrch(t)
+	proxy, err := wire.NewProxy(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	s := &ClawSession{
+		Live: &Live{proxy: proxy, Rig: &core.Rig{}},
+		Kind: cfake.NewRemote("demo", cfake.Behaviour{}), Plan: &claw.Plan{},
+	}
+	if err := o.attachRemote(s); err != nil {
+		t.Fatal(err)
+	}
+	if s.URL != "" {
+		t.Error("a non-browser claw was given a session link")
+	}
+	if proxy.CountsAsWork != nil {
+		t.Error("a non-browser claw narrowed what counts as work")
+	}
 }

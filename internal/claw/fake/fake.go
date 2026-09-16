@@ -15,7 +15,9 @@ package fake
 
 import (
 	"context"
+	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.sovrenix.com/larri/internal/claw"
@@ -266,3 +268,58 @@ func (c *Client) Counts() (applied, reverted int) {
 }
 
 var _ wire.ClientWriter = (*Client)(nil)
+
+// ---- browser ----------------------------------------------------------
+
+// BrowserKind is a remote claw the operator opens rather than configures.
+//
+// Separate from RemoteKind because Go interfaces are static: a type either has
+// CountsAsWork or it does not, and a remote claw that is not opened in a
+// browser must not appear to be one.
+type BrowserKind struct {
+	*RemoteKind
+
+	// Work decides which requests reset the idle clock. Nil counts every
+	// non-probe request, which is the engine behaviour.
+	Work func(*http.Request) bool
+
+	held atomic.Int32
+	hits atomic.Int32
+}
+
+// NewBrowser builds a remote claw that is opened in a browser and holds the
+// idle clock while it has work.
+func NewBrowser(t claw.Type, b Behaviour) *BrowserKind {
+	return &BrowserKind{RemoteKind: NewRemote(t, b)}
+}
+
+// CountsAsWork reports the rule this claw wants applied to proxied requests.
+func (k *BrowserKind) CountsAsWork() func(*http.Request) bool {
+	if k.Work != nil {
+		return k.Work
+	}
+	return func(r *http.Request) bool { return r.Method == http.MethodPost }
+}
+
+// HoldWhileBusy brackets the in-flight count once, then waits, so a test can
+// observe that the lifecycle started it and released it on teardown.
+func (k *BrowserKind) HoldWhileBusy(ctx context.Context, _ claw.LocalEndpoint, h claw.InFlight) {
+	k.hits.Add(1)
+	h.EnterInFlight()
+	k.held.Add(1)
+	<-ctx.Done()
+	h.ExitInFlight()
+	k.held.Add(-1)
+}
+
+// Holding reports whether the hold is currently up.
+func (k *BrowserKind) Holding() bool { return k.held.Load() > 0 }
+
+// Started reports how many times the hold was started.
+func (k *BrowserKind) Started() int { return int(k.hits.Load()) }
+
+var (
+	_ claw.Remote  = (*BrowserKind)(nil)
+	_ claw.Browser = (*BrowserKind)(nil)
+	_ claw.Holder  = (*BrowserKind)(nil)
+)
