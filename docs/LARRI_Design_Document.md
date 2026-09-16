@@ -733,6 +733,49 @@ may supply the type when the file omits it, and disagreeing with the file is ref
 than resolved — the two disagreeing means one of them is a mistake, and guessing which would
 run the wrong application against somebody's configuration.
 
+#### 6.8.4 ComfyUI, the First Claw (FR-COMFY)
+
+`internal/claw/comfyui` is the type the layer above was extracted from, and it exercises
+every part of the contract: it is *remote*, it computes its own sizing, it needs a rule for
+what a browser's traffic means, and it has results that exist nowhere else until they are
+collected.
+
+```
+internal/claw/comfyui/           the Kind: config, Plan, Server, Collect, and the browser rules
+internal/claw/comfyui/workflow/  graphs and model bundles: parse, resolve, measure
+```
+
+`workflow` is where a graph becomes a set of facts. It reads both serialisations ComfyUI
+writes — the API export, which `/prompt` accepts, and the UI save, which it does not — and
+from either one it can name the models and read the latent. That asymmetry is stated rather
+than discovered: a UI graph can be planned against and cannot be submitted, so readiness for
+one proves the server and the GPU rather than a render, and the operator is told so before
+they spend.
+
+Resolution is the expensive-to-get-wrong part and it is all local. A graph names bare
+filenames — `sd_xl_base_1.0.safetensors` — and says nothing about where they come from or how
+large they are. A manifest beside the job supplies what the built-in catalogue does not, and
+is consulted first so an explicit mapping is never silently overridden. Each file is then
+measured against the repository's live listing, which is the number both the VRAM floor and
+the cold-start ranking are built on. Measured rather than estimated, for the reason §4a gives
+about weights generally.
+
+Three ComfyUI-specific facts shape the rest:
+
+- **The VRAM floor is per-GPU.** A graph executes on one device, so a bundle that fits only
+  when two cards are summed fits nowhere. Host RAM is raised alongside it, because ComfyUI's
+  answer to insufficient VRAM is to offload — and on a box with too little, offload is swap.
+- **Readiness means a file.** The operator's own graph is submitted and waited on, and a
+  server that reports no CUDA device is refused. ComfyUI starts perfectly well without a GPU
+  and falls back to the CPU, where a render takes minutes per step: a rig paying GPU rates
+  for nothing, indistinguishable from a healthy one at the endpoint.
+- **The image and the ComfyUI revision are one pin.** The image supplies torch and the
+  revision supplies the custom ops that call into it, and a pair nobody has run together
+  fails at `import nodes` — after 6.5 GB and twenty minutes of billing. So the pairing is
+  smoke-tested immediately after install and before anything large is downloaded, and the
+  failure is classified as a fault of the configuration rather than of the host, which is
+  what stops it being retried on three more machines.
+
 ---
 
 ## 7. Sizing Engine

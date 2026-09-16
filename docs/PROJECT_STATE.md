@@ -29,6 +29,7 @@ and "shown to work" are different claims and are recorded as such.
 | Provisioning | 12 | 11 | 1 | 0 | 0 | **100%** |
 | State | 5 | 4 | 1 | 0 | 0 | **100%** |
 | Search & selection | 14 | 10 | 3 | 0 | 1 | **93%** |
+| ComfyUI | 8 | 0 | 7 | 1 | 0 | 88% |
 | Runtimes | 22 | 17 | 2 | 3 | 0 | 86% |
 | Non-functional | 12 | 6 | 4 | 1 | 1 | 83% |
 | Configuration | 10 | 0 | 8 | 1 | 1 | 80% |
@@ -38,18 +39,20 @@ and "shown to work" are different claims and are recorded as such.
 | Surfaces | 15 | 3 | 2 | 3 | 7 | 33% |
 | Endpoint & client wiring | 14 | 3 | 0 | 1 | 10 | 21% |
 | Observability | 10 | 0 | 1 | 0 | 9 | 10% |
-| **Total** | **193** | **84** | **52** | **18** | **39** | **70%** |
+| **Total** | **201** | **84** | **59** | **19** | **39** | **71%** |
 
-Seventy per cent of requirements are implemented, and **the lifecycle is the part
+Seventy-one per cent of requirements are implemented, and **the lifecycle is the part
 that is done.** Criteria, provisioning and state are at 100%; search, selection and the
 runtimes are near it. What is missing clusters into the same three areas as before —
 client wiring, the browser surfaces, and observability — none of which a rig needs in
 order to serve.
 
 **The claw layer is `done`, not `live`.** It is implemented and unit-tested, both sites
-included, and **no claw type is compiled in yet** — so nothing has rented a GPU through it.
-On this project that distinction has repeatedly been the whole story, so it is recorded
-rather than rounded up.
+included, and ComfyUI is compiled in as the first type — but **nothing has rented a GPU
+through it**. The ComfyUI behaviour itself was exercised on a rented RTX 4090 through the
+command that preceded the layer; driving it through `larri claw` is a paid run that has not
+happened. On this project that distinction has repeatedly been the whole story, so it is
+recorded rather than rounded up.
 
 Eight requirements were added rather than reclassified. They record behaviour that was
 built during a long run of live failures and had no requirement to point at: ranking on time-and-cost to a working endpoint, the host-verification tier, the link floor, the
@@ -107,13 +110,14 @@ FR-SEC-17, so templates were evaluated and rejected in favour of installing sshd
 
 ## 🟡 Partial — what is missing, specifically
 
-Eighteen requirements are partly met. The gap for each:
+Nineteen requirements are partly met. The gap for each:
 
 | ID | Gap |
 |---|---|
 | FR-RT-06 | vLLM and llama.cpp both report weight-download percentage; Ollama reports phases only, so an `ollama pull` still shows no proportion of the download done. |
 | FR-RT-10 | The parser is now derived from the model family and both vLLM flags are set, so tool calling works unasked. **Refusing** a rig when tool calling is *required* and no parser exists is still not enforced. |
 | FR-RT-11 | The runtime image is pinned by digest and the hardware floors are derived from it (`make refresh-image`). The images are still **stock upstream**, not project-maintained and pre-baked, so bring-up still discovers the launcher at runtime. |
+| FR-COMFY-08 | The ComfyUI image is pinned by tag and paired with a pinned ComfyUI revision, and the pairing is smoke-tested before the download; the image is not pinned by **content digest**, so the floors are derived from a tag that can move. |
 | FR-SUP-03 | Fallback picks the next-ranked offer without comparing its price to the original, so a silent upgrade is possible. |
 | FR-SUP-05 | Budget ceilings are **per rig**; there is no global ceiling across rigs. |
 | FR-SUP-09 | Deadline warnings reach the CLI and TUI; "every surface" is not met while surfaces are missing. |

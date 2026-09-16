@@ -10,6 +10,12 @@ cost, and `docs/PROJECT_STATE.md` is the current status per requirement — gene
 the status column in the requirements spec, which is the source of truth and is enforced
 by `internal/lint`.
 
+Above that sits the **claw** layer (invariant 1), which rents the same lifecycle for
+applications that are not inference engines. **ComfyUI** is the first and only type
+compiled in: `larri claw --config job.yml`. The layer is `done` rather than `live` — its
+ComfyUI half was exercised on a rented RTX 4090 through the command that preceded it, and
+nothing has yet rented a GPU through `larri claw` itself.
+
 What is missing is the half an operator touches after the endpoint exists: client
 wiring, the browser surfaces, and observability. What is present is everything up to and
 including a working `http://127.0.0.1:8000/v1`.
@@ -556,7 +562,7 @@ go run ./cmd/larri -- up --help                   # run the CLI
 go test ./...                                     # all tests
 go test ./internal/sizing -run TestKVCacheFit -v  # a single test
 go run ./cmd/larri -- claw --list                  # the claw types compiled in
-go run ./cmd/larri -- claw --config job.yml --dry-run  # plan one, spend nothing
+go run ./cmd/larri -- claw --config examples/comfyui/job.yml --dry-run  # plan one, spend nothing
 go test -race ./...                               # race detector
 go vet ./...
 gofmt -l .                                        # must print nothing

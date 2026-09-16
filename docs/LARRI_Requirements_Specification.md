@@ -499,6 +499,29 @@ that exist nowhere else and configuration that was changed on somebody's own com
 | FR-CLAW-07 | M | `done` | One command for every claw type, with type-specific settings in a job file rather than in flags — a generic command that grows a flag per application is not generic. Relative paths in a job file resolve against the file, so a job that works in one working directory works in every other. A flag that cannot apply to the chosen site is refused rather than ignored. |
 | FR-CLAW-08 | S | `done` | Authenticate a browser-opened claw with a credential a browser will actually send, since neither a navigation nor a WebSocket handshake carries an `Authorization` header, and count only real work toward the idle clock — an open tab polls indefinitely. Hold the clock open while the claw has outstanding work, because a job submitted in one short call and computed for minutes is indistinguishable from an abandoned rig to a timer counting requests. |
 
+### 7.14 ComfyUI — The First Claw (FR-COMFY)
+
+ComfyUI is the first claw and the one the layer above was extracted from. It is *remote*: it
+runs on the rented box, serves its own HTTP API and its own web frontend, and what it renders
+exists nowhere else until it is collected.
+
+Everything generic about it is FR-CLAW. What is left here is what is true of ComfyUI in
+particular, and most of it was learned by paying for it. The behaviour below has been
+exercised on a rented RTX 4090, through the command that preceded the claw layer; it has not
+yet been re-run end to end through `larri claw`, which is why these rows read `done` rather
+than `live`.
+
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-COMFY-01 | M | `done` | Run ComfyUI on the rented host and publish its own web frontend at the fixed local port (P3), so the operator opens a browser rather than configuring a client. Nothing may issue a completion against it: it serves its own API and not `/v1`, and says so when asked. |
+| FR-COMFY-02 | M | `done` | Derive hardware from the **workflow itself** — the models it loads, their measured sizes, and the latent area it renders — rather than from an operator-supplied GPU class. A workflow is a complete statement of what it needs; asking the operator to restate it in hardware terms invites them to get it wrong at their own expense. The VRAM floor is per-GPU rather than a total, because a graph executes on one device. |
+| FR-COMFY-03 | M | `done` | Resolve every model a graph names to a concrete repository and **measure it before the create call**. An unresolvable model, a moved repository, or a token that cannot read a gated one are each a reason not to rent, and each costs nothing to discover locally (§4a). |
+| FR-COMFY-04 | M | `done` | Refuse model containers that deserialise as code — `.ckpt`, `.pt`, `.pth`, `.bin` — requiring `safetensors` unless the operator opts in explicitly. Torch executes a pickle on load, on the host holding the operator's Hugging Face token. The opt-in exists because ComfyUI's ecosystem publishes some models no other way, and it is disclosed at bring-up when used. |
+| FR-COMFY-05 | M | `done` | Acquire models **on the rented host**, never relayed through the operator's link, with progress driven by bytes on disk, sizes verified before a file is given its name, and an already-present file skipped. The wait ends on *silence*, not on a clock (FR-RT-15). |
+| FR-COMFY-06 | M | `done` | Declare readiness only after the operator's **own** graph has produced a file, and refuse a server that found no CUDA device. ComfyUI starts perfectly well with no usable GPU and falls back to the CPU, where a render takes minutes per step — a rig paying GPU rates for nothing, which looks entirely healthy from outside. Where the graph's serialisation cannot be submitted, say so explicitly rather than let READY mean two different things. |
+| FR-COMFY-07 | M | `done` | Pin the container image and the ComfyUI revision **as a pair**, and prove the pairing before anything large is downloaded. The image supplies torch and the revision supplies the nodes that call it; a combination nobody has run fails at `import nodes`, which a rig discovers after 6.5 GB and twenty minutes of billing. Classify that failure as a fault of the configuration rather than of the host, so it is not retried on three more machines. |
+| FR-COMFY-08 | S | `part` | Pin the image by content digest and derive the hardware floors from that exact build, refreshed together (FR-RT-16). |
+
 ---
 
 ## 8. Non-Functional Requirements
