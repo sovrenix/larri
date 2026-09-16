@@ -248,6 +248,25 @@ func TestDecodeHandsTheDocumentToTheKind(t *testing.T) {
 	}
 }
 
+// A mistyped key in a job file is otherwise a setting that silently does not
+// apply, and this is the file that decides what hardware to rent.
+func TestAMistypedKeyIsRefusedRatherThanIgnored(t *testing.T) {
+	path := writeConfig(t, "job.yml", "type: demo\nwork: ./w.json\nalow_pickle: true\n")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var into struct {
+		Work        string `yaml:"work"`
+		AllowPickle bool   `yaml:"allow_pickle"`
+	}
+	if err := cfg.Decode(&into); err == nil {
+		t.Fatalf("a job file with alow_pickle decoded cleanly as %+v", into)
+	} else if !strings.Contains(err.Error(), "alow_pickle") {
+		t.Errorf("the error does not name the key: %v", err)
+	}
+}
+
 // A file saying one thing and a flag saying another means one of them is a
 // mistake. Guessing which would run the wrong application against somebody's
 // config.

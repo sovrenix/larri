@@ -4,7 +4,10 @@
 package claw
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -83,10 +86,38 @@ func (c *Config) Decode(into any) error {
 	if c == nil {
 		return fmt.Errorf("claw: no config")
 	}
-	if err := c.doc.Decode(into); err != nil {
+	// Through a Decoder rather than yaml.Node.Decode, because KnownFields is
+	// an option on the former and there is no equivalent on a node. The `type`
+	// key is dropped on the way so that a Kind's struct describes its own
+	// fields and nothing else.
+	raw, err := yaml.Marshal(withoutType(&c.doc))
+	if err != nil {
+		return fmt.Errorf("claw: config %s: %w", c.Path, err)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(into); err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("claw: config %s: %w", c.Path, err)
 	}
 	return nil
+}
+
+// withoutType copies the document's mapping without the `type` key, which
+// belongs to this layer rather than to the Kind decoding the rest.
+func withoutType(doc *yaml.Node) *yaml.Node {
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return doc
+	}
+	m := *doc.Content[0]
+	m.Content = nil
+	src := doc.Content[0].Content
+	for i := 0; i+1 < len(src); i += 2 {
+		if src[i].Value == "type" {
+			continue
+		}
+		m.Content = append(m.Content, src[i], src[i+1])
+	}
+	return &m
 }
 
 // Resolve turns a path from the config into one relative to the config file.
