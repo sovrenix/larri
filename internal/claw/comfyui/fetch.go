@@ -88,19 +88,19 @@ const curlConfig = "/root/.larri-comfy-curl"
 // of attack; it is the oldest one there is, and the fetch runs as root.
 func SafeName(name string) error {
 	if name == "" {
-		return errs.Newf(errs.ClassModelFailure, "comfy.SafeName", "empty model name")
+		return errs.Newf(errs.ClassModelFailure, "comfyui.SafeName", "empty model name")
 	}
 	if strings.HasPrefix(name, "/") || strings.HasPrefix(name, "\\") {
-		return errs.Newf(errs.ClassModelFailure, "comfy.SafeName",
+		return errs.Newf(errs.ClassModelFailure, "comfyui.SafeName",
 			"absolute model path %q", name)
 	}
 	if strings.Contains(name, "\x00") {
-		return errs.Newf(errs.ClassModelFailure, "comfy.SafeName",
+		return errs.Newf(errs.ClassModelFailure, "comfyui.SafeName",
 			"model name contains a null byte")
 	}
 	for _, seg := range strings.FieldsFunc(name, func(r rune) bool { return r == '/' || r == '\\' }) {
 		if seg == ".." {
-			return errs.Newf(errs.ClassModelFailure, "comfy.SafeName",
+			return errs.Newf(errs.ClassModelFailure, "comfyui.SafeName",
 				"model path escapes the models directory: %q", name)
 		}
 	}
@@ -134,7 +134,7 @@ func WriteCredential(ctx context.Context, sess runtime.Session, token secret.Sec
 		shellQuote("header = \"Authorization: Bearer "+token.Reveal()+"\""),
 		shellQuote(curlConfig))
 	if _, err := sess.Run(ctx, cmd); err != nil {
-		return errs.Newf(errs.ClassHostFailure, "comfy.WriteCredential",
+		return errs.Newf(errs.ClassHostFailure, "comfyui.WriteCredential",
 			"write the fetch credential: %v", err)
 	}
 	return nil
@@ -222,7 +222,7 @@ func (d Download) Start(ctx context.Context, sess runtime.Session, useCredential
 	write := fmt.Sprintf("cat > %s <<'LARRI_FETCH_EOF'\n%s\nLARRI_FETCH_EOF\nchmod 700 %s",
 		shellQuote(scriptPath), script, shellQuote(scriptPath))
 	if _, err := sess.Run(ctx, write); err != nil {
-		return errs.Newf(errs.ClassHostFailure, "comfy.Download",
+		return errs.Newf(errs.ClassHostFailure, "comfyui.Download",
 			"write the fetch script: %v", err)
 	}
 	// setsid and </dev/null for the same reason the server launch needs them:
@@ -234,11 +234,11 @@ func (d Download) Start(ctx context.Context, sess runtime.Session, useCredential
 		shellQuote(scriptPath), shellQuote(logPath))
 	out, err := sess.Run(ctx, launch)
 	if err != nil {
-		return errs.Newf(errs.ClassHostFailure, "comfy.Download",
+		return errs.Newf(errs.ClassHostFailure, "comfyui.Download",
 			"start the fetch: %v", err)
 	}
 	if !strings.Contains(string(out), "STARTED") {
-		return errs.Newf(errs.ClassHostFailure, "comfy.Download",
+		return errs.Newf(errs.ClassHostFailure, "comfyui.Download",
 			"start the fetch: no confirmation from the host")
 	}
 	return nil
@@ -264,10 +264,10 @@ func (d Download) Done(ctx context.Context, sess runtime.Session) (bool, error) 
 	text := string(tail)
 	switch {
 	case strings.Contains(text, "FAILED "):
-		return false, errs.Newf(errs.ClassHostFailure, "comfy.Download",
+		return false, errs.Newf(errs.ClassHostFailure, "comfyui.Download",
 			"model fetch failed: %s", lastMatching(text, "FAILED "))
 	case strings.Contains(text, "SHORT "):
-		return false, errs.Newf(errs.ClassHostFailure, "comfy.Download",
+		return false, errs.Newf(errs.ClassHostFailure, "comfyui.Download",
 			"model fetch truncated: %s", lastMatching(text, "SHORT "))
 	}
 	return false, nil
@@ -286,7 +286,7 @@ func (d Download) BytesOnDisk(ctx context.Context, sess runtime.Session) (uint64
 	}
 	var n uint64
 	if _, err := fmt.Sscan(strings.TrimSpace(string(out)), &n); err != nil {
-		return 0, errs.Newf(errs.ClassHostFailure, "comfy.Download",
+		return 0, errs.Newf(errs.ClassHostFailure, "comfyui.Download",
 			"unreadable disk usage")
 	}
 	return n, nil

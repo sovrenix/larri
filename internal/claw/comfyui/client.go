@@ -181,11 +181,11 @@ func (c *Client) Stats(ctx context.Context) (*SystemStats, error) {
 		return nil, err
 	}
 	if code != http.StatusOK {
-		return nil, errs.Newf(errs.ClassHostFailure, "comfy.Stats", "http %d", code)
+		return nil, errs.Newf(errs.ClassHostFailure, "comfyui.Stats", "http %d", code)
 	}
 	var s SystemStats
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return nil, errs.Newf(errs.ClassHostFailure, "comfy.Stats", "decode: %v", err)
+		return nil, errs.Newf(errs.ClassHostFailure, "comfyui.Stats", "decode: %v", err)
 	}
 	return &s, nil
 }
@@ -209,19 +209,19 @@ func (c *Client) Submit(ctx context.Context, graph json.RawMessage, clientID str
 		return nil, err
 	}
 	if code != http.StatusOK {
-		return nil, errs.Newf(errs.ClassModelFailure, "comfy.Submit",
+		return nil, errs.Newf(errs.ClassModelFailure, "comfyui.Submit",
 			"graph rejected: http %d: %s", code, firstLine(raw))
 	}
 	var res PromptResult
 	if err := json.Unmarshal(raw, &res); err != nil {
-		return nil, errs.Newf(errs.ClassHostFailure, "comfy.Submit", "decode: %v", err)
+		return nil, errs.Newf(errs.ClassHostFailure, "comfyui.Submit", "decode: %v", err)
 	}
 	if res.PromptID == "" {
-		return nil, errs.Newf(errs.ClassModelFailure, "comfy.Submit",
+		return nil, errs.Newf(errs.ClassModelFailure, "comfyui.Submit",
 			"no prompt id in the reply: %s", firstLine(raw))
 	}
 	if len(res.NodeErrors) > 0 {
-		return nil, errs.Newf(errs.ClassModelFailure, "comfy.Submit",
+		return nil, errs.Newf(errs.ClassModelFailure, "comfyui.Submit",
 			"graph has node errors: %s", firstLine(raw))
 	}
 	return &res, nil
@@ -235,11 +235,11 @@ func (c *Client) History(ctx context.Context, promptID string) (*HistoryEntry, b
 		return nil, false, err
 	}
 	if code != http.StatusOK {
-		return nil, false, errs.Newf(errs.ClassHostFailure, "comfy.History", "http %d", code)
+		return nil, false, errs.Newf(errs.ClassHostFailure, "comfyui.History", "http %d", code)
 	}
 	var all map[string]HistoryEntry
 	if err := json.Unmarshal(raw, &all); err != nil {
-		return nil, false, errs.Newf(errs.ClassHostFailure, "comfy.History", "decode: %v", err)
+		return nil, false, errs.Newf(errs.ClassHostFailure, "comfyui.History", "decode: %v", err)
 	}
 	e, ok := all[promptID]
 	if !ok {
@@ -263,11 +263,11 @@ func (c *Client) Fetch(ctx context.Context, f OutputFile) ([]byte, error) {
 		return nil, err
 	}
 	if code != http.StatusOK {
-		return nil, errs.Newf(errs.ClassHostFailure, "comfy.Fetch",
+		return nil, errs.Newf(errs.ClassHostFailure, "comfyui.Fetch",
 			"%s: http %d", f.Filename, code)
 	}
 	if len(raw) == 0 {
-		return nil, errs.Newf(errs.ClassHostFailure, "comfy.Fetch",
+		return nil, errs.Newf(errs.ClassHostFailure, "comfyui.Fetch",
 			"%s: empty response", f.Filename)
 	}
 	return raw, nil
@@ -288,7 +288,7 @@ func (c *Client) Await(ctx context.Context, promptID string, poll time.Duration)
 		entry, known, err := c.History(ctx, promptID)
 		if err == nil && known && entry.Status.Completed {
 			if entry.Failed() {
-				return entry, errs.Newf(errs.ClassModelFailure, "comfy.Await",
+				return entry, errs.Newf(errs.ClassModelFailure, "comfyui.Await",
 					"graph finished as %s", entry.Status.StatusStr)
 			}
 			return entry, nil
@@ -308,7 +308,7 @@ func (c *Client) Reachable(ctx context.Context) error {
 		return err
 	}
 	if code != http.StatusOK {
-		return errs.Newf(errs.ClassHostFailure, "comfy.Reachable", "http %d", code)
+		return errs.Newf(errs.ClassHostFailure, "comfyui.Reachable", "http %d", code)
 	}
 	return nil
 }

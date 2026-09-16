@@ -310,7 +310,7 @@ func (r *Runtime) Bootstrap(ctx context.Context, sess runtime.Session,
 
 	out, err := sess.Run(ctx, findPythonCmd())
 	if err != nil && len(out) == 0 {
-		return errs.Newf(errs.ClassHostFailure, "comfy.Bootstrap",
+		return errs.Newf(errs.ClassHostFailure, "comfyui.Bootstrap",
 			"could not inspect the host: %v", err)
 	}
 	python, saw := parsePython(string(out))
@@ -318,7 +318,7 @@ func (r *Runtime) Bootstrap(ctx context.Context, sess runtime.Session,
 		// The image is what the operator asked the provider for, so a missing
 		// torch is a configuration problem rather than a bad machine: the next
 		// host runs the same image and fails identically (FR-PROV-05).
-		return errs.Newf(errs.ClassModelFailure, "comfy.Bootstrap",
+		return errs.Newf(errs.ClassModelFailure, "comfyui.Bootstrap",
 			"no python with torch in image %s%s", r.Image(spec, plan), saw)
 	}
 	r.python = python
@@ -376,7 +376,7 @@ func (r *Runtime) install(ctx context.Context, sess runtime.Session,
 
 	out, err := sess.Run(ctx, cmd)
 	if err != nil || !strings.Contains(string(out), "INSTALLED") {
-		return errs.Newf(errs.ClassHostFailure, "comfy.Bootstrap",
+		return errs.Newf(errs.ClassHostFailure, "comfyui.Bootstrap",
 			"install comfyui: %v: %s", err, lastLine(string(out)))
 	}
 	send(runtime.Progress{Phase: runtime.PhaseImagePull, Percent: 100,
@@ -432,7 +432,7 @@ func (r *Runtime) smokeTest(ctx context.Context, sess runtime.Session,
 	// A model-class failure, not a host-class one: the next machine runs the
 	// same image and the same ref and fails identically (FR-PROV-05). The
 	// traceback goes in the error because the host is about to be destroyed.
-	return errs.Newf(errs.ClassModelFailure, "comfy.Bootstrap",
+	return errs.Newf(errs.ClassModelFailure, "comfyui.Bootstrap",
 		"comfyui %s does not load under this image: %s",
 		r.comfyRef(), pythonFault(text, err))
 }
@@ -505,7 +505,7 @@ func (r *Runtime) fetchModels(ctx context.Context, sess runtime.Session,
 	send func(runtime.Progress)) error {
 
 	if r.Bundle == nil || len(r.Bundle.Items) == 0 {
-		return errs.Newf(errs.ClassModelFailure, "comfy.Bootstrap",
+		return errs.Newf(errs.ClassModelFailure, "comfyui.Bootstrap",
 			"no models resolved for this graph")
 	}
 
@@ -513,7 +513,7 @@ func (r *Runtime) fetchModels(ctx context.Context, sess runtime.Session,
 	for _, it := range r.Bundle.Items {
 		url, ok := r.URLs[it.Asset.Name]
 		if !ok || url == "" {
-			return errs.Newf(errs.ClassModelFailure, "comfy.Bootstrap",
+			return errs.Newf(errs.ClassModelFailure, "comfyui.Bootstrap",
 				"no download url for %s", it.Asset.Name)
 		}
 		dl.Items = append(dl.Items, Item{
@@ -583,7 +583,7 @@ func (r *Runtime) fetchModels(ctx context.Context, sess runtime.Session,
 		// du is not evidence of a stalled download, so the clock only advances
 		// on a reading that came back.
 		if gerr == nil && time.Since(lastGrew) > stall {
-			return errs.Newf(errs.ClassHostFailure, "comfy.Bootstrap",
+			return errs.Newf(errs.ClassHostFailure, "comfyui.Bootstrap",
 				"model fetch stalled: no bytes in %s at %s of %s",
 				time.Since(lastGrew).Round(time.Second),
 				sizing.HumanBytes(last), sizing.HumanBytes(total))
@@ -594,7 +594,7 @@ func (r *Runtime) fetchModels(ctx context.Context, sess runtime.Session,
 		case <-time.After(poll):
 		}
 	}
-	return errs.Newf(errs.ClassHostFailure, "comfy.Bootstrap",
+	return errs.Newf(errs.ClassHostFailure, "comfyui.Bootstrap",
 		"model fetch incomplete after %s at %s of %s",
 		cap, sizing.HumanBytes(last), sizing.HumanBytes(total))
 }
@@ -639,7 +639,7 @@ func (r *Runtime) Launch(ctx context.Context, sess runtime.Session,
 	// only reason to want one is the reason the rule exists — and on ComfyUI
 	// it would publish an unauthenticated render farm on a shared public IP.
 	if !ep.Valid() {
-		return runtime.Endpoint{}, errs.Newf(errs.ClassModelFailure, "comfy.Launch",
+		return runtime.Endpoint{}, errs.Newf(errs.ClassModelFailure, "comfyui.Launch",
 			"invalid bind address %s: loopback only", ep.Host)
 	}
 
@@ -700,7 +700,7 @@ func (r *Runtime) startServer(ctx context.Context, sess runtime.Session, python 
 	write := fmt.Sprintf("cat > %s <<'LARRI_LAUNCH_EOF'\n%s\nLARRI_LAUNCH_EOF\nchmod 700 %s",
 		shellQuote(launchScriptPath), r.launchScript(python), shellQuote(launchScriptPath))
 	if _, err := sess.Run(ctx, write); err != nil {
-		return errs.Newf(errs.ClassHostFailure, "comfy.Launch",
+		return errs.Newf(errs.ClassHostFailure, "comfyui.Launch",
 			"write the start script: %v", err)
 	}
 
@@ -708,14 +708,14 @@ func (r *Runtime) startServer(ctx context.Context, sess runtime.Session, python 
 		shellQuote(launchScriptPath), shellQuote(r.LogPath()))
 	out, err := sess.Run(ctx, launch)
 	if err != nil {
-		return errs.Newf(errs.ClassHostFailure, "comfy.Launch",
+		return errs.Newf(errs.ClassHostFailure, "comfyui.Launch",
 			"start server: %v", err)
 	}
 	// The marker is what proves the shell got far enough to fork and return.
 	// Without it a command that produced nothing looks exactly like one that
 	// worked, which is how a hang was mistaken for a launch.
 	if !strings.Contains(string(out), "LAUNCHED") {
-		return errs.Newf(errs.ClassHostFailure, "comfy.Launch",
+		return errs.Newf(errs.ClassHostFailure, "comfyui.Launch",
 			"start server: no confirmation from the host: %s", lastLine(string(out)))
 	}
 	return nil
@@ -749,7 +749,7 @@ func (r *Runtime) Ready(ctx context.Context, ep runtime.Endpoint, spec core.Mode
 		// Not a transient condition and not worth waiting out: ComfyUI has
 		// already chosen its device. A CPU render on rented GPU hardware is
 		// the most expensive way to produce an image there is.
-		return errs.Newf(errs.ClassHostFailure, "comfy.Ready",
+		return errs.Newf(errs.ClassHostFailure, "comfyui.Ready",
 			"comfyui found no cuda device")
 	}
 	if r.Graph == nil || !r.Graph.Format.Executable() {
@@ -770,7 +770,7 @@ func (r *Runtime) Ready(ctx context.Context, ep runtime.Endpoint, spec core.Mode
 		return err
 	}
 	if len(entry.Files()) == 0 {
-		return errs.Newf(errs.ClassModelFailure, "comfy.Ready",
+		return errs.Newf(errs.ClassModelFailure, "comfyui.Ready",
 			"graph completed and produced no output")
 	}
 	return nil

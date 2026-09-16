@@ -99,7 +99,7 @@ func List(ctx context.Context, sess runtime.Session, dir string) ([]Artifact, er
 		shellQuote(dir))
 	out, err := sess.Run(ctx, cmd)
 	if err != nil && len(out) == 0 {
-		return nil, errs.Newf(errs.ClassHostFailure, "comfy.List",
+		return nil, errs.Newf(errs.ClassHostFailure, "comfyui.List",
 			"list outputs: %v", err)
 	}
 	var arts []Artifact
@@ -172,7 +172,7 @@ func Sync(ctx context.Context, sess runtime.Session, localDir string, opt SyncOp
 		return nil, err
 	}
 	if err := os.MkdirAll(localDir, 0o700); err != nil {
-		return nil, errs.Newf(errs.ClassWiring, "comfy.Sync",
+		return nil, errs.Newf(errs.ClassWiring, "comfyui.Sync",
 			"create %s: %v", localDir, err)
 	}
 	res := &SyncResult{Failed: map[string]string{}, Dir: localDir}
