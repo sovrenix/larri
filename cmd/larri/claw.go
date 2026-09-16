@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"go.sovrenix.com/larri/internal/claw"
+	_ "go.sovrenix.com/larri/internal/claw/comfyui"
 	"go.sovrenix.com/larri/internal/config"
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
