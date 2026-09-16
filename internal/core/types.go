@@ -294,6 +294,25 @@ const (
 	RuntimeComfyUI RuntimeKind = "comfyui"
 )
 
+// ServesInference reports whether this kind is an inference engine.
+//
+// The negative is the load-bearing case: anything else is an application
+// payload, and an application's results live on the rented host and nowhere
+// else. A caller about to destroy one is about to destroy the only copy, which
+// is not true of an engine — nothing of the operator's lives on that machine.
+//
+// Asked this way round so a claw type added later is protected by default. The
+// alternative — listing the application kinds — would leave each new one
+// unguarded until somebody remembered to add it, which is the failure mode this
+// question exists to prevent.
+func (k RuntimeKind) ServesInference() bool {
+	switch k {
+	case RuntimeVLLM, RuntimeLlamaCpp, RuntimeOllama:
+		return true
+	}
+	return false
+}
+
 // Transition is one entry in a rig's history and in the journal.
 type Transition struct {
 	At       time.Time      `json:"ts"`
