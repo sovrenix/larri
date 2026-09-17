@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -23,6 +24,34 @@ import (
 	"go.sovrenix.com/larri/internal/secret"
 	"go.sovrenix.com/larri/internal/sizing"
 )
+
+// reissueSessionLinks prints a fresh browser link whenever the operator asks.
+//
+// The link is genuinely one-time, so opening the rig in a second browser needs
+// a second link — and without this there was no way to get one short of tearing
+// the rig down and renting another, which is the expensive way to open Firefox.
+//
+// Enter is the whole interface. The session already holds the terminal, and
+// renderCLI only reads stdin inside a confirmation prompt, which is over by the
+// time this starts. A stdin that is not a terminal — piped, or /dev/null in a
+// script — reads EOF and this returns, which is the behaviour those callers
+// want anyway.
+func reissueSessionLinks(ctx context.Context, sess *daemon.ClawSession) {
+	sc := bufio.NewScanner(os.Stdin)
+	for sc.Scan() {
+		if ctx.Err() != nil {
+			return
+		}
+		link := sess.NewSessionURL()
+		if link == "" {
+			return
+		}
+		// Said plainly, because issuing one silently retires the last: an
+		// operator who asks twice and pastes the first link would otherwise
+		// find it rejected with nothing to explain why.
+		fmt.Printf("\n    a fresh link; the previous one is now void:\n      %s\n\n", link)
+	}
+}
 
 // cmdClaw rents hardware for an application and holds it open.
 //
@@ -292,6 +321,8 @@ func cmdClaw(ctx context.Context, args []string) error {
 		rig.Offer.Provider, rig.Offer.GPUModel, rig.Offer.PriceHr)
 	if sess.URL != "" {
 		fmt.Printf("\n    open this once to log the browser in:\n      %s\n", sess.URL)
+		fmt.Printf("    it is spent when used — press Enter here for another\n")
+		go reissueSessionLinks(ctx, sess)
 	} else {
 		fmt.Printf("    endpoint %s\n", sess.Endpoint())
 	}

@@ -136,6 +136,16 @@ type Proxy struct {
 	// written, so there is no file to inspect.
 	seen map[string]bool
 
+	// exchangeToken is the one-time secret in the link an operator opens. It
+	// is cleared the moment it is traded for a cookie, which is what makes
+	// the link one-time rather than merely named that.
+	//
+	// Distinct from browserToken, and it has to be: while the two were the
+	// same value the cookie could not be issued without leaving the URL
+	// credential live, so a printed link stayed valid for the rig's whole
+	// life. These are pasted into terminals, screen shares and issue threads.
+	exchangeToken secret.Secret
+
 	// browserToken is the cookie-shaped credential for a surface the
 	// operator opens rather than configures. Empty disables that path
 	// entirely, which is the default: a /v1 endpoint has no business

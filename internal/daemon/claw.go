@@ -49,8 +49,11 @@ type ClawSession struct {
 	Plan *claw.Plan
 
 	// URL is the one-time link that logs a browser in, for a claw that is
-	// opened rather than configured. It carries the session token, so it is
-	// printed once and never persisted.
+	// opened rather than configured. It carries an exchange token that is
+	// spent on first use, so it is printed once, never persisted, and worth
+	// nothing to anyone who reads it out of a scrollback afterwards.
+	//
+	// Ask NewSessionURL for another when a second browser needs one.
 	URL string
 
 	// OutputDir is where a remote claw's results are saved locally.
@@ -169,7 +172,7 @@ func (o *Orchestrator) attachRemote(s *ClawSession) error {
 			return err
 		}
 		proxy.EnableBrowserSession(token)
-		s.URL = proxy.SessionURL()
+		s.URL = proxy.NewSessionURL()
 
 		// Only work resets the idle clock. Without this an open tab would
 		// hold a GPU overnight on the strength of a reconnecting socket.
@@ -379,6 +382,18 @@ func (s *ClawSession) Close() error {
 		return s.Live.Close()
 	}
 	return nil
+}
+
+// NewSessionURL mints a fresh link for a browser-opened claw.
+//
+// Needed because the link is genuinely one-time now: opening the rig in a
+// second browser needs a second link, and issuing one invalidates any earlier
+// link nobody used. Empty for a claw that is configured rather than opened.
+func (s *ClawSession) NewSessionURL() string {
+	if s == nil || s.Live == nil || s.Live.proxy == nil {
+		return ""
+	}
+	return s.Live.proxy.NewSessionURL()
 }
 
 // Endpoint is the local address the session is published on.

@@ -76,7 +76,7 @@ func TestBrowserSessionExchangesATokenForACookie(t *testing.T) {
 	}
 
 	// The one-time URL sets the cookie and redirects the token out of the bar.
-	resp, err = cl.Get(p.SessionURL())
+	resp, err = cl.Get(p.NewSessionURL())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,101 @@ func TestCookieAuthIsOffUnlessEnabled(t *testing.T) {
 		t.Errorf("a cookie authenticated against a proxy with no browser session: %d",
 			resp.StatusCode)
 	}
-	if p.SessionURL() != "" {
+	if p.NewSessionURL() != "" {
 		t.Error("a session url exists without a browser session")
+	}
+}
+
+// The link is one-time in fact and not only in name.
+//
+// It was named that in four places and was nothing of the sort: the URL token
+// and the cookie were one value, so the exchange could not clear it without
+// breaking cookie auth, and a printed link stayed live for the whole rig and
+// minted a fresh cookie on every replay. These links are pasted into
+// terminals, screen shares and issue threads — the redirect kept them out of
+// the address bar and nothing kept them out of anywhere else.
+func TestASpentSessionLinkCannotBeReplayed(t *testing.T) {
+	p, cl, _ := browserProxy(t)
+	p.EnableBrowserSession(secret.New("cookie-secret"))
+
+	link := p.NewSessionURL()
+	resp, err := cl.Get(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("first use got %d, want 303", resp.StatusCode)
+	}
+
+	// The same link again, which is what an attacker reading a scrollback has.
+	again, err := cl.Get(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again.Body.Close()
+	if again.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("a spent link was accepted again with %d: it is a reusable "+
+			"bearer credential, not a one-time link", again.StatusCode)
+	}
+	for _, c := range again.Cookies() {
+		if c.Name == SessionCookie {
+			t.Error("a replayed link minted another cookie")
+		}
+	}
+}
+
+// The URL token and the cookie must be different secrets, which is what makes
+// spending one possible without revoking the other.
+func TestTheLinkTokenIsNotTheCookie(t *testing.T) {
+	p, cl, _ := browserProxy(t)
+	cookieSecret := "cookie-secret"
+	p.EnableBrowserSession(secret.New(cookieSecret))
+
+	link := p.NewSessionURL()
+	if strings.Contains(link, cookieSecret) {
+		t.Fatalf("the link carries the cookie secret: %s", link)
+	}
+	resp, err := cl.Get(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	for _, c := range resp.Cookies() {
+		if c.Name == SessionCookie && c.Value == cookieSecret {
+			return // the cookie is its own secret, and the link was another
+		}
+	}
+	t.Error("the exchange did not issue the cookie secret")
+}
+
+// A second browser needs a second link, and issuing one must retire whatever
+// was outstanding — so at most one live token exists at a time.
+func TestReissuingRetiresTheUnusedLink(t *testing.T) {
+	p, cl, _ := browserProxy(t)
+	p.EnableBrowserSession(secret.New("cookie-secret"))
+
+	first := p.NewSessionURL()
+	second := p.NewSessionURL()
+	if first == second {
+		t.Fatal("reissuing returned the same link, so nothing was minted")
+	}
+
+	stale, err := cl.Get(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.Body.Close()
+	if stale.StatusCode != http.StatusUnauthorized {
+		t.Errorf("the superseded link still works (%d): two live tokens exist",
+			stale.StatusCode)
+	}
+	fresh, err := cl.Get(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh.Body.Close()
+	if fresh.StatusCode != http.StatusSeeOther {
+		t.Errorf("the freshly issued link got %d, want 303", fresh.StatusCode)
 	}
 }

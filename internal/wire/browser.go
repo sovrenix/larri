@@ -15,7 +15,7 @@ import (
 // SessionCookie is the name of the browser-facing credential.
 const SessionCookie = "larri_session"
 
-// SessionPath is where a browser exchanges a one-time token for that cookie.
+// SessionPath is where a browser spends a one-time token for that cookie.
 const SessionPath = "/__larri/session"
 
 // EnableBrowserSession lets a browser authenticate to this proxy.
@@ -28,11 +28,18 @@ const SessionPath = "/__larri/session"
 // and neither can be made to — so a surface an operator *opens* rather than
 // *configures* needs a credential shaped like a cookie.
 //
-// The exchange is a one-time URL: LARRI prints a link carrying the token, the
-// browser follows it once, the token is traded for an HttpOnly cookie and the
-// URL is redirected away so the token does not linger in history or in a
-// Referer. The cookie is the same secret, moved somewhere a browser will
-// actually send it.
+// The exchange is a one-time URL: LARRI prints a link carrying an exchange
+// token, the browser follows it once, the token is traded for an HttpOnly
+// cookie and then **cleared**, and the URL is redirected away so nothing
+// lingers in history or in a Referer.
+//
+// The two secrets are separate, and an earlier version's were not. Sharing one
+// value meant the cookie could not be issued without leaving the URL
+// credential live, so a link described everywhere as one-time actually worked
+// for the rig's whole life and minted a fresh cookie every time it was
+// replayed. These links are pasted into terminals, screen shares and issue
+// threads; the redirect kept them out of the address bar and nothing kept them
+// out of anywhere else.
 //
 // This does not widen what can reach the rig. It narrows it: before this, a
 // browser-facing workload would have needed the listener opened to
@@ -50,32 +57,55 @@ func (p *Proxy) browserSessionEnabled() bool {
 	return !p.browserToken.Empty()
 }
 
-// SessionURL is the one-time link an operator opens.
-func (p *Proxy) SessionURL() string {
-	p.mu.RLock()
-	tok := p.browserToken
-	p.mu.RUnlock()
-	if tok.Empty() {
+// NewSessionURL mints a fresh one-time link and returns it.
+//
+// Minting rather than reading, because the previous one is gone: a link is
+// spent when it is used, so an operator opening the rig in a second browser
+// needs a second link. Issuing one invalidates any earlier link that has not
+// been used, which is the property worth having — at most one live token
+// exists at a time, and it is the one just printed.
+//
+// Empty when no browser session is enabled, which is every claw an operator
+// configures rather than opens.
+func (p *Proxy) NewSessionURL() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.browserToken.Empty() {
 		return ""
 	}
+	tok, err := secret.Generate(32)
+	if err != nil {
+		// Nothing to fall back to: a link carrying a predictable token would
+		// be worse than no link, and the operator can still reach the rig by
+		// asking for another.
+		return ""
+	}
+	p.exchangeToken = tok
 	return "http://127.0.0.1:" + itoa(p.LocalPort()) + SessionPath +
 		"?t=" + url.QueryEscape(tok.Reveal())
 }
 
-// serveSession trades the one-time token for a cookie.
+// serveSession trades the one-time token for a cookie and spends the token.
 func (p *Proxy) serveSession(w http.ResponseWriter, r *http.Request) {
-	p.mu.RLock()
-	tok := p.browserToken
-	p.mu.RUnlock()
-
 	presented := r.URL.Query().Get("t")
-	if tok.Empty() || presented == "" || !secret.New(presented).Equal(tok) {
+
+	p.mu.Lock()
+	exch, cookie := p.exchangeToken, p.browserToken
+	ok := !exch.Empty() && presented != "" && secret.New(presented).Equal(exch)
+	if ok {
+		// Spent, under the same lock that read it, so two requests racing the
+		// same link cannot both be served.
+		p.exchangeToken = secret.Secret{}
+	}
+	p.mu.Unlock()
+
+	if !ok {
 		http.Error(w, "wire: missing or unknown session token", http.StatusUnauthorized)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:  SessionCookie,
-		Value: tok.Reveal(),
+		Value: cookie.Reveal(),
 		Path:  "/",
 		// HttpOnly so script in the proxied page cannot read the credential
 		// back out. The page is served from a host with root (§15.4), so its
