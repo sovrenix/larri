@@ -191,6 +191,21 @@ func cmdClaw(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The credential local clients authenticate with, and the one thing about
+	// this session that must outlive it: a client is configured against it
+	// once, so a fresh one per rig would invalidate every client's
+	// configuration on every teardown.
+	clientKey, ckSrc, ckErr := config.ResolveClientKey(os.Getenv)
+	if ckErr != nil {
+		// Not fatal: the session works, it simply will not be the same
+		// credential next time, and a guided client would have to be
+		// re-pasted. Said out loud rather than discovered later.
+		fmt.Printf("  ! client key  %s: %s\n",
+			config.ClientKeyEphemeral.Describe(), ckErr)
+	} else if kind.Site() == claw.SiteLocal {
+		fmt.Printf("  client key  %s\n", ckSrc.Describe())
+	}
+
 	sealer, err := config.LabelSealer(labelKey)
 	if err != nil {
 		return err
@@ -209,6 +224,7 @@ func cmdClaw(ctx context.Context, args []string) error {
 	o := &daemon.Orchestrator{
 		Store: st, Provider: prov,
 		LabelSealer: sealer,
+		ClientToken: clientKey,
 		Policy: rank.Policy{
 			ReliabilityFloor: *minRel,
 			OutlierFactor:    rank.DefaultPolicy().OutlierFactor,

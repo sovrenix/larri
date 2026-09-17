@@ -287,6 +287,18 @@ type Orchestrator struct {
 	// host and the provider.
 	LabelSealer core.Sealer
 
+	// ClientToken is the credential local clients authenticate to the proxy
+	// with, and it is **stable across rigs** by design (invariant 8): a client
+	// is configured against it once, so minting a fresh one per rig would
+	// silently invalidate every client's configuration on every teardown —
+	// the churn the fixed local port exists to prevent, arriving through the
+	// credential instead of the address.
+	//
+	// Empty generates a per-rig one, which is correct only where nothing
+	// outside the process is configured against it: tests, and `up` before
+	// any client is wired.
+	ClientToken secret.Secret
+
 	// LabelLimit is the provider's cap on marker length. Zero uses the
 	// conservative default.
 	LabelLimit int

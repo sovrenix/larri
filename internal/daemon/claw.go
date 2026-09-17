@@ -395,11 +395,14 @@ func (s *ClawSession) Endpoint() string {
 // same rig always presents the same key, which is what lets a value the
 // operator pasted once keep working for as long as that rig does.
 //
-// It is *not* yet stable across rigs, because the base token is minted per
-// rig, and for a guided client that is a real cost: the operator re-pastes
-// after every teardown, which is the churn invariant 3 exists to prevent. The
-// fix is to persist the base rather than to change this function, so this is
-// written to survive that change unaltered.
+// Stability follows the base, which config.ResolveClientKey persists, so a
+// value the operator pasted once keeps working across teardowns and instance
+// replacements. That is the property invariant 8 asks for and the reason this
+// derives rather than generates: the same client on the same machine always
+// presents the same key, and a different client never presents the same one.
+//
+// The rig token is the opposite and stays that way — ephemeral, one per rig,
+// never seen by a client. The proxy is the boundary (FR-SEC-22).
 func clientToken(base secret.Secret, name string) secret.Secret {
 	mac := hmac.New(sha256.New, []byte(base.Reveal()))
 	mac.Write([]byte(name))

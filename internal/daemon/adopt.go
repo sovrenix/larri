@@ -309,12 +309,20 @@ func (o *Orchestrator) attachTunnel(ctx context.Context, live *Live, rig *core.R
 		proxy.SetKeys(o.ClientKeys)
 	}
 	if o.needsRigKey() {
-		token, err := secret.Generate(32)
-		if err != nil {
-			cancel()
-			return err
+		// A stable token, where the caller has one, is the credential a
+		// client was configured against once (invariant 8); generating here
+		// would invalidate it on every teardown. Named for what it is, so
+		// the proxy's record does not report a stable key as a per-rig one.
+		token, name := o.ClientToken, "larri-client"
+		if token.Empty() {
+			name = "this-rig"
+			var err error
+			if token, err = secret.Generate(32); err != nil {
+				cancel()
+				return err
+			}
 		}
-		proxy.AddClient("this-rig", token)
+		proxy.AddClient(name, token)
 		live.ClientToken = token
 	}
 	rig.LocalPort = proxy.LocalPort()
