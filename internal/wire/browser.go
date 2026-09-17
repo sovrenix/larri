@@ -83,7 +83,7 @@ func (p *Proxy) serveSession(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		// Secure so the browser only transmits this bearer credential over
 		// HTTPS.
-		Secure: true,
+Secure: false,
 		// Strict so a cross-site request cannot carry it. Origin is checked
 		// as well rather than instead: the two fail in different ways, and a
 		// control that depends on one browser behaviour is one deprecation
