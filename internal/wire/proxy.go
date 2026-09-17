@@ -124,6 +124,18 @@ type Proxy struct {
 	clients  map[string]string // sha256 of a token -> client name
 	keys     KeySet
 
+	// seen records which wired clients have actually sent a request.
+	//
+	// This is what makes verification possible in every tier (FR-WIRE-14),
+	// and it is nearly free because the identity is already resolved to
+	// authenticate the request and was previously discarded. Configuration
+	// written correctly to an application that never re-read it is
+	// indistinguishable from configuration that was never written, and the
+	// operator finds out when their client fails rather than when LARRI does.
+	// For a guided client it is the *only* evidence there is: nothing was
+	// written, so there is no file to inspect.
+	seen map[string]bool
+
 	// browserToken is the cookie-shaped credential for a surface the
 	// operator opens rather than configures. Empty disables that path
 	// entirely, which is the default: a /v1 endpoint has no business
@@ -206,6 +218,46 @@ func hashToken(t string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// markSeen records that a wired client has reached the endpoint.
+func (p *Proxy) markSeen(client string) {
+	if client == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.seen == nil {
+		p.seen = make(map[string]bool)
+	}
+	p.seen[client] = true
+}
+
+// Seen reports whether a wired client has sent a request through the proxy.
+//
+// The answer is per rig rather than per session, because the proxy is what a
+// rig replacement holds constant: a client that reached the old instance has
+// demonstrably been configured, and demonstrating it again after a migration
+// would ask the operator to do something they already did.
+func (p *Proxy) Seen(client string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.seen[client]
+}
+
+// ProxyProber verifies wiring by asking the proxy whether the client showed up.
+//
+// The strongest verification available and the cheapest, which is an unusual
+// combination worth taking. Checking that a file was written proves LARRI can
+// write files; checking that the application it configures then authenticated
+// with that client's own credential proves the thing the operator actually
+// cares about. Per-client tokens (FR-SEC-23) are what make the attribution
+// possible at all.
+func ProxyProber(p *Proxy) Prober {
+	if p == nil {
+		return nil
+	}
+	return func(client string) (bool, error) { return p.Seen(client), nil }
+}
+
 // authenticate resolves a presented token to a client name.
 func (p *Proxy) authenticate(header string) (string, bool) {
 	tok := strings.TrimPrefix(header, "Bearer ")
@@ -285,7 +337,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "wire: missing or unknown API key", http.StatusUnauthorized)
 		return
 	}
-	_ = client
+	// Only the operator's own traffic counts as having reached the endpoint.
+	// LARRI's probes carry the same credential and would otherwise verify the
+	// wiring against itself, which is the same mistake as a health check that
+	// resets the idle clock it enforces.
+	if !isProbe {
+		p.markSeen(client)
+	}
 	if p.browserSessionEnabled() {
 		browserHeaders(w.Header())
 	}

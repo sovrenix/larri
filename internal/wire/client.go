@@ -89,6 +89,37 @@ type ClientWriter interface {
 // fails rather than when LARRI does.
 type Prober func(client string) (bool, error)
 
+// Guided is implemented by writers LARRI does not write configuration for.
+//
+// Tier B and C are the cases where editing somebody's application store or
+// live process state would be worse than not editing it, and the tier system
+// is only honest if the alternative is a real integration rather than a
+// shrug. That alternative is two values and a probe — so a guided writer has
+// to be able to say exactly what to paste, and Apply deliberately cannot say
+// it, because Apply never runs for these tiers.
+//
+// The values are the endpoint's, never the provider's (FR-WIRE-06): a guided
+// client is configured by hand, once, and an operator who pasted an ephemeral
+// host would have to redo it after every teardown.
+type Guided interface {
+	ClientWriter
+
+	// Instructions are the lines to show the operator, in order.
+	Instructions(ep Endpoint) []string
+}
+
+// InstructionsFor returns what a writer wants shown, or nothing.
+//
+// Asked of the writer rather than branched on the tier, so a tier B client
+// that drives its own API and still needs a manual step can say so.
+func InstructionsFor(w ClientWriter, ep Endpoint) []string {
+	g, ok := w.(Guided)
+	if !ok {
+		return nil
+	}
+	return g.Instructions(ep)
+}
+
 // Apply wires every detected client and returns what was changed.
 //
 // It never fails the rig. FR-PROV/§16 puts client configuration in its own

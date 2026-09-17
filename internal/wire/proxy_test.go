@@ -290,3 +290,54 @@ func TestStoredClientKeysAreAcceptedAndStripped(t *testing.T) {
 		t.Errorf("upstream saw %q; a client key must never reach the host", got)
 	}
 }
+
+// Verification in every tier (FR-WIRE-14) needs evidence that the application
+// reached the endpoint, and for a guided client there is no file to inspect
+// instead. The identity was already resolved to authenticate the request and
+// was being discarded.
+func TestTheProxyRecordsWhichClientsActuallyShowedUp(t *testing.T) {
+	up := newUpstream(t)
+	p, base := startProxy(t, up, "rig-key")
+	p.AddClient("subtitle-edit", secret.New("tok-se"))
+	p.AddClient("buzz", secret.New("tok-buzz"))
+
+	probe := ProxyProber(p)
+
+	for _, name := range []string{"subtitle-edit", "buzz"} {
+		if ok, _ := probe(name); ok {
+			t.Errorf("%s was reported as having arrived before it sent anything", name)
+		}
+	}
+
+	resp := post(t, base, "tok-se", nil)
+	resp.Body.Close()
+
+	if ok, _ := probe("subtitle-edit"); !ok {
+		t.Error("a client that sent a request was not recorded as having arrived")
+	}
+	if ok, _ := probe("buzz"); ok {
+		t.Error("a client that sent nothing was reported as having arrived")
+	}
+}
+
+// LARRI's own probes carry the client's credential, so counting them would
+// verify the wiring against itself — the same mistake as a health check that
+// resets the idle clock it enforces.
+func TestLARRIsOwnProbesDoNotVerifyTheWiring(t *testing.T) {
+	up := newUpstream(t)
+	p, base := startProxy(t, up, "rig-key")
+	p.AddClient("subtitle-edit", secret.New("tok-se"))
+
+	resp := post(t, base, "tok-se", map[string]string{ProbeHeader: "1"})
+	resp.Body.Close()
+
+	if ok, _ := ProxyProber(p)("subtitle-edit"); ok {
+		t.Error("a larri probe was accepted as the operator's client arriving")
+	}
+}
+
+func TestAProberForNoProxyIsNil(t *testing.T) {
+	if ProxyProber(nil) != nil {
+		t.Error("a nil proxy produced a prober that would claim something")
+	}
+}
