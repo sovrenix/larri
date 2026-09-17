@@ -776,6 +776,63 @@ Three ComfyUI-specific facts shape the rest:
   failure is classified as a fault of the configuration rather than of the host, which is
   what stops it being retried on three more machines.
 
+#### 6.8.5 Speech to Text, the First Local Claw (FR-WHISPER)
+
+`internal/claw/whisper` is the other half of §6.8.1. ComfyUI exercised the remote site — the
+application on the box, a browser at the local port, results collected before the destroy.
+This one exercises the local site: the server is on the box, the operator's application is
+not, and what happens either side of the rental is configuration rather than files.
+
+```
+internal/claw/whisper/     the Kind, the server, the audio client, the fetch
+internal/wire/clients/     the client writers (§10.2), shared by every local claw
+```
+
+Three things about it are worth stating because they are not obvious from the code.
+
+**OpenAI-compatible is not the chat contract.** The server answers `/v1/audio/transcriptions`
+with the same base path, the same bearer credential and the same client ecosystem as
+`/v1/chat/completions`, and answers no completion at all. So it declares
+`runtime.ProtocolOpenAIAudio`, and the two questions callers actually have — *is this chat*
+and *where is it published* — became separate methods on the protocol. They had been one
+comparison against `ProtocolOpenAI`, which answered the first and silently got the second
+wrong for any third protocol.
+
+**The download and the resident weights are different numbers.** CTranslate2 quantises when
+it loads rather than when the model is published, so `int8_float16` leaves the repository
+exactly as large and halves what occupies the card — and saves the weight difference rather
+than half the requirement, because the working set is computed in float16 either way. The
+disk floor comes from the first number and the VRAM floor from the second;
+`sizing.SpeechRequest` carries both for that reason, and sizing activations off the quantised
+figure is how an int8 rig gets a card too small.
+
+**Nothing about the image is assumed.** The module path, the console script and the
+environment variable names are facts about somebody else's container, and the ComfyUI claw
+paid three rentals for guessing that class of thing. Bootstrap asks the host how the server is
+exposed and carries what it found into the failure; a setting still wrong after that is caught
+by readiness asking `/v1/models` what actually loaded, rather than by a server quietly running
+a different model.
+
+##### The local site, concretely
+
+`Kind.Clients()` returns one `wire.ClientWriter` per application the job names, and the daemon
+runs §10.2 over them: detect, apply, record, persist, probe, and revert before the destroy.
+
+The writer that exists is **tier C by decision rather than by fallback**. A writer per
+application bets the integration on that application's configuration format, and every such
+bet has to be settled by *watching* the application rather than reading its documentation
+(FR-WIRE-13) — desktop GUIs that read settings at startup and write them back on exit clobber
+an edit made while they run, whatever the file format looks like. None of that needs settling
+before the endpoint is useful, so the operator pastes two values into whatever they already
+use and the probe says whether it worked.
+
+The probe is the part that makes this a real integration rather than a suggestion, and it is
+nearly free. Each wired client holds its own credential (FR-SEC-23), derived from the stable
+client token, so the proxy — which already resolves an identity to authenticate every
+request — can say whether *that* application arrived. Checking a file proves LARRI can write
+files; checking that the application authenticated with its own key proves what the operator
+cares about. LARRI's own probes are excluded, or the wiring would verify itself.
+
 ---
 
 ## 7. Sizing Engine

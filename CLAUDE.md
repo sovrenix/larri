@@ -11,12 +11,17 @@ the status column in the requirements spec, which is the source of truth and is 
 by `internal/lint`.
 
 Above that sits the **claw** layer (invariant 1), which rents the same lifecycle for
-applications that are not inference engines. **ComfyUI** is the first and only type compiled
-in, and it is **live**: `larri claw --config examples/comfyui/job.yml` rented an RTX 2000 Ada,
-installed ComfyUI, fetched 6.5 GB of SDXL on the host, rendered, collected the image and
-destroyed the instance for $0.0582. What is *not* live is the **local site** — no claw runs on
-the operator's machine yet, so nothing has reverted a real client's configuration, and that
-half is proven only against a fake.
+applications that are not inference engines. Two types are compiled in, one per site.
+
+**ComfyUI** is remote and **live**: `larri claw --config examples/comfyui/job.yml` rented an
+RTX 2000 Ada, installed ComfyUI, fetched 6.5 GB of SDXL on the host, rendered, collected the
+image and destroyed the instance for $0.0582. **Whisper** is local and `done`: speech to text
+on the rented box with the operator's own application wired to the fixed local port. Its plan
+runs against the live Hugging Face listing for nothing; no GPU has been rented through it.
+
+The gap worth knowing is that **no client writer writes a file yet**. The one that exists is
+tier C by decision rather than by fallback — it configures nothing, prints what to paste, and
+verifies by asking the proxy whether that client's own credential ever arrived.
 
 What is missing is the half an operator touches after the endpoint exists: client
 wiring, the browser surfaces, and observability. What is present is everything up to and

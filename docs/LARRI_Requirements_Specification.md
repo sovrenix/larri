@@ -320,17 +320,17 @@ client — the thing P3 exists to prevent.
 | FR-WIRE-01 | M | `live` | Expose the remote runtime at a **fixed local address** (`http://127.0.0.1:<port>/v1`) that is stable across rig replacement. |
 | FR-WIRE-02 | M | `live` | Support SSH local port-forwarding as the default transport, and direct provider host/port mapping as an alternative. |
 | FR-WIRE-03 | M | `plan` | Re-establish the tunnel automatically on transport failure without changing the local port or requiring client reconfiguration. |
-| FR-WIRE-04 | M | `plan` | Configure local clients (IDE and chat) to target the local endpoint, writing config idempotently and backing up any file before modification. |
-| FR-WIRE-05 | M | `plan` | Revert client configuration to its pre-`up` state on `down`, so a torn-down rig never leaves an IDE pointed at a dead endpoint. |
-| FR-WIRE-06 | M | `plan` | Never write the ephemeral provider host or port into client configuration. |
+| FR-WIRE-04 | M | `part` | Configure local clients (IDE and chat) to target the local endpoint, writing config idempotently and backing up any file before modification. |
+| FR-WIRE-05 | M | `part` | Revert client configuration to its pre-`up` state on `down`, so a torn-down rig never leaves an IDE pointed at a dead endpoint. |
+| FR-WIRE-06 | M | `done` | Never write the ephemeral provider host or port into client configuration. |
 | FR-WIRE-07 | S | `plan` | Support swapping the instance behind a live local port (migration, preemption recovery) with no client-visible change beyond a brief unavailability. |
 | FR-WIRE-08 | S | `live` | Require an API key on the local endpoint and refuse to bind to anything other than loopback unless explicitly overridden. |
 | FR-WIRE-09 | M | `part` | Route the fixed local port by **served-model name**, so that multiple rigs are reachable through one endpoint clients were configured against once. With a single rig this is a pass-through; the requirement exists so that adding a rig later adds a model entry rather than a reconfiguration. |
-| FR-WIRE-10 | M | `plan` | Declare a **writability tier** per client: (A) plain-text config, written idempotently with backup and byte-exact revert; (B) app-owned datastore or live process state, never written directly — use the application's own API or demote; (C) guided manual configuration, with the exact values presented. A writer that cannot promise byte-exact revert must not claim tier A. |
+| FR-WIRE-10 | M | `done` | Declare a **writability tier** per client: (A) plain-text config, written idempotently with backup and byte-exact revert; (B) app-owned datastore or live process state, never written directly — use the application's own API or demote; (C) guided manual configuration, with the exact values presented. A writer that cannot promise byte-exact revert must not claim tier A. |
 | FR-WIRE-11 | M | `plan` | Wire, in v1 — IDEs: **Continue.dev** for VS Code and JetBrains (one `~/.continue/config.yaml` serves both) and **VS Code native Copilot Chat BYOK**. Chat: **LibreChat** as the primary target (`librechat.yaml`, `endpoints.custom[]`), **Open WebUI** (tier A only where persistent config is disabled, otherwise via its admin API), and **AnythingLLM** — self-hosted by file, desktop guided, never by writing its database. |
 | FR-WIRE-12 | M | `plan` | Do not integrate clients that require the endpoint to be reachable from a third-party backend. Cursor routes model traffic through its own servers, so a loopback endpoint is unreachable and support would require publicly exposing the rig — contradicting FR-SEC-03 and the out-of-scope exclusion of public endpoints. |
-| FR-WIRE-13 | M | `plan` | Determine the tier from **observed reload behaviour**, not from the presence of a config mechanism. An application that reads an environment variable once and snapshots it into its own datastore is tier B despite appearing file-configurable — a writer that assumes otherwise succeeds on a fresh install and silently does nothing thereafter. |
-| FR-WIRE-14 | M | `plan` | Verify wiring by probing after writing, in every tier. Configuration written correctly but not yet loaded — an application that reads its config only at startup — must be reported as needing a restart, never as success. |
+| FR-WIRE-13 | M | `done` | Determine the tier from **observed reload behaviour**, not from the presence of a config mechanism. An application that reads an environment variable once and snapshots it into its own datastore is tier B despite appearing file-configurable — a writer that assumes otherwise succeeds on a fresh install and silently does nothing thereafter. |
+| FR-WIRE-14 | M | `done` | Verify wiring by probing after writing, in every tier. Configuration written correctly but not yet loaded — an application that reads its config only at startup — must be reported as needing a restart, never as success. |
 
 ### 7.6 Supervision (FR-SUP)
 
@@ -503,6 +503,7 @@ stays `done` until a real client writer lands.
 | FR-CLAW-06 | M | `done` | Revert a local claw's client configuration **before** the instance is destroyed, so no client is ever left pointing at a dead endpoint, and persist the records so what must be undone survives the process dying. A failed revert must not prevent the teardown: the configuration is recoverable from its backup and the rig is not recoverable at all. |
 | FR-CLAW-07 | M | `live` | One command for every claw type, with type-specific settings in a job file rather than in flags — a generic command that grows a flag per application is not generic. Relative paths in a job file resolve against the file, so a job that works in one working directory works in every other. A flag that cannot apply to the chosen site is refused rather than ignored. |
 | FR-CLAW-08 | S | `done` | Authenticate a browser-opened claw with a credential a browser will actually send, since neither a navigation nor a WebSocket handshake carries an `Authorization` header, and count only real work toward the idle clock — an open tab polls indefinitely. Hold the clock open while the claw has outstanding work, because a job submitted in one short call and computed for minutes is indistinguishable from an abandoned rig to a timer counting requests. |
+| FR-CLAW-09 | M | `done` | Distinguish an OpenAI-*compatible* surface from the chat contract. `/v1` is a family — `/v1/chat/completions` and `/v1/audio/transcriptions` share a base path, a bearer credential and a client ecosystem while answering entirely different requests — so a payload declares which it serves and callers ask the question they actually have. Testing "is it chat" to decide "where is it published" conflates the two and gets the second wrong. |
 
 ### 7.14 ComfyUI — The First Claw (FR-COMFY)
 
@@ -528,6 +529,27 @@ reason to take, and the digest pin, which is not built.
 | FR-COMFY-06 | M | `live` | Declare readiness only after the operator's **own** graph has produced a file, and refuse a server that found no CUDA device. ComfyUI starts perfectly well with no usable GPU and falls back to the CPU, where a render takes minutes per step — a rig paying GPU rates for nothing, which looks entirely healthy from outside. Where the graph's serialisation cannot be submitted, say so explicitly rather than let READY mean two different things. |
 | FR-COMFY-07 | M | `live` | Pin the container image and the ComfyUI revision **as a pair**, and prove the pairing before anything large is downloaded. The image supplies torch and the revision supplies the nodes that call it; a combination nobody has run fails at `import nodes`, which a rig discovers after 6.5 GB and twenty minutes of billing. Classify that failure as a fault of the configuration rather than of the host, so it is not retried on three more machines. |
 | FR-COMFY-08 | S | `part` | Pin the image by content digest and derive the hardware floors from that exact build, refreshed together (FR-RT-16). |
+
+### 7.15 Speech to Text — The First Local Claw (FR-WHISPER)
+
+Whisper is the second claw and the first *local* one: the transcription server runs on the
+rented box and the operator's own application stays on their machine. Nothing is produced on
+the host, so there is nothing to collect — what there is instead is configuration on somebody
+else's computer, which is a different kind of care.
+
+It is also the first claw whose surface is OpenAI-shaped without being the chat contract, and
+the first whose client wiring runs against something that is not a fake.
+
+| ID | Pri | Status | Requirement |
+|---|---|---|---|
+| FR-WHISPER-01 | M | `done` | Run a speech-to-text server on the rented host exposing OpenAI's `/v1/audio` surface, declared as its own protocol. Compatibility with the audio clients is not the chat contract, and a caller that needs a completion must be told so before renting rather than by a 404 on a rig that is already billing. |
+| FR-WHISPER-02 | M | `done` | Measure the model repository **before the create call** and refuse a name that does not resolve or a gated repository the operator's token cannot read. One listing fetch, locally, costs nothing; discovering either on a rented host costs the rental (§4a). |
+| FR-WHISPER-03 | M | `done` | Size the card from the **resident** weights and the disk from the **downloaded** ones. CTranslate2 quantises at load rather than at publication, so asking for int8 does not shrink the fetch and does shrink the card — and the saving is the weight difference rather than half, because the working set is computed in float16 either way. Conflating the two mis-sizes one of them in a direction that only shows up on the rental. |
+| FR-WHISPER-04 | M | `done` | Discover how the image exposes its server rather than assuming a module path, a console script or an environment variable name. Those are facts about somebody else's container; carrying the evidence into the failure is what makes the error actionable once the machine is gone. |
+| FR-WHISPER-05 | M | `done` | Declare readiness only after a transcription has round-tripped through the tunnel, and only after confirming the server loaded the model that was asked for. A setting this adapter got wrong does not fail — the server starts with its own default and transcribes happily with a model the operator did not choose. |
+| FR-WHISPER-06 | M | `done` | Generate the readiness audio rather than shipping a recording, so no clip lives in the repository and no licence attaches to one. It must be audible rather than silent: a voice-activity filter can skip a silent file without running the model at all, which would make readiness prove the HTTP path and nothing else. |
+| FR-WHISPER-07 | S | `done` | Refuse a host whose CUDA device is absent, before the model is fetched. A transcription server starts perfectly well on the CPU and runs at a fraction of realtime — a rig paying GPU rates for nothing, which looks entirely healthy from outside. |
+| FR-WHISPER-08 | S | `done` | Name each wired client separately, so each holds its own credential and each can be attributed and revoked on its own. The name is the operator's word for their application; nothing is detected, because nothing is written. |
 
 ---
 
