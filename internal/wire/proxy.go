@@ -328,7 +328,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Checked before authentication, so a cross-origin request is refused
 	// whatever credential a browser was persuaded to attach to it.
-	if !validOrigin(r.Header.Get("Origin")) {
+	if !validOrigin(r.Header.Get("Origin"), p.LocalPort()) {
 		http.Error(w, "wire: cross-origin request refused", http.StatusForbidden)
 		return
 	}

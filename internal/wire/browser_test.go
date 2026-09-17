@@ -157,18 +157,30 @@ func TestCrossOriginRequestsAreRefused(t *testing.T) {
 	}
 }
 
-func TestLoopbackOriginsAreAllowed(t *testing.T) {
+func TestOnlyThisListenersOwnOriginIsAllowed(t *testing.T) {
+	const port = 8188
+	// Absent, because a top-level navigation sends none — that is how the
+	// operator opens the page. Then this listener, however it is spelled.
 	for _, origin := range []string{
 		"", "http://127.0.0.1:8188", "http://localhost:8188", "http://[::1]:8188",
 	} {
-		if !validOrigin(origin) {
+		if !validOrigin(origin, port) {
 			t.Errorf("origin %q was refused", origin)
 		}
 	}
 	for _, origin := range []string{
 		"https://evil.example", "http://192.168.1.10", "null",
+		// The one that matters, and the one a loopback-only check let
+		// through. Cookies ignore ports and SameSite compares sites, so a
+		// page on any other local port is same-site: the browser attaches the
+		// session cookie to a credentialed fetch and the rig serves it. A dev
+		// server, or any local app with an embedded web view, could queue
+		// work on a GPU the operator is paying for (invariant 8).
+		"http://127.0.0.1:3000", "http://localhost:5173", "http://[::1]:9999",
+		// No port means the scheme default, which this listener never is.
+		"http://127.0.0.1", "http://localhost",
 	} {
-		if validOrigin(origin) {
+		if validOrigin(origin, port) {
 			t.Errorf("origin %q was allowed", origin)
 		}
 	}
@@ -418,5 +430,61 @@ func TestTheSessionCookieSurvivesTheLoopbackRoundTrip(t *testing.T) {
 	defer again.Body.Close()
 	if again.StatusCode != http.StatusOK {
 		t.Errorf("a later request got %d: the session did not persist", again.StatusCode)
+	}
+}
+
+// The attack the loopback-only check allowed, driven through the listener
+// rather than the helper: a page on another local port, holding a cookie the
+// browser attached for it.
+//
+// Nothing here is forged. Cookies are scoped to a host and ignore the port, and
+// SameSite compares sites rather than origins, so a page served from any other
+// port on this machine is same-site and the browser sends the session cookie on
+// a credentialed fetch without being asked twice. The only thing standing
+// between a local dev server and a GPU the operator is paying for is this
+// check, and while it asked merely "is the origin loopback" there was nothing
+// standing there at all.
+func TestAPageOnAnotherLocalPortCannotDriveTheRig(t *testing.T) {
+	p, cl, _ := browserProxy(t)
+	tok := secret.New("cookie-secret")
+	p.EnableBrowserSession(tok)
+
+	// The cookie the browser would hold, exactly as the exchange issues it.
+	withCookie := func(origin string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, p.addr()+"/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.AddCookie(&http.Cookie{Name: SessionCookie, Value: tok.Reveal()})
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		resp, err := cl.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	evil := withCookie("http://127.0.0.1:3000")
+	evil.Body.Close()
+	if evil.StatusCode != http.StatusForbidden {
+		t.Errorf("a page on :3000 drove the rig with a valid cookie and got %d, want 403",
+			evil.StatusCode)
+	}
+
+	// The rig's own page must still work, or the fix has broken the feature.
+	own := withCookie("http://127.0.0.1:" + itoa(p.LocalPort()))
+	own.Body.Close()
+	if own.StatusCode != http.StatusOK {
+		t.Errorf("the rig's own frontend got %d, want 200", own.StatusCode)
+	}
+
+	// And a top-level navigation, which carries no Origin at all.
+	nav := withCookie("")
+	nav.Body.Close()
+	if nav.StatusCode != http.StatusOK {
+		t.Errorf("a navigation got %d, want 200", nav.StatusCode)
 	}
 }

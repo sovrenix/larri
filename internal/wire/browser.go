@@ -137,16 +137,27 @@ func (p *Proxy) cookieAuthenticated(r *http.Request) bool {
 	return secret.New(c.Value).Equal(tok)
 }
 
-// validOrigin reports whether a cross-origin request may proceed.
+// validOrigin reports whether a request may proceed, given the port this proxy
+// is published on.
 //
 // Absent is allowed: a top-level navigation sends no Origin, which is exactly
-// how the operator opens the page. Present and not loopback is refused, which
-// is what stops a page on the open web from driving a rig the operator is
-// paying for — the same attack Host validation closes from the other side, and
-// the one SameSite is also meant to close. Three overlapping controls, because
-// this one is worth more than any of them individually: a request that fires
-// here spends money.
-func validOrigin(origin string) bool {
+// how the operator opens the page.
+//
+// Present must match this listener exactly — a loopback host *and* this port.
+// Accepting any loopback origin was not enough, and the gap is one the web
+// platform hands you: cookies are scoped to a host and ignore the port, and
+// SameSite compares sites rather than origins, so a page served from any other
+// port on this machine is same-site, gets the session cookie attached to a
+// credentialed fetch, and passed a check that only asked whether the host was
+// loopback. A dev server on :3000, or any local app with an embedded web view,
+// could then queue work on a GPU the operator is paying for — which invariant 8
+// calls a financial attack rather than a nuisance, and which the comment here
+// previously claimed to prevent while only stopping the open web.
+//
+// Loopback is still compared by value rather than by string, so reaching the
+// rig as localhost and as 127.0.0.1 both work: same port, same server, and the
+// spelling is the operator's choice.
+func validOrigin(origin string, port int) bool {
 	if origin == "" {
 		return true
 	}
@@ -154,7 +165,16 @@ func validOrigin(origin string) bool {
 	if err != nil {
 		return false
 	}
-	host := u.Hostname()
+	if !loopbackHost(u.Hostname()) {
+		return false
+	}
+	// An origin with no port means the scheme default, which is never this
+	// listener: the local port is always explicit.
+	return u.Port() == itoa(port)
+}
+
+// loopbackHost reports whether a hostname names this machine.
+func loopbackHost(host string) bool {
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.IsLoopback()
 	}
