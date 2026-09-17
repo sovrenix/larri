@@ -1049,11 +1049,6 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 		if rig != nil {
 			spent += rig.Offer.PriceHr * time.Since(attemptStart).Hours()
 		}
-		if o.BudgetUSD > 0 && spent >= o.BudgetUSD && err != nil {
-			o.warn("budget", "$%.2f spent against a $%.2f ceiling — stopping rather than trying another host",
-				spent, o.BudgetUSD)
-			return nil, err
-		}
 		if err == nil {
 			return live, nil
 		}
@@ -1100,6 +1095,23 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 		// Held through the teardown, so nothing reconnects to a rig while it
 		// is being ended; given up once it has been.
 		o.dropUpHold()
+		// The budget stops the fallback, and it is decided *after* the
+		// teardown above rather than before it.
+		//
+		// Ordered the other way round it was the one exit that leaked. The
+		// budget context tightens Serve, so exhausting the ceiling is a
+		// likely way for an attempt to fail; attempt closes the tunnel and
+		// returns the rig with its instance still alive, because Live.Close
+		// releases the forward and never the machine. Returning there skipped
+		// the only teardown on the path, and the ceiling whose entire purpose
+		// is to stop the spending became the single case that left a rig
+		// billing until the operator noticed — the host watchdog is
+		// containment, not a teardown.
+		if o.BudgetUSD > 0 && spent >= o.BudgetUSD {
+			o.warn("budget", "$%.2f spent against a $%.2f ceiling — stopping rather than trying another host",
+				spent, o.BudgetUSD)
+			return nil, err
+		}
 		// Only host-attributable failures are worth another machine.
 		if errs.ClassOf(err) != errs.ClassHostFailure {
 			return nil, err

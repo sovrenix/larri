@@ -114,3 +114,35 @@ func TestTheEndpointURLFollowsTheProtocol(t *testing.T) {
 		t.Errorf("default endpoint = %q", got)
 	}
 }
+
+// The ceiling must not be the one exit that leaves a rig billing.
+//
+// The budget context tightens Serve, so exhausting the ceiling is a likely way
+// for an attempt to fail — and attempt returns the rig with its instance still
+// alive, because Live.Close releases the tunnel and never the machine. While
+// the budget stop sat above the common teardown it skipped it entirely, so the
+// control whose whole purpose is to stop the spending was the single path that
+// left a GPU running until somebody noticed.
+func TestStoppingOnTheBudgetStillDestroysTheRig(t *testing.T) {
+	o, p, _ := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	// Small enough that any elapsed second exhausts it, so Serve is cancelled
+	// by the budget rather than by the provisioning deadline.
+	o.BudgetUSD = 1e-9
+
+	live, err := o.UpAndServe(context.Background(), upReq())
+	if err == nil {
+		t.Fatal("a bring-up past its ceiling reported success")
+	}
+	if live != nil {
+		t.Error("a failed bring-up returned a live session")
+	}
+
+	inst, lerr := p.List(context.Background())
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	for _, i := range inst {
+		t.Errorf("instance %s is still alive after the budget stopped the run: "+
+			"the ceiling left a rig billing", i.InstanceID)
+	}
+}
