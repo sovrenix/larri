@@ -672,7 +672,20 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 	if o.Planner != nil {
 		// Nothing to re-size: the plan was never a per-card baseline, and
 		// there is no shard degree to settle now that a card is known.
-		return &Survey{Plan: plan, Selection: sel, Offers: len(offers)}, nil
+		//
+		// Everything else on a Survey still applies, and an earlier version of
+		// this return dropped two fields by omission. Up assigns req.Model =
+		// sv.Model, so a zero one erased the spec the claw had resolved: a
+		// live whisper rig persisted an empty model ref and served name. And
+		// the create call passes sv.DiskGB, so a zero one asked RunPod for its
+		// 20 GB floor after the *search* had filtered the market on the disk
+		// the payload actually needs — the mismatch this type's own doc
+		// comment forbids, and the failure sizeDisk exists to prevent, on the
+		// one path that bypassed it.
+		return &Survey{
+			Plan: plan, Selection: sel, Offers: len(offers),
+			DiskGB: disk, Model: req.Model,
+		}, nil
 	}
 	shards := sizing.Shards(facts, chosen.GPUCount, reqs.TensorParallel)
 	placedReq := base

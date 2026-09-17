@@ -248,6 +248,40 @@ func TestAFixedSizingDrivesSelection(t *testing.T) {
 	}
 }
 
+// A planned survey still has to carry the model and the disk, which an early
+// return dropped by omission.
+//
+// Both are load-bearing on the way to the create call. Up assigns
+// req.Model = sv.Model, so a zero one erases the spec the claw resolved — a
+// live whisper rig persisted an empty model ref because of this. And Create is
+// passed sv.DiskGB, so a zero one asks the provider for its floor after the
+// search has already filtered the market on the disk the payload needs, which
+// is the mismatch Survey.DiskGB's own doc comment forbids.
+func TestAPlannedSurveyStillCarriesTheModelAndTheDisk(t *testing.T) {
+	o := clawOrch(t)
+	need := &core.SizingPlan{RequiredVRAMBytes: 20 << 30, WeightsBytes: 6 << 30, FitsInVRAM: true}
+	k := cfake.NewRemote("demo", cfake.Behaviour{Sizing: need, ColdStartBytes: 7 << 30})
+	plan, err := k.Plan(context.Background(), nil, claw.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.Runtime = k.Server(plan)
+	o.Planner = func(context.Context, UpRequest) (core.SizingPlan, error) { return *need, nil }
+
+	spec := core.ModelSpec{Ref: "someone/a-payload", ServedName: "demo"}
+	sv, err := o.Offers(context.Background(), UpRequest{Model: spec, DiskGB: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sv.Model.Ref != spec.Ref || sv.Model.ServedName != spec.ServedName {
+		t.Errorf("survey returned model %+v, so Up would erase what the claw resolved", sv.Model)
+	}
+	if sv.DiskGB < 120 {
+		t.Errorf("survey returned %d GB of disk against the 120 asked for: "+
+			"the create call would ask for less than the search filtered on", sv.DiskGB)
+	}
+}
+
 // The operator's floors are theirs. A claw needing less has not contradicted
 // them, and renting something cheaper than what was asked for cannot be undone
 // after the fact.
