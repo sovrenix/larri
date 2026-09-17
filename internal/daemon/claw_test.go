@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -373,5 +374,31 @@ func TestAPlainRemoteClawGetsNoBrowserSession(t *testing.T) {
 	}
 	if proxy.CountsAsWork != nil {
 		t.Error("a non-browser claw narrowed what counts as work")
+	}
+}
+
+// One credential per client (FR-SEC-23) is what lets the probe say that *this*
+// application arrived rather than that something did, and what makes one
+// client revocable without rewiring the rest.
+func TestEachWiredClientGetsItsOwnCredential(t *testing.T) {
+	base := secret.New("rig-base-token")
+	a := clientToken(base, "subtitle-edit")
+	b := clientToken(base, "buzz")
+
+	if a.Reveal() == b.Reveal() {
+		t.Fatal("two clients share a credential, so neither can be revoked alone")
+	}
+	if a.Reveal() == base.Reveal() || b.Reveal() == base.Reveal() {
+		t.Error("a client was handed the rig's own token")
+	}
+	// Reproducible, so a value the operator pasted keeps working for as long
+	// as the rig does rather than only until the next call.
+	if clientToken(base, "subtitle-edit").Reveal() != a.Reveal() {
+		t.Error("the same client got a different credential from the same rig token")
+	}
+	// The rig token must not be recoverable from what the operator pastes into
+	// a config file.
+	if strings.Contains(a.Reveal(), base.Reveal()) {
+		t.Error("the client credential contains the rig token verbatim")
 	}
 }

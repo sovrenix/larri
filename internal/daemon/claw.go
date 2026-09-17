@@ -5,6 +5,9 @@ package daemon
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -205,12 +208,41 @@ func (o *Orchestrator) attachLocal(s *ClawSession) {
 	if len(writers) == 0 {
 		return
 	}
-	ep := wire.Endpoint{
-		URL:   s.Live.Endpoint,
-		Model: s.Plan.Model.ServedName,
-		Key:   s.Live.ClientToken,
+	// One credential per client (FR-SEC-23), so a leaked config burns one of
+	// them, one can be revoked without rewiring the rest, and a request
+	// carries an identity — which is what lets the probe below say that *this*
+	// application arrived rather than that something did.
+	//
+	// Derived rather than generated, so the same client gets the same
+	// credential from the same rig token instead of a fresh one per call.
+	var (
+		recs    []core.WiringRecord
+		errList []error
+		probe   = wire.ProxyProber(s.Live.proxy)
+	)
+	for _, w := range writers {
+		key := clientToken(s.Live.ClientToken, w.Name())
+		if s.Live.proxy != nil {
+			s.Live.proxy.AddClient(w.Name(), key)
+		}
+		// Applied one at a time because each client is handed its own key, and
+		// an endpoint carries one.
+		ep := wire.Endpoint{
+			URL:   s.Live.Endpoint,
+			Model: s.Plan.Model.ServedName,
+			Key:   key,
+		}
+		r, e := wire.Apply([]wire.ClientWriter{w}, ep, probe)
+		recs = append(recs, r...)
+		errList = append(errList, e...)
+
+		// What to paste, for a client LARRI does not configure itself. Said
+		// here rather than left in the writer, because the operator is
+		// watching this stream and will not read a struct.
+		for _, line := range wire.InstructionsFor(w, ep) {
+			o.emit("wiring", "%s", line)
+		}
 	}
-	recs, errList := wire.Apply(writers, ep, nil)
 	s.Wiring = recs
 	s.clients = wire.Index(writers)
 	if s.Live.Rig != nil {
@@ -355,4 +387,21 @@ func (s *ClawSession) Endpoint() string {
 		return ""
 	}
 	return s.Live.Endpoint
+}
+
+// clientToken derives one client's credential from the rig's.
+//
+// Derived rather than generated so it is reproducible: the same client on the
+// same rig always presents the same key, which is what lets a value the
+// operator pasted once keep working for as long as that rig does.
+//
+// It is *not* yet stable across rigs, because the base token is minted per
+// rig, and for a guided client that is a real cost: the operator re-pastes
+// after every teardown, which is the churn invariant 3 exists to prevent. The
+// fix is to persist the base rather than to change this function, so this is
+// written to survive that change unaltered.
+func clientToken(base secret.Secret, name string) secret.Secret {
+	mac := hmac.New(sha256.New, []byte(base.Reveal()))
+	mac.Write([]byte(name))
+	return secret.New("lc-" + hex.EncodeToString(mac.Sum(nil))[:40])
 }
