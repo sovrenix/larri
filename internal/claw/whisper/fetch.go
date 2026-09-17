@@ -49,6 +49,7 @@ func (r *Runtime) fetchScript() string {
 		fmt.Fprintf(&b, "export HUGGING_FACE_HUB_TOKEN=%s\n", shellQuote(r.hfToken.Reveal()))
 	}
 	fmt.Fprintf(&b, "export HF_HOME=%s\n", shellQuote(CacheRoot))
+	fmt.Fprintf(&b, "export HF_HUB_CACHE=%s\n", shellQuote(BlobCache))
 	python := r.launch.Python
 	if python == "" {
 		python = "python3"
@@ -58,7 +59,12 @@ func (r *Runtime) fetchScript() string {
 	// dependency of the server itself.
 	fmt.Fprintf(&b, "%s - <<'LARRI_FETCH_PY'\n", shellQuote(python))
 	b.WriteString("from huggingface_hub import snapshot_download\n")
-	fmt.Fprintf(&b, "snapshot_download(%q)\n", r.model())
+	// cache_dir explicitly, rather than trusting the environment to resolve to
+	// the directory the gauge watches. The two have to be the same path by
+	// construction: when they were not, a healthy download and a wedged one
+	// measured identically, and the stall detector reads that measurement.
+	fmt.Fprintf(&b, "p = snapshot_download(%q, cache_dir=%q)\n", r.model(), BlobCache)
+	b.WriteString("print('DOWNLOADED', p)\n")
 	b.WriteString("LARRI_FETCH_PY\n")
 	fmt.Fprintf(&b, "touch %s\n", shellQuote(fetchDoneMarker))
 	return b.String()
@@ -105,7 +111,7 @@ func (r *Runtime) fetchFinished(ctx context.Context, sess runtime.Session) (bool
 
 // bytesOnDisk measures the cache, which is what progress is driven by.
 func (r *Runtime) bytesOnDisk(ctx context.Context, sess runtime.Session) uint64 {
-	out, err := sess.Run(ctx, "du -sb "+shellQuote(CacheRoot)+" 2>/dev/null | cut -f1")
+	out, err := sess.Run(ctx, "du -sb "+shellQuote(BlobCache)+" 2>/dev/null | cut -f1")
 	if err != nil && len(out) == 0 {
 		return 0
 	}
@@ -157,9 +163,22 @@ func (r *Runtime) fetchModel(ctx context.Context, sess runtime.Session,
 			return err
 		}
 		if done {
+			onDisk := r.bytesOnDisk(ctx, sess)
+			msg := "model ready"
+			// The marker is the authority — it runs only under `set -e` after
+			// a successful download — so a disagreement with the gauge is a
+			// fault in the *gauge*, and saying so is the point. A live run
+			// reported "100% (29 B of 1.4 GB)" and nothing complained, which
+			// meant the stall detector reading the same number could not have
+			// told a wedged download from a working one either.
+			if total > 0 && onDisk < total/2 {
+				msg = fmt.Sprintf(
+					"model ready, but only %s is visible in %s of an expected %s: "+
+						"the progress measurement is looking in the wrong place",
+					sizing.HumanBytes(onDisk), BlobCache, sizing.HumanBytes(total))
+			}
 			send(runtime.Progress{Phase: runtime.PhaseWeightsDownload, Percent: 100,
-				BytesDone: r.bytesOnDisk(ctx, sess), BytesTotal: total,
-				Message: "model ready"})
+				BytesDone: onDisk, BytesTotal: total, Message: msg})
 			return nil
 		}
 

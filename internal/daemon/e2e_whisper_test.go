@@ -251,13 +251,15 @@ func TestE2EClawWhisper(t *testing.T) {
 		rctx, rcancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer rcancel()
 
+		// A catalogue of what the server can fetch, not what it loaded — which
+		// a live run established the awkward way. Logged, never asserted on.
 		models, err := client.Models(rctx)
 		if err != nil {
 			t.Fatalf("models: %v", err)
 		}
-		t.Logf("server holds: %v", models)
+		t.Logf("server offers %d models", len(models))
 
-		text, err := client.Transcribe(rctx, whisper.ReadyClip(), "e2e.wav")
+		text, err := client.Transcribe(rctx, whisper.ReadyClip(), "e2e.wav", "Systran/faster-distil-whisper-large-v3")
 		if err != nil {
 			t.Fatalf("transcribe: %v", err)
 		}

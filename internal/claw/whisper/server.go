@@ -69,8 +69,20 @@ const (
 	// before answering can still be diagnosed after the host is gone.
 	LogPathDefault = "/var/log/larri-whisper.log"
 
-	// CacheRoot is where the model lands, and what the fetch measures.
+	// CacheRoot is the Hugging Face home on the host.
 	CacheRoot = "/root/.cache/huggingface"
+
+	// BlobCache is where the weights actually land, and the one path both the
+	// fetch and the measurement use.
+	//
+	// Named explicitly rather than inferred, because inferring it was wrong. A
+	// live run reported "100% (29 B of 1.4 GB)" while the host transferred at
+	// 70 MB/s: HF_HOME is not the variable huggingface_hub resolves the blob
+	// cache from when HF_HUB_CACHE is already set in the image, so the fetch
+	// wrote somewhere the gauge was not looking. The percentage was cosmetic;
+	// the stall detector reading the same number was not, because a wedged
+	// download and a working one measured identically (FR-RT-15).
+	BlobCache = CacheRoot + "/hub"
 
 	// UVProject is where the image keeps its uv project, and the directory the
 	// server must run from.
@@ -493,7 +505,11 @@ func (r *Runtime) launchScript() string {
 	fmt.Fprintf(&b, "export WHISPER__COMPUTE_TYPE=%s\n", shellQuote(r.computeType()))
 	fmt.Fprintf(&b, "export UVICORN_HOST=%s\n", runtime.Loopback)
 	fmt.Fprintf(&b, "export UVICORN_PORT=%d\n", RemotePort)
+	// Both, because HF_HOME alone does not decide where the blobs are looked
+	// for when the image already sets HF_HUB_CACHE, and the server has to look
+	// where the fetch wrote.
 	fmt.Fprintf(&b, "export HF_HOME=%s\n", shellQuote(CacheRoot))
+	fmt.Fprintf(&b, "export HF_HUB_CACHE=%s\n", shellQuote(BlobCache))
 	if !r.hfToken.Empty() {
 		fmt.Fprintf(&b, "export HF_TOKEN=%s\n", shellQuote(r.hfToken.Reveal()))
 	}
@@ -552,35 +568,18 @@ func (r *Runtime) Ready(ctx context.Context, ep runtime.Endpoint, spec core.Mode
 		Token: ep.Key.Reveal(),
 		Probe: true,
 	}
-	loaded, err := c.Models(ctx)
+	// Naming the model on the request is the check. An earlier version asked
+	// /v1/models and compared, which a live run proved worthless: that route
+	// returns a catalogue of everything fetchable — tiny, base, medium, a
+	// dozen more — so the requested model was always in it whatever the server
+	// had loaded, and the assertion could not fail. Asking the server to
+	// transcribe *with* it cannot be satisfied by a substitute.
+	text, err := c.Transcribe(ctx, ReadyClip(), "ready.wav", r.model())
 	if err != nil {
 		return err
 	}
-	if !namesModel(loaded, r.model()) {
-		return errs.Newf(errs.ClassModelFailure, "whisper.Ready",
-			"the server loaded %s, not %s", strings.Join(loaded, ", "), r.model())
-	}
-	text, err := c.Transcribe(ctx, ReadyClip(), "ready.wav")
-	if err != nil {
-		return err
-	}
-	_ = text // Whatever it heard in noise; that it answered at all is the claim.
+	_ = text // Whatever it heard in noise; that it ran the model is the claim.
 	return nil
-}
-
-// namesModel reports whether the server's model list includes the one asked
-// for. Servers report either the full repository or its bare name.
-func namesModel(loaded []string, want string) bool {
-	short := want
-	if i := strings.LastIndex(want, "/"); i >= 0 {
-		short = want[i+1:]
-	}
-	for _, m := range loaded {
-		if m == want || m == short {
-			return true
-		}
-	}
-	return false
 }
 
 // Alive reports whether the server process is still on the host.

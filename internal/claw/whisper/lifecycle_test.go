@@ -271,23 +271,48 @@ func TestTheCUDACheckRunsBeforeTheDownload(t *testing.T) {
 	}
 }
 
-// Readiness asks what the server actually loaded, because the settings that
-// choose it are environment variables in someone else's image. A name this
-// adapter got wrong does not fail — the server starts with its own default.
-func TestReadinessRefusesAServerServingADifferentModel(t *testing.T) {
+// The model is named on the request, so a server that does not hold it fails
+// rather than quietly substituting its own default.
+//
+// The check this replaces asked /v1/models and compared. A live run showed
+// that route returning a catalogue of everything fetchable, so the requested
+// model was always present whatever was loaded, and the assertion could not
+// fail — which was exactly the case it existed to catch.
+func TestReadinessRefusesAServerThatDoesNotHoldTheModel(t *testing.T) {
 	srv := fakeServer(t, "Systran/faster-whisper-tiny", "hello")
 	defer srv.Close()
 
 	r := New()
+	r.Model = "Systran/faster-whisper-large-v3"
 	r.launch = serverEntry{Python: "/root/faster-whisper-server/.venv/bin/python"}
 	err := r.Ready(context.Background(), runtime.Endpoint{
 		Host: hostOf(srv.URL), Port: portOf(srv.URL),
 	}, core.ModelSpec{ServedName: "whisper"})
 	if err == nil {
-		t.Fatal("a server holding the wrong model was reported ready")
+		t.Fatal("a server holding a different model was reported ready")
 	}
 	if !strings.Contains(err.Error(), "large-v3") {
 		t.Errorf("the error does not name what was asked for: %v", err)
+	}
+}
+
+// And the model really does travel on the request, since everything above
+// depends on it.
+func TestTheTranscriptionNamesTheModel(t *testing.T) {
+	var asked string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(32 << 20)
+		asked = r.FormValue("model")
+		_ = json.NewEncoder(w).Encode(map[string]string{"text": "ok"})
+	}))
+	defer srv.Close()
+
+	c := &Client{Addr: srv.Listener.Addr().String()}
+	if _, err := c.Transcribe(context.Background(), ReadyClip(), "x.wav", "some/model"); err != nil {
+		t.Fatal(err)
+	}
+	if asked != "some/model" {
+		t.Errorf("the request carried model %q", asked)
 	}
 }
 
@@ -337,6 +362,12 @@ func fakeServer(t *testing.T, model, text string) *httptest.Server {
 		b, _ := io.ReadAll(f)
 		if len(b) < 44 || string(b[:4]) != "RIFF" {
 			http.Error(w, "not a wav", http.StatusBadRequest)
+			return
+		}
+		// A real server transcribes with the model named on the request, and
+		// fails when it cannot. That is what makes naming it a check.
+		if asked := r.FormValue("model"); asked != "" && asked != model {
+			http.Error(w, "no such model "+asked, http.StatusBadRequest)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"text": text})

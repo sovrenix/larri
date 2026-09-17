@@ -82,12 +82,13 @@ func (c *Client) do(ctx context.Context, method, path, contentType string,
 	return raw, resp.StatusCode, nil
 }
 
-// Models lists what the server has loaded.
+// Models lists what the server offers.
 //
-// Worth asking separately from "is it up", because the settings that choose
-// the model are environment variables in someone else's image. A name this
-// adapter got wrong does not fail: the server starts with its own default and
-// transcribes happily with a model the operator did not ask for.
+// A *catalogue* rather than an inventory, which a live run established the
+// awkward way: it returns every conversion the server knows how to fetch, not
+// the one resident on the GPU. So it answers "is this server up and speaking
+// the API" and must never be used to check which model is loaded — see
+// Transcribe, which names the model on the request instead.
 func (c *Client) Models(ctx context.Context) ([]string, error) {
 	raw, code, err := c.do(ctx, http.MethodGet, "/v1/models", "", nil)
 	if err != nil {
@@ -112,7 +113,16 @@ func (c *Client) Models(ctx context.Context) ([]string, error) {
 }
 
 // Transcribe posts one audio file and returns the text.
-func (c *Client) Transcribe(ctx context.Context, wav []byte, filename string) (string, error) {
+//
+// The model is named on the request rather than left to the server's default.
+// That is what makes the answer mean something: a live run showed /v1/models
+// returning a *catalogue* of everything fetchable — tiny, base, medium, a
+// dozen others — so checking the requested model against that list passed
+// whatever the server had actually loaded, which is precisely the case the
+// check existed to catch. Naming it here makes the transcription definitionally
+// against the model asked for, and an unavailable one an error rather than a
+// silent substitution.
+func (c *Client) Transcribe(ctx context.Context, wav []byte, filename, model string) (string, error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 
@@ -129,6 +139,11 @@ func (c *Client) Transcribe(ctx context.Context, wav []byte, filename string) (s
 	}
 	if err := mw.WriteField("response_format", "json"); err != nil {
 		return "", err
+	}
+	if model != "" {
+		if err := mw.WriteField("model", model); err != nil {
+			return "", err
+		}
 	}
 	if err := mw.Close(); err != nil {
 		return "", err
