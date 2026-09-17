@@ -331,9 +331,21 @@ type DefaultQuant interface {
 	DefaultQuantization() string
 }
 
-// QuantizationFor is the weight format a runtime serves when nobody named one.
-func QuantizationFor(r Runtime) string {
-	if d, ok := r.(DefaultQuant); ok {
+// QuantizationFor is the weight format a workload serves when nobody named one.
+//
+// Workload rather than Runtime, and the difference is only in what the
+// signature claims. Runtime embeds Workload and declares nothing else, so the
+// two have identical method sets and this has always accepted either — which
+// means the old signature advertised a constraint the compiler could not
+// enforce. An automated review read it as a promise and reported a compile
+// error that does not exist; a person could read it the same way.
+//
+// The tier is enforced by Protocol() at runtime, by design (invariant 1), and
+// naming Workload here is what makes the type agree with that. A payload that
+// is not an inference engine answers the generic default, which is vacuous for
+// it rather than wrong: a claw settles its own precision in its own config.
+func QuantizationFor(w Workload) string {
+	if d, ok := w.(DefaultQuant); ok {
 		return d.DefaultQuantization()
 	}
 	return "fp16"

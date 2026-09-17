@@ -140,3 +140,24 @@ type protocolOnly struct {
 }
 
 func (o protocolOnly) Protocol() runtime.Protocol { return o.p }
+
+// The signature has to accept a Workload, because that is what it has always
+// accepted: Runtime embeds Workload and declares nothing else, so the two have
+// identical method sets. Naming Runtime advertised a constraint the compiler
+// could not enforce, and an automated review duly read it as one and reported a
+// compile error that does not exist.
+//
+// A compile-time assertion, which is the only kind available: no value can be a
+// Workload and not a Runtime, so there is nothing to test at runtime. What it
+// locks is the signature.
+func TestQuantizationForTakesAnyWorkload(t *testing.T) {
+	var w runtime.Workload = protocolOnly{p: runtime.ProtocolOpenAIAudio}
+	if got := runtime.QuantizationFor(w); got != "fp16" {
+		t.Errorf("a workload with no opinion defaulted to %q", got)
+	}
+
+	// And a runtime that does have an opinion still supplies it.
+	if got := runtime.QuantizationFor(llamacpp.New()); got == "fp16" {
+		t.Error("llama.cpp defaulted to fp16, which is the format it exists to avoid")
+	}
+}
