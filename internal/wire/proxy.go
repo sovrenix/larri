@@ -397,6 +397,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !up.Key.Empty() {
 				req.Header.Set("Authorization", "Bearer "+up.Key.Reveal())
 			}
+			// The same boundary, through the other header a browser
+			// authenticates with. Stripping Authorization and forwarding the
+			// Cookie sent the local credential to the rented host anyway,
+			// which is the thing this whole paragraph exists to prevent — and
+			// the host has root, so it reads whatever arrives. ComfyUI has no
+			// use for it either: it holds no server-side credential at all.
+			stripSessionCookie(req)
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			http.Error(w, "wire: upstream unreachable: "+err.Error(),
@@ -404,6 +411,28 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// stripSessionCookie removes LARRI's own cookie and forwards the rest.
+//
+// Only ours. The proxied application may set and read cookies of its own — UI
+// state, a layout, a collapsed panel — and deleting the whole header to protect
+// one value would break somebody else's frontend to fix a problem in ours.
+func stripSessionCookie(r *http.Request) {
+	cookies := r.Cookies()
+	kept := cookies[:0]
+	for _, c := range cookies {
+		if c.Name != SessionCookie {
+			kept = append(kept, c)
+		}
+	}
+	if len(kept) == len(cookies) {
+		return // nothing of ours was there
+	}
+	r.Header.Del("Cookie")
+	for _, c := range kept {
+		r.AddCookie(c)
+	}
 }
 
 // validHost accepts only loopback names, so a rebinding attack that resolves

@@ -22,10 +22,11 @@ import (
 
 // upstreamRecorder stands in for the rig, capturing what actually arrived.
 type upstreamRecorder struct {
-	mu    sync.Mutex
-	auth  []string
-	probe []string
-	srv   *httptest.Server
+	mu     sync.Mutex
+	auth   []string
+	probe  []string
+	cookie []string
+	srv    *httptest.Server
 }
 
 func newUpstream(t *testing.T) *upstreamRecorder {
@@ -35,6 +36,7 @@ func newUpstream(t *testing.T) *upstreamRecorder {
 		u.mu.Lock()
 		u.auth = append(u.auth, r.Header.Get("Authorization"))
 		u.probe = append(u.probe, r.Header.Get(ProbeHeader))
+		u.cookie = append(u.cookie, r.Header.Get("Cookie"))
 		u.mu.Unlock()
 		fmt.Fprint(w, `{"choices":[{"message":{"content":"pong"}}]}`)
 	}))
@@ -339,5 +341,58 @@ func TestLARRIsOwnProbesDoNotVerifyTheWiring(t *testing.T) {
 func TestAProberForNoProxyIsNil(t *testing.T) {
 	if ProxyProber(nil) != nil {
 		t.Error("a nil proxy produced a prober that would claim something")
+	}
+}
+
+// lastCookie is what the rented host was sent.
+func (u *upstreamRecorder) lastCookie() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if len(u.cookie) == 0 {
+		return ""
+	}
+	return u.cookie[len(u.cookie)-1]
+}
+
+// The credential boundary has two headers, not one.
+//
+// Authorization was stripped and substituted from the start; Cookie was
+// forwarded verbatim, so a browser-authenticated request handed LARRI's own
+// session credential to the rented host — which has root and reads whatever
+// arrives. Stripping one and passing the other is not a boundary, and ComfyUI
+// has no use for it either: it holds no server-side credential at all.
+func TestTheSessionCookieNeverReachesTheHost(t *testing.T) {
+	up := newUpstream(t)
+	p, base := startProxy(t, up, "rig-key")
+	tok := secret.New("cookie-secret")
+	p.EnableBrowserSession(tok)
+
+	req, err := http.NewRequest(http.MethodGet, base+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: SessionCookie, Value: tok.Reveal()})
+	// The proxied application's own cookie, which must survive: deleting the
+	// whole header to protect one value breaks somebody else's frontend.
+	req.AddCookie(&http.Cookie{Name: "comfy_layout", Value: "wide"})
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the cookie-authenticated request got %d", resp.StatusCode)
+	}
+
+	got := up.lastCookie()
+	if strings.Contains(got, tok.Reveal()) {
+		t.Errorf("the host was sent LARRI's session credential: %q", got)
+	}
+	if strings.Contains(got, SessionCookie) {
+		t.Errorf("the host was sent the session cookie: %q", got)
+	}
+	if !strings.Contains(got, "comfy_layout=wide") {
+		t.Errorf("the application's own cookie was dropped: %q", got)
 	}
 }
