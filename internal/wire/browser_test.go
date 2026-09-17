@@ -6,6 +6,7 @@ package wire
 import (
 	"context"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -372,5 +373,50 @@ func TestReissuingRetiresTheUnusedLink(t *testing.T) {
 	fresh.Body.Close()
 	if fresh.StatusCode != http.StatusSeeOther {
 		t.Errorf("the freshly issued link got %d, want 303", fresh.StatusCode)
+	}
+}
+
+// The cookie has to survive a real browser round trip over the loopback HTTP
+// listener, which is the only place it is ever used.
+//
+// Everything else in this file inspects the Set-Cookie header directly, so
+// nothing exercised a client actually sending it back — and an automated
+// CodeQL fix duly marked the cookie Secure, which stops a client transmitting
+// it over http. The exchange still redirected, the follow-up request arrived
+// unauthenticated, and the whole suite stayed green because no test had a jar.
+//
+// LARRI has no TLS to offer here by design: the listener binds loopback and
+// the SSH tunnel is the confidentiality boundary (§8). So the cookie must work
+// over http, and this asserts it end to end rather than by reading a flag.
+func TestTheSessionCookieSurvivesTheLoopbackRoundTrip(t *testing.T) {
+	p, _, _ := browserProxy(t)
+	p.EnableBrowserSession(secret.New("cookie-secret"))
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Follows redirects and keeps cookies, which is what a browser does and
+	// what the rest of this file deliberately does not.
+	cl := &http.Client{Timeout: 5 * time.Second, Jar: jar}
+
+	resp, err := cl.Get(p.NewSessionURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("following the session link ended at %d, want 200: the cookie "+
+			"was not sent back over the loopback listener", resp.StatusCode)
+	}
+
+	// And it keeps working, because a browser makes many requests per page.
+	again, err := cl.Get(p.addr() + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Body.Close()
+	if again.StatusCode != http.StatusOK {
+		t.Errorf("a later request got %d: the session did not persist", again.StatusCode)
 	}
 }
