@@ -59,8 +59,11 @@ const (
 	// pointless.
 	MinComputeCapability = 700
 
-	// MinCUDA is the runtime the image is built against, times ten.
-	MinCUDA = 121
+	// MinCUDA is the runtime the image is built against, times ten, read from
+	// the image's own config rather than from anybody's documentation
+	// (§4a): CUDA_VERSION=12.2.2, with NVIDIA_REQUIRE_CUDA asking for
+	// driver>=525.
+	MinCUDA = 122
 
 	// LogPathDefault is where the server writes, so a launch that failed
 	// before answering can still be diagnosed after the host is gone.
@@ -68,6 +71,23 @@ const (
 
 	// CacheRoot is where the model lands, and what the fetch measures.
 	CacheRoot = "/root/.cache/huggingface"
+
+	// UVProject is where the image keeps its uv project, and the directory the
+	// server must run from.
+	//
+	// Not a guess: the image's config says WorkingDir=/root/faster-whisper-server
+	// and Cmd=["uv","run","uvicorn","--factory","faster_whisper_server.main:create_app"].
+	// A first paid run failed here because the probe looked only on PATH, and
+	// a uv project's interpreter lives in .venv where a non-interactive SSH
+	// session never sees it — the same shape as the conda failure the ComfyUI
+	// claw paid for.
+	UVProject = "/root/faster-whisper-server"
+
+	// ASGIFactory is the application the server exposes. A *factory* rather
+	// than an instance, which is why the launcher passes --factory: uvicorn
+	// given a factory without the flag reports that the target is not an ASGI
+	// application, having already loaded the model.
+	ASGIFactory = "faster_whisper_server.main:create_app"
 
 	// LaunchTimeout bounds the command that starts the server. Starting a
 	// server is a sub-second operation; anything longer is the SSH exec
@@ -204,25 +224,37 @@ func (r *Runtime) computeType() string {
 // discovered on a machine that is already billing. A console script, a module
 // name and an import are each cheap to test over one SSH round trip.
 type serverEntry struct {
-	Script string // an executable on PATH, if the image ships one
-	Module string // an importable package, if it does not
+	// Python is an interpreter that can import the server. Usually the one
+	// inside the project's virtualenv, which is the whole reason this is
+	// discovered: a uv project keeps it in .venv and puts it on PATH through
+	// a Dockerfile ENV that a non-interactive SSH session does not inherit.
 	Python string
+
+	// Dir is the project to run from, when the image ships one.
+	Dir string
+
+	// Script is an executable on PATH, if the image ships one instead.
+	Script string
 }
 
 // launchCommand renders the command that starts the server in the foreground.
 func (e serverEntry) launchCommand() string {
 	if e.Script != "" {
-		return shellQuote(e.Script)
+		return fmt.Sprintf("%s --factory %s --host %s --port %d",
+			shellQuote(e.Script), ASGIFactory, runtime.Loopback, RemotePort)
 	}
 	python := e.Python
 	if python == "" {
 		python = "python3"
 	}
-	return fmt.Sprintf("%s -m uvicorn %s.main:app --host %s --port %d",
-		shellQuote(python), e.Module, runtime.Loopback, RemotePort)
+	// --factory because the target is a factory function. Without it uvicorn
+	// reports that the target is not an ASGI application, and it reports it
+	// after loading the model rather than before.
+	return fmt.Sprintf("%s -m uvicorn --factory %s --host %s --port %d",
+		shellQuote(python), ASGIFactory, runtime.Loopback, RemotePort)
 }
 
-func (e serverEntry) empty() bool { return e.Script == "" && e.Module == "" }
+func (e serverEntry) empty() bool { return e.Python == "" && e.Script == "" }
 
 // findServerCmd asks the image how it exposes the server.
 //
@@ -230,16 +262,24 @@ func (e serverEntry) empty() bool { return e.Script == "" && e.Module == "" }
 // here has to say what was looked for and what was found, or the operator is
 // left with "not found" about a machine they cannot inspect any more.
 const findServerCmd = `
+for d in ` + UVProject + ` /app /srv/faster-whisper-server /opt/faster-whisper-server; do
+  [ -f "$d/pyproject.toml" ] && echo "PROJECT $d"
+done
+for v in ` + UVProject + `/.venv /app/.venv /opt/venv /usr/local/venv /opt/conda; do
+  [ -x "$v/bin/python" ] && "$v/bin/python" -c 'import faster_whisper_server' 2>/dev/null \
+    && echo "PYTHON $v/bin/python"
+done
+for py in python3 python; do
+  "$py" -c 'import faster_whisper_server' 2>/dev/null && echo "PYTHON $py"
+done
 for p in faster-whisper-server speaches; do
   c=$(command -v "$p" 2>/dev/null) && echo "SCRIPT $c"
 done
-for m in faster_whisper_server speaches; do
-  for py in python3 python /opt/conda/bin/python; do
-    "$py" -c "import $m" 2>/dev/null && echo "MODULE $m $py" && break
-  done
+for v in ` + UVProject + `/.venv /app/.venv /opt/venv /opt/conda; do
+  [ -x "$v/bin/python" ] && echo "VENV $v/bin/python"
 done
-for py in python3 python /opt/conda/bin/python; do
-  "$py" -c 'import faster_whisper' 2>/dev/null && echo "ENGINE $py" && break
+for py in python3 python; do
+  "$py" -c 'import faster_whisper' 2>/dev/null && echo "ENGINE $py"
 done
 echo "PATH $PATH"
 echo DONE
@@ -256,23 +296,27 @@ func parseServer(out string) (serverEntry, string) {
 			continue
 		}
 		switch f[0] {
+		case "PROJECT":
+			if e.Dir == "" {
+				e.Dir = f[1]
+			}
+			saw = append(saw, "project "+f[1])
+		case "PYTHON":
+			// An interpreter that can import the server, which is the thing
+			// actually needed; the first one wins because the probe lists the
+			// project's own virtualenv before anything on PATH.
+			if e.Python == "" {
+				e.Python = f[1]
+			}
+			saw = append(saw, "server importable by "+f[1])
 		case "SCRIPT":
 			if e.Script == "" {
 				e.Script = f[1]
 			}
 			saw = append(saw, "script "+f[1])
-		case "MODULE":
-			if e.Module == "" {
-				e.Module = f[1]
-				if len(f) > 2 {
-					e.Python = f[2]
-				}
-			}
-			saw = append(saw, "module "+f[1])
+		case "VENV":
+			saw = append(saw, "venv python "+f[1])
 		case "ENGINE":
-			if e.Python == "" {
-				e.Python = f[1]
-			}
 			saw = append(saw, "faster_whisper at "+f[1])
 		case "PATH":
 			saw = append(saw, "path "+f[1])
@@ -449,8 +493,16 @@ func (r *Runtime) launchScript() string {
 	fmt.Fprintf(&b, "export WHISPER__COMPUTE_TYPE=%s\n", shellQuote(r.computeType()))
 	fmt.Fprintf(&b, "export UVICORN_HOST=%s\n", runtime.Loopback)
 	fmt.Fprintf(&b, "export UVICORN_PORT=%d\n", RemotePort)
+	fmt.Fprintf(&b, "export HF_HOME=%s\n", shellQuote(CacheRoot))
 	if !r.hfToken.Empty() {
 		fmt.Fprintf(&b, "export HF_TOKEN=%s\n", shellQuote(r.hfToken.Reveal()))
+	}
+	// The cd belongs here, on its own line inside the script, and never in the
+	// launcher. A `cd X && ...` makes the whole compound the asynchronous
+	// list, so the forked subshell inherits the SSH channel's descriptors and
+	// the call never returns — which is what hung the ComfyUI claw twice.
+	if r.launch.Dir != "" {
+		fmt.Fprintf(&b, "cd %s\n", shellQuote(r.launch.Dir))
 	}
 	fmt.Fprintf(&b, "exec %s\n", r.launch.launchCommand())
 	return b.String()

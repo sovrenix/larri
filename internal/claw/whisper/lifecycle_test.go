@@ -53,9 +53,14 @@ func (h *hostSim) Run(_ context.Context, cmd string) ([]byte, error) {
 		if h.noServer {
 			return []byte("PATH /usr/bin\nDONE\n"), nil
 		}
-		return []byte("SCRIPT /usr/local/bin/faster-whisper-server\n" +
-			"MODULE faster_whisper_server python3\n" +
-			"ENGINE python3\nPATH /usr/local/bin:/usr/bin\nDONE\n"), nil
+		// What the real image answers: a uv project whose interpreter lives in
+		// .venv and is invisible to the stock PATH a non-interactive SSH
+		// session gets. A first paid run failed on exactly this.
+		return []byte("PROJECT /root/faster-whisper-server\n" +
+			"PYTHON /root/faster-whisper-server/.venv/bin/python\n" +
+			"VENV /root/faster-whisper-server/.venv/bin/python\n" +
+			"PATH /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n" +
+			"DONE\n"), nil
 
 	case strings.Contains(cmd, "ctranslate2"):
 		if h.importFails {
@@ -274,7 +279,7 @@ func TestReadinessRefusesAServerServingADifferentModel(t *testing.T) {
 	defer srv.Close()
 
 	r := New()
-	r.launch = serverEntry{Script: "/usr/local/bin/faster-whisper-server"}
+	r.launch = serverEntry{Python: "/root/faster-whisper-server/.venv/bin/python"}
 	err := r.Ready(context.Background(), runtime.Endpoint{
 		Host: hostOf(srv.URL), Port: portOf(srv.URL),
 	}, core.ModelSpec{ServedName: "whisper"})
@@ -361,4 +366,45 @@ func portOf(u string) int {
 		n = n*10 + int(c-'0')
 	}
 	return n
+}
+
+// The image's own Cmd is ["uv","run","uvicorn","--factory",
+// "faster_whisper_server.main:create_app"], read from the registry rather than
+// guessed. The target is a factory function, and uvicorn handed one without
+// --factory reports that it is not an ASGI application — after loading the
+// model rather than before.
+func TestTheLauncherPassesTheFactoryFlag(t *testing.T) {
+	host := newHost()
+	r := newFast()
+	spec := core.ModelSpec{ServedName: "whisper"}
+	if err := r.Bootstrap(context.Background(), host, spec, core.SizingPlan{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Launch(context.Background(), host, spec, core.SizingPlan{}); err != nil {
+		t.Fatal(err)
+	}
+	var script string
+	for _, c := range host.commands() {
+		if strings.HasPrefix(c, "cat > ") && strings.Contains(c, launchScriptPath) {
+			script = c
+		}
+	}
+	if script == "" {
+		t.Fatal("no launch script was written")
+	}
+	if !strings.Contains(script, "--factory "+ASGIFactory) {
+		t.Errorf("the launcher does not pass the factory:\n%s", script)
+	}
+	// The project directory, because the server is a uv project and its
+	// interpreter is not the one on PATH.
+	if !strings.Contains(script, "cd '"+UVProject+"'") {
+		t.Errorf("the script does not enter the project directory:\n%s", script)
+	}
+	if !strings.Contains(script, UVProject+"/.venv/bin/python") {
+		t.Errorf("the script does not use the project's own interpreter:\n%s", script)
+	}
+	// Loopback, and not the 0.0.0.0 the image defaults to (FR-SEC-08).
+	if !strings.Contains(script, "--host 127.0.0.1") {
+		t.Errorf("the server was not bound to loopback:\n%s", script)
+	}
 }
