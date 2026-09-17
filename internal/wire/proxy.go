@@ -95,6 +95,16 @@ func (a *Activity) EnterInFlight() { a.inFlight.Add(1) }
 func (a *Activity) ExitInFlight()  { a.inFlight.Add(-1) }
 
 // IdleFor reports how long the rig has been without operator inference.
+//
+// Zero while work is in flight, because a long generation is activity even
+// though no new request has arrived.
+//
+// Zero also when the clock has never been set, and that case is meant to be
+// unreachable: MarkOperator is called the moment a rig reaches READY, so idle
+// is measured from the point the operator could first have used it. Without
+// that seed a rig nobody ever touched had no clock to run down and could never
+// be reclaimed — which is the likeliest way to abandon one, and exactly what
+// idle reclamation exists for.
 func (a *Activity) IdleFor(now time.Time) time.Duration {
 	if a.InFlight() > 0 {
 		return 0
@@ -379,9 +389,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		p.Activity.requests.Add(1)
 		p.Activity.lastOperator.Store(time.Now().UnixNano())
+		// In flight only for work, and this is the line the comment above was
+		// describing while the code did the opposite. Bracketing *every*
+		// request meant IdleFor returned zero for as long as any request was
+		// open — and a ComfyUI tab holds a WebSocket through this proxy for as
+		// long as it is on screen, so the handler never returned, in-flight
+		// never reached zero, and the rig could not go idle. The classification
+		// above was correct and then discarded one line later.
+		p.Activity.inFlight.Add(1)
+		defer p.Activity.inFlight.Add(-1)
 	}
-	p.Activity.inFlight.Add(1)
-	defer p.Activity.inFlight.Add(-1)
 
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {

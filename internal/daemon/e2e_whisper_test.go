@@ -209,6 +209,19 @@ func TestE2EClawWhisper(t *testing.T) {
 		t.Error("the whisper workload claims the /v1 chat contract")
 	}
 
+	// The idle clock has to be running the moment the rig is usable. It was
+	// only ever started by a request arriving, so a rig brought up and then
+	// walked away from had no clock at all and could never be reclaimed —
+	// which is the likeliest way to abandon one. Asserted here because a fake
+	// harness cannot reach READY: Serve needs a real host to dial.
+	if act := sess.Live.Activity(); act == nil {
+		t.Error("a serving rig has no activity to judge idleness by")
+	} else if act.LastOperatorRequest().IsZero() {
+		t.Error("the idle clock was never started, so this rig could never be reclaimed")
+	} else if idle := act.IdleFor(time.Now()); idle > time.Minute {
+		t.Errorf("idle = %s at READY: the clock started before the rig was usable", idle)
+	}
+
 	// ---- the wiring -------------------------------------------------------
 	//
 	// The half this run exists for. Everything below is about the operator's

@@ -396,3 +396,95 @@ func TestTheSessionCookieNeverReachesTheHost(t *testing.T) {
 		t.Errorf("the application's own cookie was dropped: %q", got)
 	}
 }
+
+// A request that is still open must not hold the rig alive unless it is work.
+//
+// Classifying the traffic as background was necessary and not sufficient: every
+// request was bracketed in-flight regardless of classification, and IdleFor
+// returns zero while anything is in flight. A ComfyUI frontend holds a
+// WebSocket through this proxy for as long as the tab is on screen, so the
+// handler never returned, in-flight never reached zero, and the rig could not
+// go idle — which is precisely what the comment beside the classification
+// claimed to prevent.
+//
+// Asserted while the request is open, because that is the whole bug: after it
+// completes the counter is zero either way.
+func TestAHeldBackgroundRequestDoesNotHoldTheRig(t *testing.T) {
+	var (
+		open    = make(chan struct{})
+		release = make(chan struct{})
+		once    sync.Once
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(open) })
+		<-release // the socket a browser leaves open
+	}))
+	defer upstream.Close()
+	defer close(release)
+
+	p, base := startProxy(t, nil, "")
+	u, _ := url.Parse(upstream.URL)
+	port, _ := strconv.Atoi(u.Port())
+	p.SetUpstream(Upstream{Host: u.Hostname(), Port: port})
+	p.AddClient("cli", secret.New("tok"))
+	p.CountsAsWork = func(r *http.Request) bool {
+		return r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions"
+	}
+	p.Activity.MarkOperator(time.Now().Add(-time.Hour))
+
+	go func() {
+		req, err := http.NewRequest(http.MethodGet, base+"/ws", nil)
+		if err != nil {
+			return
+		}
+		req.Header.Set("Authorization", "Bearer tok")
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-open // the proxy is carrying it now, and will be until release
+
+	if n := p.Activity.InFlight(); n != 0 {
+		t.Errorf("in flight = %d while a background request is open", n)
+	}
+	if idle := p.Activity.IdleFor(time.Now()); idle < 59*time.Minute {
+		t.Errorf("idle = %s while nothing but a held background request is open: "+
+			"a tab left on screen would hold the rig forever", idle.Round(time.Second))
+	}
+}
+
+// The same, for work: a long generation is activity even though no new request
+// has arrived, and that must keep holding the rig.
+func TestAHeldWorkRequestDoesHoldTheRig(t *testing.T) {
+	var (
+		open    = make(chan struct{})
+		release = make(chan struct{})
+		once    sync.Once
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(open) })
+		<-release
+	}))
+	defer upstream.Close()
+	defer close(release)
+
+	p, base := startProxy(t, nil, "")
+	u, _ := url.Parse(upstream.URL)
+	port, _ := strconv.Atoi(u.Port())
+	p.SetUpstream(Upstream{Host: u.Hostname(), Port: port})
+	p.AddClient("cli", secret.New("tok"))
+	p.Activity.MarkOperator(time.Now().Add(-time.Hour))
+
+	go func() {
+		resp := post(t, base, "tok", nil)
+		resp.Body.Close()
+	}()
+	<-open
+
+	if n := p.Activity.InFlight(); n != 1 {
+		t.Errorf("in flight = %d while a completion is being generated", n)
+	}
+	if idle := p.Activity.IdleFor(time.Now()); idle != 0 {
+		t.Errorf("idle = %s during a completion: a long generation is activity", idle)
+	}
+}

@@ -328,6 +328,14 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 		o.roundTrip()+" round-trip verified"); err != nil {
 		return live, err
 	}
+	// Start the idle clock here, at the first moment the operator could have
+	// used the rig. Until this existed the clock was only ever set by a request
+	// arriving, so a rig that reached READY and was then walked away from had
+	// no clock at all and could never be reclaimed — the likeliest way to
+	// abandon one, and the case idle reclamation is for (invariant 4).
+	if a := live.Activity(); a != nil {
+		a.MarkOperator(time.Now())
+	}
 	return live, nil
 }
 
