@@ -14,6 +14,7 @@ import (
 
 	"go.sovrenix.com/larri/internal/claw"
 	_ "go.sovrenix.com/larri/internal/claw/comfyui"
+	_ "go.sovrenix.com/larri/internal/claw/whisper"
 	"go.sovrenix.com/larri/internal/config"
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/daemon"
