@@ -464,3 +464,78 @@ func TestAProfileAllowsLowStockUnlessTheFlagWasGiven(t *testing.T) {
 		t.Error("the profile overrode --allow-low-stock=false given on the command line")
 	}
 }
+
+// A saved ceiling has to mean the same thing whichever command spends. It did
+// not: `up` layered the profile and `claw` did not, so a $0.500/hr ceiling
+// applied to one and not the other on the same machine — and a claw dry run
+// selected a 32 GB card at $0.727/hr for a job needing 8 GB.
+func TestAClawHonoursTheSavedCeilingLikeUpDoes(t *testing.T) {
+	p := config.Profile{
+		MaxPriceHr: 0.50, DiskGB: 120, MinReliability: 0.95,
+		GPUModel: []string{"L4", "A10"}, AllowLowStock: true,
+	}
+	var (
+		gpu           string
+		maxPrice      float64
+		disk          int
+		minRel        float64
+		allowLowStock bool
+	)
+	applyClawProfile(p, map[string]bool{}, &gpu, &maxPrice, &disk, &minRel, &allowLowStock)
+
+	if maxPrice != 0.50 {
+		t.Errorf("max price = %v: a claw would rent above the saved ceiling", maxPrice)
+	}
+	if disk != 120 || minRel != 0.95 || !allowLowStock {
+		t.Errorf("market settings not layered: disk %d, reliability %v, low stock %v",
+			disk, minRel, allowLowStock)
+	}
+	if gpu != "L4,A10" {
+		t.Errorf("gpu = %q", gpu)
+	}
+}
+
+// A profile says what to do when nothing was said, and never overrides
+// something that was.
+func TestAnExplicitFlagOutranksTheSavedProfile(t *testing.T) {
+	p := config.Profile{MaxPriceHr: 0.50, DiskGB: 120}
+	var (
+		gpu           string
+		maxPrice      = 0.30
+		disk          int
+		minRel        float64
+		allowLowStock bool
+	)
+	set := map[string]bool{"max-price": true}
+	applyClawProfile(p, set, &gpu, &maxPrice, &disk, &minRel, &allowLowStock)
+
+	if maxPrice != 0.30 {
+		t.Errorf("max price = %v: the profile overrode a value the operator typed", maxPrice)
+	}
+	if disk != 120 {
+		t.Error("an unset flag was not filled from the profile")
+	}
+}
+
+// Only the market half of a profile means anything to a claw: its payload
+// comes from the job file, so a saved model or runtime must not reach it.
+func TestAClawIgnoresTheModelHalfOfAProfile(t *testing.T) {
+	p := config.Profile{
+		Model: "meta-llama/Llama-3-70B", Runtime: "vllm",
+		Quantization: "awq", ContextLen: 32768,
+		MaxPriceHr: 0.50,
+	}
+	var (
+		gpu           string
+		maxPrice      float64
+		disk          int
+		minRel        float64
+		allowLowStock bool
+	)
+	// The signature is the guard: there is nowhere for a model, a runtime, a
+	// quantisation or a context length to go.
+	applyClawProfile(p, map[string]bool{}, &gpu, &maxPrice, &disk, &minRel, &allowLowStock)
+	if maxPrice != 0.50 {
+		t.Errorf("max price = %v", maxPrice)
+	}
+}

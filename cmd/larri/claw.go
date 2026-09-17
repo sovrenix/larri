@@ -78,6 +78,8 @@ func cmdClaw(ctx context.Context, args []string) error {
 	yes := fs.Bool("yes", false, "do not prompt before spending")
 	dryRun := fs.Bool("dry-run", false, "plan and rank without spending")
 	_ = fs.Parse(args)
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
 	if *list {
 		return listClaws()
@@ -120,6 +122,21 @@ func cmdClaw(ctx context.Context, args []string) error {
 		}
 	}
 
+	// The saved profile, layered under the flags, before the criteria are
+	// built — because the criteria go into the plan and the plan decides what
+	// is rented.
+	//
+	// `up` has always done this and `claw` did not, which meant a saved
+	// ceiling of $0.500/hr applied to one command and not the other on the
+	// same machine. A dry run selected a 32 GB card at $0.727/hr for a job
+	// needing 8 GB, and nothing was wrong with the ranking: there was simply
+	// no ceiling, because --max-price defaults to zero and zero means none.
+	res, err := config.Resolve(config.Request{})
+	if err != nil {
+		return err
+	}
+	applyClawProfile(res.Profile, set, gpu, maxPrice, disk, minRel, allowLowStock)
+
 	crit := core.Criteria{
 		MaxPriceHr: *maxPrice, MinReliability: *minRel, DiskGB: *disk,
 		MinNetMbps: *minNet, CertifiedOnly: *verifiedOnly,
@@ -127,6 +144,13 @@ func cmdClaw(ctx context.Context, args []string) error {
 	}
 	if *gpu != "" {
 		crit.GPUModel = splitList(*gpu)
+	}
+	if crit.MaxPriceHr > 0 {
+		// FR-CFG-08: a limit read from a file is disclosed on every run that
+		// uses it. A stale ceiling otherwise fails as "no offer satisfies the
+		// criteria", which reads as a market problem rather than a
+		// configuration one.
+		fmt.Printf("  ceiling     $%.3f/hr%s\n", crit.MaxPriceHr, sourceNote(set["max-price"]))
 	}
 	hf := secret.New(os.Getenv("HF_TOKEN"))
 
@@ -173,10 +197,6 @@ func cmdClaw(ctx context.Context, args []string) error {
 		}
 	}
 
-	res, err := config.Resolve(config.Request{})
-	if err != nil {
-		return err
-	}
 	conf := res.Config
 	if *idleFor != 0 {
 		conf.Idle.Timeout = *idleFor
