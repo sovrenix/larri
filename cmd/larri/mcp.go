@@ -116,7 +116,19 @@ func cmdMCP(ctx context.Context, args []string) error {
 }
 
 // newOrchestrator builds one configured from the environment.
-func newOrchestrator(st *state.Store, runtimeKind, providerName string, model core.ModelSpec, events chan<- daemon.Event) (*daemon.Orchestrator, error) {
+// newOrchestrator builds the lifecycle for the surfaces that are not `up`.
+//
+// Shared by the TUI and by MCP, which is why anything the CLI resolves from
+// the environment has to be resolved here too. The stable client credential
+// was not, so both surfaces minted a fresh one per rig and would have
+// invalidated every wired client on every teardown.
+//
+// The spend ceiling is deliberately *not* here: it belongs to a bring-up
+// request rather than to the environment, so each provisioning caller sets it.
+// Invariant 6 is the rule that was broken either way — a capability that only
+// works from the CLI is in the wrong layer.
+func newOrchestrator(st *state.Store, runtimeKind, providerName string, model core.ModelSpec,
+	events chan<- daemon.Event) (*daemon.Orchestrator, error) {
 	prov, err := openProvider(providerName)
 	if err != nil {
 		return nil, err
@@ -133,10 +145,16 @@ func newOrchestrator(st *state.Store, runtimeKind, providerName string, model co
 	if err != nil {
 		return nil, err
 	}
+	// Not fatal: a session that cannot store the credential still works, it
+	// simply will not be the same one next time. The CLI says so out loud; an
+	// agent has nowhere to read it, so it is left to the shared disclosure.
+	clientKey, _, _ := config.ResolveClientKey(os.Getenv)
+
 	return &daemon.Orchestrator{
 		Store: st, Provider: prov, Runtime: eng,
 		LabelSealer: sealer,
 		ClientKeys:  openClientKeys(),
+		ClientToken: clientKey,
 		Resolver:    sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
 		Policy:      rank.DefaultPolicy(),
 		// Matches the CLI's default rather than undercutting it. An agent

@@ -249,6 +249,24 @@ func (o *Orchestrator) dialPinned(ctx context.Context, inst *core.Instance,
 		"reconnect failed: %v", shortErr(lastErr))
 }
 
+// endpointURL renders the local address in the form its clients actually use.
+//
+// "/v1" is the OpenAI base path, and an inference client is configured with
+// exactly that string. A browser surface has no such base: ComfyUI is served
+// at the root, so advertising /v1 for it names a path that 404s. A live run
+// printed "tunnel http://127.0.0.1:8188/v1" for a rig whose UI was at "/",
+// which is the endpoint an operator would have pasted into a browser first.
+//
+// Asked of the workload rather than branched on its kind, so a future
+// protocol answers this without editing the wiring layer.
+func (o *Orchestrator) endpointURL(port int) string {
+	base := runtime.ProtocolOpenAI.BasePath()
+	if o.Runtime != nil {
+		base = o.Runtime.Protocol().BasePath()
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d%s", port, base)
+}
+
 // attachTunnel opens the forward and proxy for an endpoint and records them on
 // live. Serve and Adopt share it so a restored rig is wired exactly like a
 // fresh one — including the credential substitution, which is what keeps a
@@ -291,15 +309,23 @@ func (o *Orchestrator) attachTunnel(ctx context.Context, live *Live, rig *core.R
 		proxy.SetKeys(o.ClientKeys)
 	}
 	if o.needsRigKey() {
-		token, err := secret.Generate(32)
-		if err != nil {
-			cancel()
-			return err
+		// A stable token, where the caller has one, is the credential a
+		// client was configured against once (invariant 8); generating here
+		// would invalidate it on every teardown. Named for what it is, so
+		// the proxy's record does not report a stable key as a per-rig one.
+		token, name := o.ClientToken, "larri-client"
+		if token.Empty() {
+			name = "this-rig"
+			var err error
+			if token, err = secret.Generate(32); err != nil {
+				cancel()
+				return err
+			}
 		}
-		proxy.AddClient("this-rig", token)
+		proxy.AddClient(name, token)
 		live.ClientToken = token
 	}
 	rig.LocalPort = proxy.LocalPort()
-	live.Endpoint = fmt.Sprintf("http://127.0.0.1:%d/v1", rig.LocalPort)
+	live.Endpoint = o.endpointURL(rig.LocalPort)
 	return nil
 }

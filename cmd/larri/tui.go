@@ -97,6 +97,11 @@ func cmdTUI(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The ceiling covers bring-up and not only what follows READY. Without
+	// this a --budget on the dashboard bounded the supervisor alone, so a rig
+	// could exhaust it during the weight download — which on a slow link is
+	// most of what the operator pays for — and reach READY already over.
+	o.BudgetUSD = cfg.Budget.MaxUSD
 	if r, err := pickRuntime(*engine, spec); err == nil {
 		o.Runtime = r
 		for _, n := range securityNotes(r) {

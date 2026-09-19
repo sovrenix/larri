@@ -10,6 +10,20 @@ cost, and `docs/PROJECT_STATE.md` is the current status per requirement — gene
 the status column in the requirements spec, which is the source of truth and is enforced
 by `internal/lint`.
 
+Above that sits the **claw** layer (invariant 1), which rents the same lifecycle for
+applications that are not inference engines. Two types are compiled in, one per site.
+
+Both sites are **live**. **ComfyUI** is remote: `larri claw --config examples/comfyui/job.yml`
+rented an RTX 2000 Ada, installed ComfyUI, fetched 6.5 GB of SDXL on the host, rendered,
+collected the image and destroyed the instance for $0.0582. **Whisper** is local: a rented
+RTX A4000 served speech to text while the operator's own application stayed here, wired to
+the fixed local port and verified by the proxy seeing that client's credential arrive, then
+reverted and destroyed for $0.0105.
+
+The gap worth knowing is that **no client writer writes a file yet**. The one that exists is
+tier C by decision rather than by fallback — it configures nothing, prints what to paste, and
+verifies by asking the proxy whether that client's own credential ever arrived.
+
 What is missing is the half an operator touches after the endpoint exists: client
 wiring, the browser surfaces, and observability. What is present is everything up to and
 including a working `http://127.0.0.1:8000/v1`.
@@ -74,20 +88,60 @@ written down here instead.
 ### 1. Two abstractions, and only two
 
 **Provider** (`Search(Criteria) []Offer`, `Create(Offer) Instance`, `Status`, `Destroy`) and
-**Runtime** (`Bootstrap(Instance, ModelSpec)`, `Readiness`, `Serve`). Provider-specific
+**Workload** (`Bootstrap(Instance, ModelSpec)`, `Readiness`, `Serve`, `Protocol`).
+
+The second one has two tiers, and the tiers are not a third abstraction. A **Runtime** is a
+Workload that additionally serves OpenAI-compatible `/v1` — vLLM, llama.cpp, Ollama — and an
+**Application** is one that serves something else. The lifecycle underneath never depended
+on the wire format, which is why the widening cost nothing structural; what it bought is
+that a caller about to issue a completion can *ask* (`Protocol()`), rather than discover the
+answer from a 404 on a rig that is already billing. Provider-specific
 vocabulary — Vast's offers/asks and interruptible bids, RunPod's pods and Secure vs
 Community Cloud — is normalized at the provider boundary and must not leak upward. If
 core/ranking/wiring code has to branch on which provider it is talking to, the abstraction
 is wrong; fix the boundary rather than adding the branch.
 
+**Above those two sits a third thing that is not an abstraction of the same kind: a claw.**
+A `runtime.Workload` is the process that ends up on the rented box; a **claw** is the job the
+operator asked for, and one produces the other. `internal/claw` holds the contract and
+`internal/claw/<name>` the implementations, the way provider adapters sit under
+`internal/provider`. The daemon imports the contract and never an implementation — a lint
+guard enforces it, because the coupling it prevents decays silently: reaching into one for
+"just one thing" compiles and works, and then the next application needs the same exception.
+
+A claw declares its **site**, and that decides what the lifecycle does either side of the
+rental. A *remote* claw runs on the rented box, so whatever it produces exists only there
+and is collected before the destroy. A *local* claw runs on the operator's machine and rents
+only the inference, so there is nothing to rescue — but their client configuration was
+changed and is put back first, before the instance goes, so no client is left pointing at a
+dead endpoint. Neither step may block the teardown: files left behind are lost once, a
+config is recoverable from its backup, and a rig left alive bills until somebody notices.
+
 Provider APIs churn. Verify request/response shapes against current provider docs before
 trusting anything written here or in existing code.
 
-### 2. OpenAI-compatible `/v1` is the contract
+### 2. OpenAI-compatible `/v1` is the contract — for inference clients
 
 llama.cpp (`llama-server`), Ollama, and vLLM all expose an OpenAI-compatible HTTP surface.
 That surface — not any runtime's native API — is what the wiring, the chat UI, and the IDE
-depend on. Runtimes differ in three places only, and those differences belong inside the
+depend on, and that has not changed: every **Runtime** serves `/v1`, and a test asserts it
+for each compiled-in engine.
+
+What the widening in invariant 1 admits is that not every rentable payload is an inference
+engine. An **Application** workload serves its own API, and the rule that follows is simple:
+no inference client is ever pointed at one. `/v1` is still the only thing the IDE and chat
+wiring know how to speak.
+
+**"OpenAI-compatible" and "answers a completion" are not the same claim**, and the protocol
+is what separates them. OpenAI's `/v1` is a family of surfaces — `/v1/chat/completions` is
+one, `/v1/audio/transcriptions` another — sharing a base path, a bearer credential and a
+client ecosystem while answering entirely different requests. So a payload declares which it
+serves, and callers ask the question they actually have: `RequireOpenAI` means *chat*, while
+`Protocol.BasePath` means *where*. Testing `!= ProtocolOpenAI` conflates the two and gets the
+second one wrong, which is why both questions are methods on the protocol rather than
+comparisons against one constant.
+
+Runtimes differ in three places only, and those differences belong inside the
 Runtime implementation:
 
 - how model weights are acquired (HF repo pull vs registry pull vs pre-baked image),
@@ -386,7 +440,15 @@ accident:
   by all your IDEs to untrusted hardware. Client tokens are per-client, so one can be revoked
   without rewiring the rest and spend can be attributed per tool. They are stored only as
   SHA-256 hashes (`larri token`), shown once at creation, and LARRI's own probes use a
-  separate key, so no code path needs a client key's value after it is made.
+  separate key, so nothing on the `up` path needs a client key's value after it is made.
+  **The local claw site is the one exception, and it is structural rather than an
+  oversight**: a tier-C client is configured by a human pasting a value (§10.2), and a
+  store that holds only hashes cannot produce one. That path therefore derives each
+  client's key by HMAC from a base `config.ResolveClientKey` persists — stable across rigs
+  for exactly the reason the hashed keys are — and the derivation **refuses an empty
+  base**, because HMAC with no key is a constant and a credential every installation
+  shares is not a credential. Two stores, one per question: which keys are accepted, and
+  which value a human was given to paste.
 - Don't build anything stronger than a bearer token *inside* the tunnel: the channel is
   already SSH-authenticated to a loopback service, and the only principal in there is the
   host, which has root and would read the runtime's memory rather than its API. The rig token
@@ -490,6 +552,11 @@ The mascot is **Larri the lobster** (a lobster leaves one shell for the next and
 same lobster — which is invariant 3). Keep it in the README; do not scatter it through the
 docs.
 
+One deliberate exception: a **claw** is the name of the application layer (invariant 1), in
+the package path and on the command line. It was chosen knowing this rule, and it stays a
+single exception rather than a precedent — the next concept gets a name that says what it
+does.
+
 ## Stack and layout
 
 Go. Single binary, subcommands for the surfaces. Module path **`go.sovrenix.com/larri`** — a
@@ -499,7 +566,8 @@ is importable.
 ```
 cmd/larri/            CLI entrypoint + subcommands (up, down, status, daemon, mcp, ui)
 internal/provider/    Provider interface + vastai/, runpod/ implementations
-internal/runtime/     Runtime interface + llamacpp/, ollama/, vllm/ implementations
+internal/runtime/     Workload + Runtime interfaces; llamacpp/, ollama/, vllm/
+internal/claw/        The claw contract + <name>/ implementations (invariant 1)
 internal/sizing/      VRAM/context/quantization math (invariant 5)
 internal/rank/        Offer scoring: fit, price, reliability, region
 internal/state/       Durable lifecycle state + reconciliation
@@ -518,6 +586,8 @@ go build ./...                                    # build
 go run ./cmd/larri -- up --help                   # run the CLI
 go test ./...                                     # all tests
 go test ./internal/sizing -run TestKVCacheFit -v  # a single test
+go run ./cmd/larri -- claw --list                  # the claw types compiled in
+go run ./cmd/larri -- claw --config examples/comfyui/job.yml --dry-run  # plan one, spend nothing
 go test -race ./...                               # race detector
 go vet ./...
 gofmt -l .                                        # must print nothing

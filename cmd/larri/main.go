@@ -38,6 +38,7 @@ import (
 const usage = `larri — Local Agent for Remote Rigging of Inference
 
   larri up      rent a GPU, serve a model, wire local clients
+  larri claw    rent a GPU for an application (--list for the types)
   larri down    revert wiring, destroy the rig, confirm it is gone
   larri resume  rebuild the tunnel to a rig that outlived the last process
   larri offers  search and rank without spending anything
@@ -133,6 +134,8 @@ func main() {
 	switch os.Args[1] {
 	case "up":
 		err = cmdUp(ctx, os.Args[2:])
+	case "claw":
+		err = cmdClaw(ctx, os.Args[2:])
 	case "down":
 		err = cmdDown(ctx, os.Args[2:])
 	case "resume":
@@ -517,6 +520,7 @@ func cmdUp(ctx context.Context, args []string) error {
 		// timeout and always longer, so the supervisor — which can tell a
 		// busy rig from an idle one — acts first.
 		IdleTimeout:        cfg.Idle.Timeout,
+		BudgetUSD:          cfg.Budget.MaxUSD,
 		DeadmanDeadline:    *deadman,
 		EndpointStallLimit: sshWait,
 		AuthStallTimeout:   sshWait,
@@ -618,6 +622,18 @@ func cmdDown(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("down", flag.ExitOnError)
 	nothingCreated := fs.String("nothing-created", "",
 		"for a destroyed rig no instance was ever recorded for: record that nothing was created, and how you checked")
+	// A claw that renders holds the only copy of what it made, and this
+	// command cannot fetch it: the rig's SSH identity is ephemeral and
+	// deliberately never persisted (FR-STATE-05), so a second process has no
+	// way to reach the host. Destroying is therefore irreversible here in a
+	// way it is not for an inference rig, where nothing of the operator's
+	// lives on the machine.
+	//
+	// A live run lost a render to exactly this: `larri down` in one shell
+	// destroyed the instance while the session that would have collected it
+	// was still running in another.
+	discard := fs.Bool("discard-outputs", false,
+		"destroy a rig whose results have not been collected")
 	_ = fs.Parse(args)
 
 	st, err := openStore()
@@ -664,6 +680,14 @@ func cmdDown(ctx context.Context, args []string) error {
 	if target.State == core.StateDestroyed && *nothingCreated == "" {
 		fmt.Printf("  rig %s is already destroyed\n", target.ID)
 		return nil
+	}
+	// Refused rather than warned. A warning scrolls past above a teardown that
+	// proceeds anyway, and by the time it is read the host is gone.
+	if !target.Runtime.ServesInference() && !*discard {
+		return fmt.Errorf(
+			"down: rig %s holds results that exist only on the host: "+
+				"stop the claw session to collect them, or --discard-outputs",
+			target.ID)
 	}
 	// The rig's own provider, never the configured default. Another one
 	// answers "not found" for an instance it never held, which reads as

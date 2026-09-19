@@ -1,0 +1,35 @@
+# Copyright (C) 2026 Sovrenix Inc.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# A claw job file. Run it with:
+#
+#     larri claw --config examples/comfyui/job.yml
+#
+# `type` is the only key this layer reads; everything below it belongs to that
+# type and is decoded by it. Relative paths resolve against THIS FILE rather
+# than the working directory, so the job works from anywhere — a job that only
+# runs from one directory is one that breaks the first time it runs in CI.
+
+type: comfyui
+
+# The graph to run. Save it from ComfyUI with "Export (API)": the UI format can
+# be planned against — the models and the resolution are both readable — but
+# ComfyUI's /prompt will not accept it, so readiness proves the server and the
+# GPU rather than a render.
+workflow: ./sdxl.json
+
+# Where the bare filenames in the graph are published from. Optional: the stock
+# SDXL and FLUX names resolve from the built-in catalogue without it.
+models: ./models.yaml
+
+# Checkpoint containers execute code on load, on the host holding your Hugging
+# Face token. Off by default; turn it on only for a model you have a reason to
+# trust, and expect to be told so at bring-up.
+allow_pickle: false
+
+# The two pins move together. The image supplies torch and the ref supplies
+# ComfyUI, and a pair that has never been run together is a rig that installs
+# 6.5 GB of weights and then fails to import its own nodes. Override neither
+# unless you are overriding both.
+comfyui_version: v0.35.2
+image: pytorch/pytorch:2.9.1-cuda12.6-cudnn9-runtime

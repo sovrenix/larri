@@ -284,7 +284,41 @@ const (
 	RuntimeVLLM     RuntimeKind = "vllm"
 	RuntimeLlamaCpp RuntimeKind = "llamacpp"
 	RuntimeOllama   RuntimeKind = "ollama"
+
+	// RuntimeComfyUI is an image-generation graph rather than an inference
+	// engine. It is a Workload and not a Runtime — it serves no /v1 at all —
+	// and it shares this type because everything that persists, reports, or
+	// reconciles a rig keys on the name of what is running, and forking that
+	// type would fork the journal, the snapshot, and every surface reading
+	// them.
+	RuntimeComfyUI RuntimeKind = "comfyui"
+
+	// RuntimeWhisper is a speech-to-text server. Like ComfyUI it is a
+	// Workload and not a Runtime, and unlike ComfyUI its surface is
+	// OpenAI-shaped — /v1/audio/transcriptions — which is compatibility with
+	// the clients and not with the chat contract. See
+	// runtime.ProtocolOpenAIAudio.
+	RuntimeWhisper RuntimeKind = "whisper"
 )
+
+// ServesInference reports whether this kind is an inference engine.
+//
+// The negative is the load-bearing case: anything else is an application
+// payload, and an application's results live on the rented host and nowhere
+// else. A caller about to destroy one is about to destroy the only copy, which
+// is not true of an engine — nothing of the operator's lives on that machine.
+//
+// Asked this way round so a claw type added later is protected by default. The
+// alternative — listing the application kinds — would leave each new one
+// unguarded until somebody remembered to add it, which is the failure mode this
+// question exists to prevent.
+func (k RuntimeKind) ServesInference() bool {
+	switch k {
+	case RuntimeVLLM, RuntimeLlamaCpp, RuntimeOllama:
+		return true
+	}
+	return false
+}
 
 // Transition is one entry in a rig's history and in the journal.
 type Transition struct {

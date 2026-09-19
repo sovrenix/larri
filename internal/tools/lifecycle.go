@@ -261,6 +261,12 @@ func (d Deps) bringUp(ctx context.Context, crit core.Criteria, spec core.ModelSp
 		d.Session.Fail(err)
 		return
 	}
+	// The ceiling an agent asked for covers bring-up, not only what happens
+	// after READY. Without this it reached SupervisePolicy alone, so a rig
+	// could exhaust the budget during the weight download and arrive at READY
+	// already over it — which is the bug BudgetUSD was added to fix, fixed for
+	// the CLI and not for the surface where nobody is watching (invariant 6).
+	o.BudgetUSD = a.Budget
 	events := make(chan daemon.Event, 128)
 	o.Events = events
 	go func() {
