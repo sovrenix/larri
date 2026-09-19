@@ -150,7 +150,12 @@ func WriteCredential(ctx context.Context, sess runtime.Session, token secret.Sec
 // a fetch that gets a working host destroyed.
 func (d Download) Script(useCredential bool) (string, error) {
 	var b strings.Builder
-	b.WriteString("set -u\n")
+	// -e as well as -u. Every step that can fail already says so explicitly,
+	// and that was the problem: the two that did not — the mkdir and the
+	// rename — let the script run on to touch the completion marker with a
+	// model missing, and ComfyUI was launched against a bundle that was never
+	// there. A step added later inherits the backstop rather than the bug.
+	b.WriteString("set -eu\n")
 	b.WriteString("rm -f " + shellQuote(fetchDone) + "\n")
 
 	conf := ""
@@ -168,32 +173,48 @@ func (d Download) Script(useCredential bool) (string, error) {
 		dir := path.Dir(dest)
 		part := dest + ".part"
 
-		b.WriteString("mkdir -p " + shellQuote(dir) + "\n")
+		// Quoted like every other value from the workflow. These are log
+		// lines, which is exactly why they were missed: they look like
+		// output rather than like a command. A name carrying $(…) ran as
+		// root on a host holding the operator's Hugging Face token, and
+		// SafeName does not help — it rejects traversal and null bytes, not
+		// shell metacharacters. printf takes the name as an argument, so
+		// nothing in it is ever parsed.
+		name := shellQuote(it.Name)
+		b.WriteString("mkdir -p " + shellQuote(dir) +
+			" || { printf 'FAILED %s\\n' " + name + "; exit 1; }\n")
 		// Skip what is already there and the right size. A rig replaced
 		// underneath a live session, or a fetch resumed after a dropped
 		// connection, must not pay for the same 7 GB twice.
 		b.WriteString(fmt.Sprintf(
 			"if [ -f %s ] && [ \"$(stat -c %%s %s 2>/dev/null || echo 0)\" = %s ]; then\n"+
-				"  echo \"have %s\"\n"+
+				"  printf 'have %%s\\n' %s\n"+
 				"else\n",
 			shellQuote(dest), shellQuote(dest), shellQuote(fmt.Sprint(it.Bytes)),
-			it.Name))
-		b.WriteString("  echo \"fetch " + it.Name + "\"\n")
+			name))
+		b.WriteString("  printf 'fetch %s\\n' " + name + "\n")
 		// -f so an HTML error page is not written out as a checkpoint, -L to
 		// follow the redirect to the CDN, -C - to resume a partial file.
 		b.WriteString(fmt.Sprintf(
 			"  curl -fL -C - --retry 5 --retry-delay 5 --retry-connrefused "+
-				"%s-o %s %s || { echo \"FAILED %s\"; exit 1; }\n",
-			conf, shellQuote(part), shellQuote(it.URL), it.Name))
+				"%s-o %s %s || { printf 'FAILED %%s\\n' %s; exit 1; }\n",
+			conf, shellQuote(part), shellQuote(it.URL), name))
 		if it.Bytes > 0 {
 			// Verify before the rename, so a truncated file is never visible
 			// to ComfyUI under its real name.
 			b.WriteString(fmt.Sprintf(
 				"  got=$(stat -c %%s %s 2>/dev/null || echo 0)\n"+
-					"  if [ \"$got\" != %s ]; then echo \"SHORT %s $got != %d\"; exit 1; fi\n",
-				shellQuote(part), shellQuote(fmt.Sprint(it.Bytes)), it.Name, it.Bytes))
+					"  if [ \"$got\" != %s ]; then\n"+
+					"    printf 'SHORT %%s %%s != %%s\\n' %s \"$got\" %s\n"+
+					"    exit 1\n"+
+					"  fi\n",
+				shellQuote(part), shellQuote(fmt.Sprint(it.Bytes)),
+				name, shellQuote(fmt.Sprint(it.Bytes))))
 		}
-		b.WriteString("  mv " + shellQuote(part) + " " + shellQuote(dest) + "\n")
+		// A rename that fails leaves the model absent under its real name,
+		// and the script went on to touch the completion marker anyway.
+		b.WriteString("  mv " + shellQuote(part) + " " + shellQuote(dest) +
+			" || { printf 'FAILED %s\\n' " + name + "; exit 1; }\n")
 		b.WriteString("fi\n")
 	}
 	b.WriteString("echo ALLDONE\n")
@@ -215,6 +236,16 @@ func (d Download) Start(ctx context.Context, sess runtime.Session, useCredential
 	logPath := d.Log
 	if logPath == "" {
 		logPath = FetchLog
+	}
+	// Cleared here, before anything is launched, and not only as the script's
+	// first line. Start returns once the launcher has printed STARTED, so a
+	// marker left by an earlier fetch was readable in the window before the
+	// script ran — and the marker names no model, so one left by a different
+	// bundle on a host being reused reads as this one having finished. The
+	// script clears it too, for the retry that never reaches this call.
+	if _, err := sess.Run(ctx, "rm -f "+shellQuote(fetchDone)); err != nil {
+		return errs.Newf(errs.ClassHostFailure, "comfyui.Download",
+			"clear the fetch marker: %v", err)
 	}
 	// A heredoc with a quoted delimiter, so nothing in the script is expanded
 	// by the shell that writes it.
