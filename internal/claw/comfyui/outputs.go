@@ -80,6 +80,14 @@ func (r SyncResult) Summary() string {
 // the tunnel before the rig goes.
 const maxArtifactBytes = 256 << 20
 
+// maxListed bounds one listing, so a pathological output directory cannot
+// produce a command output the local process has to hold whole.
+//
+// A cap that silently drops the overflow is worse than no cap here: what it
+// drops is destroyed moments later, and the sync reports a clean sweep. It is
+// therefore measured rather than assumed — see List.
+const maxListed = 5000
+
 // List enumerates what the session rendered.
 //
 // Read from the filesystem rather than from ComfyUI's /history, and the
@@ -87,21 +95,29 @@ const maxArtifactBytes = 256 << 20
 // about graphs submitted through the API in the current process; the operator
 // spent the session in the browser, queueing renders LARRI never saw, and a
 // teardown that saved only what LARRI submitted would destroy the rest.
-func List(ctx context.Context, sess runtime.Session, dir string) ([]Artifact, error) {
+// The second return says the listing was cut short. It is separate from the
+// error because a truncated listing is still worth collecting: the caller
+// saves what it can and records the rest as lost, which is what stops a
+// teardown reporting a clean sweep it did not make.
+func List(ctx context.Context, sess runtime.Session, dir string) ([]Artifact, bool, error) {
 	if dir == "" {
 		dir = OutputDir
 	}
 	// -printf keeps this one round-trip instead of a stat per file. The tab
 	// separator is safe where a space is not: ComfyUI filenames routinely
 	// contain spaces, and splitting on whitespace loses them.
+	// One more than the cap, so hitting it is detectable. Reading exactly the
+	// cap could not tell "five thousand files" from "five thousand and one",
+	// and the difference decides whether a destroy loses anything.
 	cmd := fmt.Sprintf(
-		`find %s -type f -printf '%%s\t%%T@\t%%P\n' 2>/dev/null | head -n 5000`,
-		shellQuote(dir))
+		`find %s -type f -printf '%%s\t%%T@\t%%P\n' 2>/dev/null | head -n %d`,
+		shellQuote(dir), maxListed+1)
 	out, err := sess.Run(ctx, cmd)
 	if err != nil && len(out) == 0 {
-		return nil, errs.Newf(errs.ClassHostFailure, "comfyui.List",
+		return nil, false, errs.Newf(errs.ClassHostFailure, "comfyui.List",
 			"list outputs: %v", err)
 	}
+	rows, truncated := 0, false
 	var arts []Artifact
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimRight(line, "\r")
@@ -115,6 +131,13 @@ func List(ctx context.Context, sess runtime.Session, dir string) ([]Artifact, er
 		size, serr := strconv.ParseUint(strings.TrimSpace(parts[0]), 10, 64)
 		if serr != nil {
 			continue
+		}
+		// Counted before the filters below, because the cap applies to what
+		// find returned and not to what survived them.
+		rows++
+		if rows > maxListed {
+			truncated = true
+			break
 		}
 		secs, _ := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
 		rel := parts[2]
@@ -136,7 +159,7 @@ func List(ctx context.Context, sess runtime.Session, dir string) ([]Artifact, er
 		})
 	}
 	sort.Slice(arts, func(i, j int) bool { return arts[i].Rel < arts[j].Rel })
-	return arts, nil
+	return arts, truncated, nil
 }
 
 // SyncOptions configures retrieval.
@@ -174,7 +197,7 @@ func Sync(ctx context.Context, sess runtime.Session, localDir string, opt SyncOp
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
-	arts, err := List(ctx, sess, opt.RemoteDir)
+	arts, truncated, err := List(ctx, sess, opt.RemoteDir)
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +206,15 @@ func Sync(ctx context.Context, sess runtime.Session, localDir string, opt SyncOp
 			"create %s: %v", localDir, err)
 	}
 	res := &SyncResult{Failed: map[string]string{}, Dir: localDir}
+	if truncated {
+		// Recorded as a failure, which is what makes Complete false and what
+		// stops larri down destroying the host on a clean-looking summary.
+		// The files beyond the cap were never listed, so they cannot be named
+		// individually — what can be said is that they exist and are about to
+		// be lost.
+		res.Failed[fmt.Sprintf("(outputs beyond the first %d)", maxListed)] =
+			"not listed, so not collected"
+	}
 
 	for _, a := range arts {
 		if !opt.Since.IsZero() && a.ModTime.Before(opt.Since) {

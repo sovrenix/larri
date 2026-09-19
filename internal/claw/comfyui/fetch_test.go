@@ -4,6 +4,8 @@
 package comfyui
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -81,5 +83,37 @@ func TestAFetchThatCannotFinishNeverMarksItselfDone(t *testing.T) {
 	}
 	if !strings.Contains(script[mv:done], "exit 1") {
 		t.Error("a failed rename does not stop the script reaching the marker")
+	}
+}
+
+// A cap that silently drops what it cannot list is worse than no cap, because
+// the files it dropped are destroyed moments later and the sync reports a
+// clean sweep. The cap stays; what changed is that hitting it is a fact the
+// teardown can see.
+func TestAnOutputListingThatWasCutShortSaysSo(t *testing.T) {
+	var rows strings.Builder
+	for i := 0; i < maxListed+3; i++ {
+		fmt.Fprintf(&rows, "10\t1700000000\tr%04d.png\n", i)
+	}
+	out := rows.String()
+	f := &fakeSession{rule: func(string) (string, error) { return out, nil }}
+	arts, truncated, err := List(context.Background(), f, "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !truncated {
+		t.Error("a listing that hit the cap reported itself complete")
+	}
+	if len(arts) > maxListed {
+		t.Errorf("listed %d artefacts past a cap of %d", len(arts), maxListed)
+	}
+
+	// And a listing that fits must not claim it was cut short, or every
+	// teardown would refuse.
+	short := &fakeSession{rule: func(string) (string, error) {
+		return "10\t1700000000\tone.png\n", nil
+	}}
+	if _, cut, err := List(context.Background(), short, ""); err != nil || cut {
+		t.Errorf("a listing of one file reported truncated=%v err=%v", cut, err)
 	}
 }

@@ -557,7 +557,7 @@ func TestListReadsTheFilesystemNotTheAPI(t *testing.T) {
 		return "1024\t1700000000\tComfyUI_00001_.png\n" +
 			"2048\t1700000100\tportraits/ComfyUI_00002_.png\n", nil
 	}}
-	arts, err := List(context.Background(), f, "")
+	arts, _, err := List(context.Background(), f, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +581,7 @@ func TestListHandlesSpacesInFilenames(t *testing.T) {
 		}
 		return "99\t1700000000\tmy render 01.png\n", nil
 	}}
-	arts, err := List(context.Background(), f, "")
+	arts, _, err := List(context.Background(), f, "")
 	if err != nil {
 		t.Fatal(err)
 	}
