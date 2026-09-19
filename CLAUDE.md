@@ -22,7 +22,11 @@ reverted and destroyed for $0.0105.
 
 The gap worth knowing is that **no client writer writes a file yet**. The one that exists is
 tier C by decision rather than by fallback — it configures nothing, prints what to paste, and
-verifies by asking the proxy whether that client's own credential ever arrived.
+verifies by asking the proxy whether that client's own credential ever arrived. That probe is
+real and proven live; what is not built is a *second* one. Verification runs once, at the
+moment the wiring is applied, which for a guided client is before the operator has been shown
+anything to paste — so the persisted record honestly reads `unverified` and nothing ever goes
+back to ask again. FR-WIRE-04 is `part` for this as much as for the missing file writers.
 
 What is missing is the half an operator touches after the endpoint exists: client
 wiring, the browser surfaces, and observability. What is present is everything up to and
