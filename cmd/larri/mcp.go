@@ -145,16 +145,10 @@ func newOrchestrator(st *state.Store, runtimeKind, providerName string, model co
 	if err != nil {
 		return nil, err
 	}
-	// Not fatal: a session that cannot store the credential still works, it
-	// simply will not be the same one next time. The CLI says so out loud; an
-	// agent has nowhere to read it, so it is left to the shared disclosure.
-	clientKey, _, _ := config.ResolveClientKey(os.Getenv)
-
 	return &daemon.Orchestrator{
 		Store: st, Provider: prov, Runtime: eng,
 		LabelSealer: sealer,
 		ClientKeys:  openClientKeys(),
-		ClientToken: clientKey,
 		Resolver:    sizing.NewHFResolver(secret.New(os.Getenv("HF_TOKEN"))),
 		Policy:      rank.DefaultPolicy(),
 		// Matches the CLI's default rather than undercutting it. An agent
