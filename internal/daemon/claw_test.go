@@ -6,6 +6,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"go.sovrenix.com/larri/internal/errs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -416,8 +417,14 @@ func TestAPlainRemoteClawGetsNoBrowserSession(t *testing.T) {
 // client revocable without rewiring the rest.
 func TestEachWiredClientGetsItsOwnCredential(t *testing.T) {
 	base := secret.New("rig-base-token")
-	a := clientToken(base, "subtitle-edit")
-	b := clientToken(base, "buzz")
+	a, err := clientToken(base, "subtitle-edit")
+	if err != nil {
+		t.Fatalf("a real base failed to derive a key: %v", err)
+	}
+	b, err := clientToken(base, "buzz")
+	if err != nil {
+		t.Fatalf("a real base failed to derive a key: %v", err)
+	}
 
 	if a.Reveal() == b.Reveal() {
 		t.Fatal("two clients share a credential, so neither can be revoked alone")
@@ -427,12 +434,33 @@ func TestEachWiredClientGetsItsOwnCredential(t *testing.T) {
 	}
 	// Reproducible, so a value the operator pasted keeps working for as long
 	// as the rig does rather than only until the next call.
-	if clientToken(base, "subtitle-edit").Reveal() != a.Reveal() {
+	again, _ := clientToken(base, "subtitle-edit")
+	if again.Reveal() != a.Reveal() {
 		t.Error("the same client got a different credential from the same rig token")
 	}
 	// The rig token must not be recoverable from what the operator pastes into
 	// a config file.
 	if strings.Contains(a.Reveal(), base.Reveal()) {
 		t.Error("the client credential contains the rig token verbatim")
+	}
+}
+
+// HMAC with no key is a constant, so an empty base would give every
+// installation the same credential for the same client name — a value that
+// passes for a key while authenticating nothing. The claw path always sets a
+// base today; this is what keeps that true.
+func TestAnEmptyBaseDerivesNoCredential(t *testing.T) {
+	if _, err := clientToken(secret.Secret{}, "subtitle-edit"); err == nil {
+		t.Fatal("an empty rig token produced a client credential")
+	} else if errs.ClassOf(err) != errs.ClassWiring {
+		t.Errorf("class is %v, want ClassWiring: a key that cannot be derived "+
+			"is a wiring failure, not a reason to fail the rig", errs.ClassOf(err))
+	}
+	// Two names must not collapse onto one value either, which is what an
+	// unguarded empty base would have done.
+	a, _ := clientToken(secret.Secret{}, "subtitle-edit")
+	b, _ := clientToken(secret.Secret{}, "buzz")
+	if a.Reveal() != "" || b.Reveal() != "" {
+		t.Error("a credential was returned alongside the refusal")
 	}
 }

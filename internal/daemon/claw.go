@@ -224,7 +224,14 @@ func (o *Orchestrator) attachLocal(s *ClawSession) {
 		probe   = wire.ProxyProber(s.Live.proxy)
 	)
 	for _, w := range writers {
-		key := clientToken(s.Live.ClientToken, w.Name())
+		key, err := clientToken(s.Live.ClientToken, w.Name())
+		if err != nil {
+			// One cause shared by every writer — there is no base to derive
+			// from — so it is reported once rather than once per client, and
+			// nothing is wired rather than everything wired identically.
+			errList = append(errList, err)
+			break
+		}
 		if s.Live.proxy != nil {
 			s.Live.proxy.AddClient(w.Name(), key)
 		}
@@ -418,8 +425,18 @@ func (s *ClawSession) Endpoint() string {
 //
 // The rig token is the opposite and stays that way — ephemeral, one per rig,
 // never seen by a client. The proxy is the boundary (FR-SEC-22).
-func clientToken(base secret.Secret, name string) secret.Secret {
+//
+// The derivation refuses an empty base, which is not a defensive nicety: HMAC
+// with no key is a constant, so every installation would hand the same client
+// name the same credential — one that authenticates nothing while looking like
+// a key. Unreachable while every claw path sets a base, which is exactly when
+// a guard earns its place.
+func clientToken(base secret.Secret, name string) (secret.Secret, error) {
+	if base.Empty() {
+		return secret.Secret{}, errs.Newf(errs.ClassWiring, "daemon.wire",
+			"no rig credential to derive %s's key from", name)
+	}
 	mac := hmac.New(sha256.New, []byte(base.Reveal()))
 	mac.Write([]byte(name))
-	return secret.New("lc-" + hex.EncodeToString(mac.Sum(nil))[:40])
+	return secret.New("lc-" + hex.EncodeToString(mac.Sum(nil))[:40]), nil
 }

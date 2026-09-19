@@ -352,6 +352,17 @@ func e2eWhisperClientFor(t *testing.T, s *ClawSession, base secret.Secret) *whis
 	}
 	return &whisper.Client{
 		Addr:  u.Host,
-		Token: clientToken(base, e2eWhisperClient).Reveal(),
+		Token: mustClientToken(t, base, e2eWhisperClient),
 	}
+}
+
+// mustClientToken derives the key the e2e client presents, failing the test
+// rather than authenticating with an empty one.
+func mustClientToken(t *testing.T, base secret.Secret, name string) string {
+	t.Helper()
+	tok, err := clientToken(base, name)
+	if err != nil {
+		t.Fatalf("deriving %s's key: %v", name, err)
+	}
+	return tok.Reveal()
 }
