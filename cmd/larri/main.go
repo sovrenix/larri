@@ -683,7 +683,7 @@ func cmdDown(ctx context.Context, args []string) error {
 	}
 	// Refused rather than warned. A warning scrolls past above a teardown that
 	// proceeds anyway, and by the time it is read the host is gone.
-	if !target.Runtime.ServesInference() && !*discard {
+	if target.HoldsHostResults() && !*discard {
 		return fmt.Errorf(
 			"down: rig %s holds results that exist only on the host: "+
 				"stop the claw session to collect them, or --discard-outputs",

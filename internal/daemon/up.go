@@ -406,6 +406,12 @@ type UpRequest struct {
 	// lets the kernel choose, which is only useful in tests: P3 depends on
 	// this being stable across the rig's life.
 	LocalPort int
+
+	// ClawSite records where the payload runs, for a rig a claw asked for.
+	// Empty is an ordinary rig. Carried here rather than set afterwards so
+	// it is on the record before the create call, like everything else a
+	// crash mid-create has to leave behind (§4).
+	ClawSite string
 }
 
 // Up provisions a rig and returns it ready to serve.
@@ -922,6 +928,7 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 		ID: id, State: core.StateSelected, Criteria: req.Criteria,
 		Model: req.Model, Runtime: o.Runtime.Kind(), Offer: chosen,
 		Plan: plan, CreatedAt: time.Now().UTC(),
+		ClawSite: req.ClawSite,
 	}
 	release, err := o.hold(rig, "daemon.Up")
 	if err != nil {

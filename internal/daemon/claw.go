@@ -124,6 +124,7 @@ func (o *Orchestrator) ClawUp(ctx context.Context, req ClawRequest) (*ClawSessio
 		HFToken:   req.HFToken,
 		LocalPort: req.LocalPort,
 		Confirm:   req.Confirm,
+		ClawSite:  string(req.Kind.Site()),
 	})
 	if err != nil {
 		return nil, err
@@ -134,6 +135,13 @@ func (o *Orchestrator) ClawUp(ctx context.Context, req ClawRequest) (*ClawSessio
 		OutputDir: req.OutputDir, StartedAt: started,
 	}
 	if err := o.attachClaw(s); err != nil {
+		// Destroyed, not closed. Live.Close releases the forward and the
+		// hold and never the machine, so this path returned an error while
+		// leaving a rented GPU billing with nothing supervising it and no
+		// holder to reclaim it — the §4 failure the whole teardown protocol
+		// exists to prevent. The hold is kept through the destroy and given
+		// up after it, as every other teardown here does.
+		o.teardownAfterFailure(live.Rig, core.ReasonBootstrapFailed, err)
 		_ = live.Close()
 		return nil, err
 	}

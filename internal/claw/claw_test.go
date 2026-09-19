@@ -322,3 +322,17 @@ func TestAnEmptyOrUnreadableConfigIsRefused(t *testing.T) {
 // by design — it is populated by package init — so tests that add to it have to
 // put it back.
 func clearRegistry() { registry = map[Type]Factory{} }
+
+// The site names are declared twice — here, which owns the concept, and in
+// core, which persists it — because core cannot import this package without a
+// cycle. That is fine only while they agree, and this is what makes a
+// disagreement a failed test rather than a teardown guard that silently reads
+// every local claw as remote.
+func TestSiteNamesMatchTheDurableRecord(t *testing.T) {
+	if string(SiteRemote) != core.ClawSiteRemote {
+		t.Errorf("claw says %q, core persists %q", SiteRemote, core.ClawSiteRemote)
+	}
+	if string(SiteLocal) != core.ClawSiteLocal {
+		t.Errorf("claw says %q, core persists %q", SiteLocal, core.ClawSiteLocal)
+	}
+}

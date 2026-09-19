@@ -359,6 +359,13 @@ type Rig struct {
 	// fingerprint, so persisting it discloses nothing, and persisting it is
 	// what lets a later change be recognised as a change rather than as a
 	// first sight (FR-SEC-04).
+	// ClawSite is where this rig's payload ran, empty for an ordinary rig.
+	//
+	// Persisted rather than recomputed because the process that knew is gone
+	// by the time `larri down` in another terminal has to decide whether
+	// destroying this machine destroys the only copy of something.
+	ClawSite string `json:"claw_site,omitempty"`
+
 	HostKeyFingerprint string         `json:"host_key_fingerprint,omitempty"`
 	Wiring             []WiringRecord `json:"wiring,omitempty"`
 	History            []Transition   `json:"history,omitempty"`
@@ -410,3 +417,34 @@ func (c Criteria) Validate() error {
 // in one place and a floor cannot be applied to a provider that has nothing to
 // measure.
 func (o Offer) HasReliability() bool { return o.Reliability > 0 }
+
+// ClawSiteRemote and ClawSiteLocal are the sites a rig's payload can run at,
+// as they are written to the durable record.
+//
+// The vocabulary belongs to internal/claw, which owns the concept; core cannot
+// import it without a cycle, so the two values are declared in both places and
+// a test in internal/claw fails if they ever disagree — the same arrangement
+// as the probe header, and for the same reason.
+const (
+	ClawSiteRemote = "remote"
+	ClawSiteLocal  = "local"
+)
+
+// HoldsHostResults reports whether destroying this rig destroys the only copy
+// of something the operator wanted.
+//
+// Two facts rather than one, which is where this went wrong. An inference
+// engine keeps nothing of the operator's, so there is nothing to lose. A claw's
+// application does — but only when it ran on the rented box. A local claw rents
+// the inference and writes its output here, so guarding its teardown asks the
+// operator to go and collect files that were never on that machine, and `larri
+// down` refused every live speech-to-text rig on exactly that confusion.
+//
+// An unrecorded site reads as remote, so a claw type added later is protected
+// before anyone remembers this function exists.
+func (r *Rig) HoldsHostResults() bool {
+	if r.Runtime.ServesInference() {
+		return false
+	}
+	return r.ClawSite != ClawSiteLocal
+}
