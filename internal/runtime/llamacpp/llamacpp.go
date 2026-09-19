@@ -510,10 +510,56 @@ func (r *Runtime) Adopt(ctx context.Context, sess runtime.Session,
 }
 
 var (
-	_ runtime.Runtime         = (*Runtime)(nil)
-	_ runtime.Adopter         = (*Runtime)(nil)
-	_ runtime.LivenessChecker = (*Runtime)(nil)
+	_ runtime.Runtime           = (*Runtime)(nil)
+	_ runtime.Adopter           = (*Runtime)(nil)
+	_ runtime.LivenessChecker   = (*Runtime)(nil)
+	_ runtime.FailureClassifier = (*Runtime)(nil)
 )
+
+// ClassifyFailure reads llama-server's own log and says whose fault a launch
+// was.
+//
+// Without it every readiness failure is host-class, which means "try another
+// machine" — right for a host that never booted, wrong for anything the engine
+// refuses, because the next host runs the same command against the same file
+// and refuses it identically (FR-PROV-05). The ComfyUI claw paid three rentals
+// for that lesson and vLLM paid one more; this is the third engine and the
+// same mistake was still waiting in it.
+//
+// Two classes of refusal matter here and neither is the machine's doing. The
+// command line: llama-server rejects a flag it does not know, and a credential
+// that begins with a dash was read as one of those. And the weights: a GGUF
+// that is truncated, sharded with a part missing, or built for an architecture
+// this binary predates fails at load wherever it is loaded.
+func (r *Runtime) ClassifyFailure(log string) errs.Class {
+	l := strings.ToLower(log)
+	switch {
+	// The command line, which travels with the rig rather than the host.
+	case strings.Contains(l, "invalid argument"),
+		strings.Contains(l, "error while handling argument"),
+		strings.Contains(l, "unknown argument"),
+		strings.Contains(l, "error: invalid parameter"):
+		return errs.ClassModelFailure
+	// The weights, which are the same bytes on the next machine.
+	case strings.Contains(l, "failed to load model"),
+		strings.Contains(l, "error loading model"),
+		strings.Contains(l, "unknown model architecture"),
+		strings.Contains(l, "unsupported model architecture"),
+		strings.Contains(l, "invalid magic"),
+		strings.Contains(l, "wrong number of tensors"):
+		return errs.ClassModelFailure
+	// Out of memory is about the model against this card, and the fallback
+	// picks by price rather than by size — so another host of the same class
+	// fails the same way.
+	case strings.Contains(l, "out of memory"),
+		strings.Contains(l, "cudamalloc failed"),
+		strings.Contains(l, "failed to allocate"):
+		return errs.ClassModelFailure
+	}
+	// No opinion. A machine that died says nothing about the configuration,
+	// and the caller's host-failure default is right for it.
+	return errs.ClassUnknown
+}
 
 // weightFile returns the resolved GGUF, falling back to a ref that named one
 // outright.
