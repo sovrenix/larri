@@ -518,6 +518,39 @@ func (r *Runtime) Alive(ctx context.Context, sess runtime.Session) (bool, error)
 
 var _ runtime.LivenessChecker = (*Runtime)(nil)
 
+// ClassifyFailure reads vLLM's own log and says whose fault a launch was.
+//
+// Without this every readiness failure was host-class, which means "try
+// another machine" — correct for a host that never booted, and wrong for a
+// command line the engine rejects, because the next host runs the same command
+// and rejects it identically (FR-PROV-05). A live run proved it: a rig token
+// that happened to begin with a dash made argparse read the following flag as
+// a missing argument, and the same doomed launch was bought on fresh hardware
+// until the attempts ran out.
+func (r *Runtime) ClassifyFailure(log string) errs.Class {
+	l := strings.ToLower(log)
+	switch {
+	// argparse rejecting the command line. The engine never started, and it
+	// will never start anywhere with these flags.
+	case strings.Contains(l, "error: argument"),
+		strings.Contains(l, "unrecognized arguments"),
+		strings.Contains(l, "invalid choice"),
+		strings.Contains(l, "usage: vllm serve"):
+		return errs.ClassModelFailure
+	// The model itself cannot be loaded here or anywhere.
+	case strings.Contains(l, "unknown quantization"),
+		strings.Contains(l, "out of memory"),
+		strings.Contains(l, "does not support"),
+		strings.Contains(l, "no supported config format"):
+		return errs.ClassModelFailure
+	}
+	// No opinion: the caller keeps its host-failure default, which is right
+	// for a machine that died rather than an engine that refused.
+	return errs.ClassUnknown
+}
+
+var _ runtime.FailureClassifier = (*Runtime)(nil)
+
 // LogPath is where this runtime's output is redirected, so the supervisor can
 // measure growth rather than guess at progress.
 func (r *Runtime) LogPath() string { return LogPath }
