@@ -440,7 +440,15 @@ accident:
   by all your IDEs to untrusted hardware. Client tokens are per-client, so one can be revoked
   without rewiring the rest and spend can be attributed per tool. They are stored only as
   SHA-256 hashes (`larri token`), shown once at creation, and LARRI's own probes use a
-  separate key, so no code path needs a client key's value after it is made.
+  separate key, so nothing on the `up` path needs a client key's value after it is made.
+  **The local claw site is the one exception, and it is structural rather than an
+  oversight**: a tier-C client is configured by a human pasting a value (§10.2), and a
+  store that holds only hashes cannot produce one. That path therefore derives each
+  client's key by HMAC from a base `config.ResolveClientKey` persists — stable across rigs
+  for exactly the reason the hashed keys are — and the derivation **refuses an empty
+  base**, because HMAC with no key is a constant and a credential every installation
+  shares is not a credential. Two stores, one per question: which keys are accepted, and
+  which value a human was given to paste.
 - Don't build anything stronger than a bearer token *inside* the tunnel: the channel is
   already SSH-authenticated to a loopback service, and the only principal in there is the
   host, which has root and would read the runtime's memory rather than its API. The rig token
