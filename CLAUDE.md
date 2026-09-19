@@ -13,11 +13,12 @@ by `internal/lint`.
 Above that sits the **claw** layer (invariant 1), which rents the same lifecycle for
 applications that are not inference engines. Two types are compiled in, one per site.
 
-**ComfyUI** is remote and **live**: `larri claw --config examples/comfyui/job.yml` rented an
-RTX 2000 Ada, installed ComfyUI, fetched 6.5 GB of SDXL on the host, rendered, collected the
-image and destroyed the instance for $0.0582. **Whisper** is local and `done`: speech to text
-on the rented box with the operator's own application wired to the fixed local port. Its plan
-runs against the live Hugging Face listing for nothing; no GPU has been rented through it.
+Both sites are **live**. **ComfyUI** is remote: `larri claw --config examples/comfyui/job.yml`
+rented an RTX 2000 Ada, installed ComfyUI, fetched 6.5 GB of SDXL on the host, rendered,
+collected the image and destroyed the instance for $0.0582. **Whisper** is local: a rented
+RTX A4000 served speech to text while the operator's own application stayed here, wired to
+the fixed local port and verified by the proxy seeing that client's credential arrive, then
+reverted and destroyed for $0.0105.
 
 The gap worth knowing is that **no client writer writes a file yet**. The one that exists is
 tier C by decision rather than by fallback — it configures nothing, prints what to paste, and

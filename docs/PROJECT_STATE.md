@@ -24,13 +24,13 @@ and "shown to work" are different claims and are recorded as such.
 
 | Area | Reqs | ✅ live | ☑️ done | 🟡 part | ⬜ plan | Complete |
 |---|---:|---:|---:|---:|---:|---:|
-| Claws | 9 | 6 | 3 | 0 | 0 | **100%** |
+| Claws | 9 | 7 | 2 | 0 | 0 | **100%** |
 | Criteria | 6 | 3 | 3 | 0 | 0 | **100%** |
 | Provisioning | 12 | 11 | 1 | 0 | 0 | **100%** |
 | State | 5 | 4 | 1 | 0 | 0 | **100%** |
 | Search & selection | 14 | 10 | 3 | 0 | 1 | **93%** |
 | ComfyUI | 8 | 6 | 1 | 1 | 0 | 88% |
-| Speech to text | 8 | 0 | 8 | 0 | 0 | **100%** |
+| Speech to text | 8 | 7 | 1 | 0 | 0 | **100%** |
 | Runtimes | 22 | 17 | 2 | 3 | 0 | 86% |
 | Non-functional | 12 | 6 | 4 | 1 | 1 | 83% |
 | Configuration | 10 | 0 | 8 | 1 | 1 | 80% |
@@ -38,9 +38,9 @@ and "shown to work" are different claims and are recorded as such.
 | Supervision | 19 | 8 | 6 | 4 | 1 | 74% |
 | Security | 32 | 14 | 7 | 2 | 9 | 66% |
 | Surfaces | 15 | 3 | 2 | 3 | 7 | 33% |
-| Endpoint & client wiring | 14 | 3 | 4 | 3 | 4 | 50% |
+| Endpoint & client wiring | 14 | 5 | 2 | 3 | 4 | 50% |
 | Observability | 10 | 0 | 1 | 0 | 9 | 10% |
-| **Total** | **210** | **96** | **60** | **21** | **33** | **74%** |
+| **Total** | **210** | **106** | **50** | **21** | **33** | **74%** |
 
 Seventy-four per cent of requirements are implemented, and **the lifecycle is the part
 that is done.** Criteria, provisioning and state are at 100%; search, selection and the
@@ -54,10 +54,11 @@ and smoke-tested, 6.5 GB of SDXL fetched on the host, readiness proven by a rend
 round-tripped in 55 seconds, the image collected to `claw-output/`, and the instance destroyed
 and confirmed absent. $0.0582 over 14m13s.
 
-**The local half is `done`, not `live`.** A second claw — speech to text — is compiled in and
-is the first local one, so `Apply`, `Revert` and the wiring records now run against a real
-claw rather than a fake. Nothing has rented a GPU through it. Its plan is exercised against
-the live Hugging Face listing, which is free, and the rest waits on a paid run.
+**The local half is `live` too.** Speech to text is the second claw and the first local one,
+and one paid run took it the whole way on a rented RTX A4000 at $0.257/hr: 1.4 GB fetched on
+the host, readiness proven by a transcription naming the model it asked for, the wiring
+recorded and then verified by the proxy seeing that client's own credential arrive, and the
+instance reverted and destroyed with absence confirmed. **$0.0105 over 2m28s.**
 
 **What no client writer does yet is write a file.** The one that exists is tier C by decision
 rather than by fallback: it configures nothing, prints what to paste, and verifies by asking
