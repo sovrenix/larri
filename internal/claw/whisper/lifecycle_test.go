@@ -77,7 +77,7 @@ func (h *hostSim) Run(_ context.Context, cmd string) ([]byte, error) {
 	case strings.Contains(cmd, "STARTED"):
 		return []byte("STARTED\n"), nil
 
-	case strings.Contains(cmd, fetchDoneMarker) && strings.Contains(cmd, "test -f"):
+	case strings.Contains(cmd, fetchDonePrefix) && strings.Contains(cmd, "test -f"):
 		h.checks++
 		h.bytes += 1 << 30
 		if h.checks > h.fetchAfter {
@@ -437,5 +437,28 @@ func TestTheLauncherPassesTheFactoryFlag(t *testing.T) {
 	// Loopback, and not the 0.0.0.0 the image defaults to (FR-SEC-08).
 	if !strings.Contains(script, "--host 127.0.0.1") {
 		t.Errorf("the server was not bound to loopback:\n%s", script)
+	}
+}
+
+// The completion marker is the only thing that says a detached fetch finished,
+// and a fixed path made it say so for the wrong model. A host reused for a
+// second model — an adopt, a resume, a changed --model — found the previous
+// marker and bootstrap proceeded against weights that were never pulled.
+func TestTheFetchMarkerNamesTheModelItCompleted(t *testing.T) {
+	a := doneMarker("Systran/faster-whisper-large-v3")
+	b := doneMarker("Systran/faster-distil-whisper-large-v3")
+	if a == b {
+		t.Error("two models share a completion marker, so either can be read as the other")
+	}
+	if !strings.HasPrefix(a, fetchDonePrefix) || !strings.HasSuffix(a, fetchDoneSuffix) {
+		t.Errorf("marker %q is not where the fetch writes and the check looks", a)
+	}
+	// A repository id contains slashes, which would make the marker a path
+	// into a directory that does not exist.
+	if strings.Contains(strings.TrimPrefix(a, fetchDonePrefix), "/") {
+		t.Errorf("marker %q carries a path separator from the model id", a)
+	}
+	if doneMarker("x") != doneMarker("x") {
+		t.Error("the marker is not stable, so the fetch and the check disagree")
 	}
 }

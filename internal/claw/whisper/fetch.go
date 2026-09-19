@@ -5,6 +5,8 @@ package whisper
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -28,9 +30,22 @@ import (
 
 const (
 	fetchLog        = "/var/log/larri-whisper-fetch.log"
-	fetchDoneMarker = "/var/log/larri-whisper-fetch.done"
+	fetchDonePrefix = "/var/log/larri-whisper-fetch."
+	fetchDoneSuffix = ".done"
 	fetchScriptPath = "/root/.larri-whisper-fetch.sh"
 )
+
+// doneMarker names the model it completed.
+//
+// A fixed path could not: a host reused for a second model — an adopt, a
+// resume, a change of --model on a rig already up — would find the previous
+// fetch's marker and read it as proof that *this* one had finished, and
+// bootstrap would proceed against weights that were never pulled. The digest
+// rather than the name, because a repository id contains slashes.
+func doneMarker(model string) string {
+	sum := sha256.Sum256([]byte(model))
+	return fetchDonePrefix + hex.EncodeToString(sum[:8]) + fetchDoneSuffix
+}
 
 // fetchScript downloads the model repository into the host's cache.
 //
@@ -66,7 +81,7 @@ func (r *Runtime) fetchScript() string {
 	fmt.Fprintf(&b, "p = snapshot_download(%q, cache_dir=%q)\n", r.model(), BlobCache)
 	b.WriteString("print('DOWNLOADED', p)\n")
 	b.WriteString("LARRI_FETCH_PY\n")
-	fmt.Fprintf(&b, "touch %s\n", shellQuote(fetchDoneMarker))
+	fmt.Fprintf(&b, "touch %s\n", shellQuote(doneMarker(r.model())))
 	return b.String()
 }
 
@@ -76,7 +91,13 @@ func (r *Runtime) fetchScript() string {
 // channel open while any live process has a descriptor on it, so a foreground
 // download would hang the call that started it rather than return.
 func (r *Runtime) startFetch(ctx context.Context, sess runtime.Session) error {
-	_, _ = sess.Run(ctx, "rm -f "+shellQuote(fetchDoneMarker))
+	// Checked, not ignored. A marker this failed to clear is read moments
+	// later as proof that the fetch finished, and bootstrap then proceeds
+	// against weights that are still arriving.
+	if _, err := sess.Run(ctx, "rm -f "+shellQuote(doneMarker(r.model()))); err != nil {
+		return errs.Newf(errs.ClassHostFailure, "whisper.Bootstrap",
+			"clear the fetch marker: %v", err)
+	}
 
 	write := fmt.Sprintf("cat > %s <<'LARRI_FETCH_EOF'\n%s\nLARRI_FETCH_EOF\nchmod 700 %s",
 		shellQuote(fetchScriptPath), r.fetchScript(), shellQuote(fetchScriptPath))
@@ -101,7 +122,7 @@ func (r *Runtime) startFetch(ctx context.Context, sess runtime.Session) error {
 // fetchFinished reports whether the marker is present.
 func (r *Runtime) fetchFinished(ctx context.Context, sess runtime.Session) (bool, error) {
 	out, err := sess.Run(ctx,
-		"test -f "+shellQuote(fetchDoneMarker)+" && echo DONE || echo WORKING")
+		"test -f "+shellQuote(doneMarker(r.model()))+" && echo DONE || echo WORKING")
 	if err != nil && len(out) == 0 {
 		return false, errs.Newf(errs.ClassHostFailure, "whisper.Bootstrap",
 			"check the fetch: %v", err)
