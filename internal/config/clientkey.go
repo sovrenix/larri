@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"go.sovrenix.com/larri/internal/secret"
@@ -73,6 +74,9 @@ func ResolveClientKey(env func(string) string) (secret.Secret, ClientKeySource, 
 		return secret.New(v), ClientKeyFromEnv, nil
 	}
 	if path := strings.TrimSpace(env(ClientKeyEnv + "_FILE")); path != "" {
+		if err := secureClientKeyFile(path); err != nil {
+			return secret.Secret{}, ClientKeyEphemeral, err
+		}
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return secret.Secret{}, ClientKeyEphemeral,
@@ -87,10 +91,21 @@ func ResolveClientKey(env func(string) string) (secret.Secret, ClientKeySource, 
 	}
 
 	path := ClientKeyPath()
-	if b, err := os.ReadFile(path); err == nil {
+	if _, err := os.Stat(path); err == nil {
+		if err := secureClientKeyFile(path); err != nil {
+			return secret.Secret{}, ClientKeyEphemeral, err
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return secret.Secret{}, ClientKeyEphemeral,
+				fmt.Errorf("config: read client key: %w", err)
+		}
 		if v := strings.TrimSpace(string(b)); v != "" {
 			return secret.New(v), ClientKeyStored, nil
 		}
+	} else if !os.IsNotExist(err) {
+		return secret.Secret{}, ClientKeyEphemeral,
+			fmt.Errorf("config: read client key: %w", err)
 	}
 	key, err := generateClientKey()
 	if err != nil {
@@ -142,6 +157,23 @@ func writeClientKey(path, key string) error {
 	}
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		return fmt.Errorf("config: write %s: %w", path, err)
+	}
+	return nil
+}
+
+func secureClientKeyFile(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm()&0o077 == 0 {
+		return nil
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("config: secure %s: %w", path, err)
 	}
 	return nil
 }

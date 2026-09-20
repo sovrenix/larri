@@ -1912,13 +1912,14 @@ func (o *Orchestrator) clientKeysUnreadable() error {
 	return nil
 }
 
-// needsRigKey reports whether a rig being wired needs a key of its own: one
-// was asked for, there is no store, or the store cannot be read. The last is
-// the case that matters. A reconnected rig is already billing, and one being
-// served has been rented, so a key file that broke since the check before
-// renting gets the rig its own key rather than no usable key at all.
+// needsRigKey reports whether a rig being wired needs a directly accepted key:
+// one was asked for, the caller supplied a stable token that must be accepted,
+// there is no store, or the store cannot be read. The last is the case that
+// matters most. A reconnected rig is already billing, and one being served has
+// been rented, so a key file that broke since the check before renting gets the
+// rig its own key rather than no usable key at all.
 func (o *Orchestrator) needsRigKey() bool {
-	if o.OneRigKey || o.ClientKeys == nil {
+	if o.OneRigKey || !o.ClientToken.Empty() || o.ClientKeys == nil {
 		return true
 	}
 	if err := o.clientKeysUnreadable(); err != nil {

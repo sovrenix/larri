@@ -6,9 +6,6 @@ package daemon
 import (
 	"context"
 	"errors"
-	"go.sovrenix.com/larri/internal/errs"
-	"go.sovrenix.com/larri/internal/runtime"
-	"go.sovrenix.com/larri/internal/wire"
 	"net"
 	"strings"
 	"sync"
@@ -17,6 +14,10 @@ import (
 	"time"
 
 	"go.sovrenix.com/larri/internal/core"
+	"go.sovrenix.com/larri/internal/errs"
+	"go.sovrenix.com/larri/internal/runtime"
+	"go.sovrenix.com/larri/internal/secret"
+	"go.sovrenix.com/larri/internal/wire"
 )
 
 // A live run rented three V100 boxes in a row and abandoned each one while it
@@ -729,5 +730,12 @@ func TestUnreadableClientKeysAreCaughtBeforeTheMoney(t *testing.T) {
 	o = &Orchestrator{ClientKeys: brokenKeys{}}
 	if err := o.CheckClientKeys(); err != nil || o.needsRigKey() {
 		t.Errorf("readable keys: err %v, own key %v", err, o.needsRigKey())
+	}
+	o = &Orchestrator{
+		ClientKeys:  brokenKeys{},
+		ClientToken: secret.New("stable-client-key"),
+	}
+	if err := o.CheckClientKeys(); err != nil || !o.needsRigKey() {
+		t.Errorf("stable key: err %v, own key %v", err, o.needsRigKey())
 	}
 }

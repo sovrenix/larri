@@ -67,22 +67,22 @@ func (p *Proxy) browserSessionEnabled() bool {
 //
 // Empty when no browser session is enabled, which is every claw an operator
 // configures rather than opens.
-func (p *Proxy) NewSessionURL() string {
+func (p *Proxy) NewSessionURL() (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.browserToken.Empty() {
-		return ""
+		return "", nil
 	}
 	tok, err := secret.Generate(32)
 	if err != nil {
 		// Nothing to fall back to: a link carrying a predictable token would
 		// be worse than no link, and the operator can still reach the rig by
 		// asking for another.
-		return ""
+		return "", err
 	}
 	p.exchangeToken = tok
 	return "http://127.0.0.1:" + itoa(p.LocalPort()) + SessionPath +
-		"?t=" + url.QueryEscape(tok.Reveal())
+		"?t=" + url.QueryEscape(tok.Reveal()), nil
 }
 
 // serveSession trades the one-time token for a cookie and spends the token.
@@ -119,6 +119,7 @@ func (p *Proxy) serveSession(w http.ResponseWriter, r *http.Request) {
 		// away from not being a control.
 		SameSite: http.SameSiteStrictMode,
 	})
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	// 303 and a bare path, so the token leaves the address bar, the history,
 	// and any Referer the page later sends.
 	http.Redirect(w, r, "/", http.StatusSeeOther)

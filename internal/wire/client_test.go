@@ -134,6 +134,24 @@ func TestTheProbeDecidesVerified(t *testing.T) {
 	}
 }
 
+func TestGuidedClientsWaitForALaterProbe(t *testing.T) {
+	called := false
+	c := &fakeClient{name: "guided", tier: TierGuided, present: true}
+	recs, errs := Apply([]ClientWriter{c}, ep(), func(string) (bool, error) {
+		called = true
+		return true, nil
+	})
+	if len(errs) != 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+	if called {
+		t.Fatal("a guided client was probed before its instructions could be followed")
+	}
+	if len(recs) != 1 || recs[0].Verified {
+		t.Errorf("records = %+v, want one unverified guided client", recs)
+	}
+}
+
 // A torn-down rig never leaves an IDE pointing at a dead endpoint
 // (FR-WIRE-05), so every record is attempted even when an earlier one fails.
 func TestRevertAttemptsEveryRecord(t *testing.T) {

@@ -83,10 +83,9 @@ func TestApplyWritesNothingAndRevertUndoesNothing(t *testing.T) {
 	}
 }
 
-// The runner is what actually drives this in production, so the whole path is
-// worth one pass: detected, recorded at the right tier, and verified by the
-// probe rather than by anything on disk.
-func TestTheRunnerRecordsAndVerifiesAGuidedClient(t *testing.T) {
+// Guided instructions are followed after Apply returns, so the record stays
+// unverified here and is confirmed only by a later probe/poll.
+func TestTheRunnerRecordsAGuidedClientUnverifiedUntilLater(t *testing.T) {
 	w := NewOpenAIAudio("subtitle-edit")
 
 	var asked string
@@ -108,11 +107,11 @@ func TestTheRunnerRecordsAndVerifiesAGuidedClient(t *testing.T) {
 	if rec.Path != "" {
 		t.Errorf("a guided client recorded a path: %q", rec.Path)
 	}
-	if !rec.Verified {
-		t.Error("the probe said the client reached the endpoint and the record does not")
+	if rec.Verified {
+		t.Error("a guided client was marked verified before the operator could paste anything")
 	}
-	if asked != "subtitle-edit" {
-		t.Errorf("the probe was asked about %q", asked)
+	if asked != "" {
+		t.Errorf("the probe was asked about %q before the instructions were followed", asked)
 	}
 
 	// Nothing was written, so teardown has nothing to undo — and must not

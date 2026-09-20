@@ -120,6 +120,30 @@ func TestACredentialFileNamedByTheEnvironmentIsRead(t *testing.T) {
 	}
 }
 
+func TestAPermissiveStoredCredentialIsRepairedBeforeUse(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix file modes")
+	}
+	path := isolate(t)
+	if err := os.WriteFile(path, []byte("stored-key\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, src, err := ResolveClientKey(noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Reveal() != "stored-key" || src != ClientKeyStored {
+		t.Fatalf("got %q from %q", got.Reveal(), src)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("mode = %o, want 600", mode)
+	}
+}
+
 // A named file that cannot be read is a mistake worth reporting rather than
 // silently replacing with a generated value the operator did not ask for.
 func TestAnUnreadableNamedFileIsReported(t *testing.T) {

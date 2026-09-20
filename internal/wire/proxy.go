@@ -357,13 +357,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "wire: missing or unknown API key", http.StatusUnauthorized)
 		return
 	}
-	// Only the operator's own traffic counts as having reached the endpoint.
-	// LARRI's probes carry the same credential and would otherwise verify the
-	// wiring against itself, which is the same mistake as a health check that
-	// resets the idle clock it enforces.
-	if !isProbe {
-		p.markSeen(client)
-	}
 	if p.browserSessionEnabled() {
 		browserHeaders(w.Header())
 	}
@@ -376,6 +369,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// moved port, which is the whole point of holding the listener.
 		http.Error(w, "wire: no rig is currently serving", http.StatusServiceUnavailable)
 		return
+	}
+	// Only the operator's own traffic counts as having reached the endpoint.
+	// LARRI's probes carry the same credential and would otherwise verify the
+	// wiring against itself, which is the same mistake as a health check that
+	// resets the idle clock it enforces.
+	if !isProbe {
+		p.markSeen(client)
 	}
 
 	switch {
@@ -411,6 +411,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// rig's substituted; neither is ever visible to the other side.
 			req.Header.Del("Authorization")
 			req.Header.Del(ProbeHeader)
+			req.Header.Del("Referer")
 			if !up.Key.Empty() {
 				req.Header.Set("Authorization", "Bearer "+up.Key.Reveal())
 			}

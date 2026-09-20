@@ -26,6 +26,7 @@ type upstreamRecorder struct {
 	auth   []string
 	probe  []string
 	cookie []string
+	refer  []string
 	srv    *httptest.Server
 }
 
@@ -37,6 +38,7 @@ func newUpstream(t *testing.T) *upstreamRecorder {
 		u.auth = append(u.auth, r.Header.Get("Authorization"))
 		u.probe = append(u.probe, r.Header.Get(ProbeHeader))
 		u.cookie = append(u.cookie, r.Header.Get("Cookie"))
+		u.refer = append(u.refer, r.Header.Get("Referer"))
 		u.mu.Unlock()
 		fmt.Fprint(w, `{"choices":[{"message":{"content":"pong"}}]}`)
 	}))
@@ -338,6 +340,20 @@ func TestLARRIsOwnProbesDoNotVerifyTheWiring(t *testing.T) {
 	}
 }
 
+func TestA503DoesNotCountAsAClientArriving(t *testing.T) {
+	p, base := startProxy(t, nil, "")
+	p.AddClient("subtitle-edit", secret.New("tok-se"))
+
+	resp := post(t, base, "tok-se", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+	if ok, _ := ProxyProber(p)("subtitle-edit"); ok {
+		t.Error("a request refused before any upstream existed marked the client seen")
+	}
+}
+
 func TestAProberForNoProxyIsNil(t *testing.T) {
 	if ProxyProber(nil) != nil {
 		t.Error("a nil proxy produced a prober that would claim something")
@@ -352,6 +368,15 @@ func (u *upstreamRecorder) lastCookie() string {
 		return ""
 	}
 	return u.cookie[len(u.cookie)-1]
+}
+
+func (u *upstreamRecorder) lastReferer() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if len(u.refer) == 0 {
+		return ""
+	}
+	return u.refer[len(u.refer)-1]
 }
 
 // The credential boundary has two headers, not one.
@@ -394,6 +419,32 @@ func TestTheSessionCookieNeverReachesTheHost(t *testing.T) {
 	}
 	if !strings.Contains(got, "comfy_layout=wide") {
 		t.Errorf("the application's own cookie was dropped: %q", got)
+	}
+}
+
+func TestRefererIsNotForwardedToTheHost(t *testing.T) {
+	up := newUpstream(t)
+	p, base := startProxy(t, up, "rig-key")
+	tok := secret.New("cookie-secret")
+	p.EnableBrowserSession(tok)
+
+	req, err := http.NewRequest(http.MethodGet, base+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: SessionCookie, Value: tok.Reveal()})
+	req.Header.Set("Referer", "http://127.0.0.1:8188"+SessionPath+"?t=one-time")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the cookie-authenticated request got %d", resp.StatusCode)
+	}
+	if got := up.lastReferer(); got != "" {
+		t.Errorf("the host saw a referer: %q", got)
 	}
 }
 

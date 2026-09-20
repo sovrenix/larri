@@ -32,7 +32,7 @@ const (
 	// application's own API if it has one; otherwise demote to TierGuided.
 	TierAppStore Tier = "B"
 
-	// TierGuided: anything else. Print the exact values, then verify by
+	// TierGuided: anything else. Print the exact values, then verify later by
 	// probing that the client actually reached the endpoint.
 	//
 	// A real outcome rather than a failure: two values to paste plus a probe
@@ -147,12 +147,15 @@ func Apply(ws []ClientWriter, ep Endpoint, probe Prober) ([]core.WiringRecord, [
 		}
 		if !w.Tier().Writable() {
 			// Tier B and C are not written by LARRI. The caller prints the
-			// values instead, and the probe below is what makes that a real
-			// integration rather than a suggestion.
+			// values instead; tier B may already be verifiable, while tier C is
+			// verified only after the operator has had a chance to act on those
+			// instructions.
 			rec := core.WiringRecord{
 				Client: w.Name(), Tier: string(w.Tier()), AppliedAt: time.Now().UTC(),
 			}
-			rec.Verified = verify(probe, w.Name(), &errs)
+			if w.Tier() != TierGuided {
+				rec.Verified = verify(probe, w.Name(), &errs)
+			}
 			recs = append(recs, rec)
 			continue
 		}

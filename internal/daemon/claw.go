@@ -180,7 +180,10 @@ func (o *Orchestrator) attachRemote(s *ClawSession) error {
 			return err
 		}
 		proxy.EnableBrowserSession(token)
-		s.URL = proxy.NewSessionURL()
+		s.URL, err = proxy.NewSessionURL()
+		if err != nil {
+			return err
+		}
 
 		// Only work resets the idle clock. Without this an open tab would
 		// hold a GPU overnight on the strength of a reconnecting socket.
@@ -408,7 +411,11 @@ func (s *ClawSession) NewSessionURL() string {
 	if s == nil || s.Live == nil || s.Live.proxy == nil {
 		return ""
 	}
-	return s.Live.proxy.NewSessionURL()
+	u, err := s.Live.proxy.NewSessionURL()
+	if err != nil {
+		return ""
+	}
+	return u
 }
 
 // Endpoint is the local address the session is published on.

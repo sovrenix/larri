@@ -246,6 +246,9 @@ func cmdClaw(ctx context.Context, args []string) error {
 	// once, so a fresh one per rig would invalidate every client's
 	// configuration on every teardown.
 	clientKey, ckSrc, ckErr := config.ResolveClientKey(os.Getenv)
+	if kind.Site() == claw.SiteLocal && ckErr != nil && clientKey.Empty() {
+		return ckErr
+	}
 	if ckErr != nil {
 		// Not fatal: the session works, it simply will not be the same
 		// credential next time, and a guided client would have to be

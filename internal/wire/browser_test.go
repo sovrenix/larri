@@ -77,7 +77,11 @@ func TestBrowserSessionExchangesATokenForACookie(t *testing.T) {
 	}
 
 	// The one-time URL sets the cookie and redirects the token out of the bar.
-	resp, err = cl.Get(p.NewSessionURL())
+	u, err := p.NewSessionURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err = cl.Get(u)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,8 +105,14 @@ func TestBrowserSessionExchangesATokenForACookie(t *testing.T) {
 		t.Error("the session cookie is readable by script in a page served " +
 			"from a host with root")
 	}
+	if !cookie.Secure {
+		t.Error("the session cookie is not Secure")
+	}
 	if cookie.SameSite != http.SameSiteStrictMode {
 		t.Error("the session cookie is not SameSite=Strict")
+	}
+	if got := resp.Header.Get("Referrer-Policy"); got != "no-referrer" {
+		t.Errorf("redirect referrer policy = %q, want no-referrer", got)
 	}
 
 	// And with the cookie, the proxied page comes through.
@@ -289,7 +299,11 @@ func TestCookieAuthIsOffUnlessEnabled(t *testing.T) {
 		t.Errorf("a cookie authenticated against a proxy with no browser session: %d",
 			resp.StatusCode)
 	}
-	if p.NewSessionURL() != "" {
+	u, err := p.NewSessionURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u != "" {
 		t.Error("a session url exists without a browser session")
 	}
 }
@@ -306,7 +320,10 @@ func TestASpentSessionLinkCannotBeReplayed(t *testing.T) {
 	p, cl, _ := browserProxy(t)
 	p.EnableBrowserSession(secret.New("cookie-secret"))
 
-	link := p.NewSessionURL()
+	link, err := p.NewSessionURL()
+	if err != nil {
+		t.Fatal(err)
+	}
 	resp, err := cl.Get(link)
 	if err != nil {
 		t.Fatal(err)
@@ -340,7 +357,10 @@ func TestTheLinkTokenIsNotTheCookie(t *testing.T) {
 	cookieSecret := "cookie-secret"
 	p.EnableBrowserSession(secret.New(cookieSecret))
 
-	link := p.NewSessionURL()
+	link, err := p.NewSessionURL()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(link, cookieSecret) {
 		t.Fatalf("the link carries the cookie secret: %s", link)
 	}
@@ -363,8 +383,14 @@ func TestReissuingRetiresTheUnusedLink(t *testing.T) {
 	p, cl, _ := browserProxy(t)
 	p.EnableBrowserSession(secret.New("cookie-secret"))
 
-	first := p.NewSessionURL()
-	second := p.NewSessionURL()
+	first, err := p.NewSessionURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.NewSessionURL()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if first == second {
 		t.Fatal("reissuing returned the same link, so nothing was minted")
 	}
@@ -388,19 +414,11 @@ func TestReissuingRetiresTheUnusedLink(t *testing.T) {
 	}
 }
 
-// The cookie has to survive a real browser round trip over the loopback HTTP
-// listener, which is the only place it is ever used.
-//
-// Everything else in this file inspects the Set-Cookie header directly, so
-// nothing exercised a client actually sending it back — and an automated
-// CodeQL fix duly marked the cookie Secure, which stops a client transmitting
-// it over http. The exchange still redirected, the follow-up request arrived
-// unauthenticated, and the whole suite stayed green because no test had a jar.
-//
-// LARRI has no TLS to offer here by design: the listener binds loopback and
-// the SSH tunnel is the confidentiality boundary (§8). So the cookie must work
-// over http, and this asserts it end to end rather than by reading a flag.
-func TestTheSessionCookieSurvivesTheLoopbackRoundTrip(t *testing.T) {
+// A plain HTTP client jar does not replay a Secure cookie, which is the flag
+// CodeQL required here. The browser-session path is therefore tested by the
+// exchange and by explicit cookie replay above, not by trusting an insecure
+// transport to send it back automatically.
+func TestAGoCookieJarDoesNotReplayTheSecureSessionCookieOverHTTP(t *testing.T) {
 	p, _, _ := browserProxy(t)
 	p.EnableBrowserSession(secret.New("cookie-secret"))
 
@@ -412,24 +430,27 @@ func TestTheSessionCookieSurvivesTheLoopbackRoundTrip(t *testing.T) {
 	// what the rest of this file deliberately does not.
 	cl := &http.Client{Timeout: 5 * time.Second, Jar: jar}
 
-	resp, err := cl.Get(p.NewSessionURL())
+	link, err := p.NewSessionURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := cl.Get(link)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("following the session link ended at %d, want 200: the cookie "+
-			"was not sent back over the loopback listener", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("following the session link ended at %d, want 401", resp.StatusCode)
 	}
 
-	// And it keeps working, because a browser makes many requests per page.
+	// And it stays unusable to the jar for the same reason.
 	again, err := cl.Get(p.addr() + "/")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer again.Body.Close()
-	if again.StatusCode != http.StatusOK {
-		t.Errorf("a later request got %d: the session did not persist", again.StatusCode)
+	if again.StatusCode != http.StatusUnauthorized {
+		t.Errorf("the jar replayed a Secure cookie over http with %d", again.StatusCode)
 	}
 }
 

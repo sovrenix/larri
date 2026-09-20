@@ -44,9 +44,8 @@ type Live struct {
 	Rig      *core.Rig
 	Endpoint string
 
-	// ClientToken is a key for this rig alone, set only when one was minted
-	// (Orchestrator.OneRigKey, or no stored keys to accept). Empty means
-	// clients use their stored keys.
+	// ClientToken is the direct client credential this session accepts when one
+	// was supplied or minted. Empty means clients use only stored keys.
 	ClientToken secret.Secret
 
 	// probeToken is LARRI's own key for readiness and health probes. Never
@@ -69,7 +68,8 @@ type Live struct {
 	release func() // gives up holding the rig
 }
 
-// RigKey is the key for this rig alone, empty when clients use stored keys.
+// RigKey is the direct client credential for this session, empty when clients
+// use only stored keys.
 func (l *Live) RigKey() secret.Secret {
 	l.ending.Lock()
 	defer l.ending.Unlock()
