@@ -539,3 +539,25 @@ func TestAHeldWorkRequestDoesHoldTheRig(t *testing.T) {
 		t.Errorf("idle = %s during a completion: a long generation is activity", idle)
 	}
 }
+
+// The replacement window specifically: a rig that WAS serving and is being
+// swapped underneath the held listener. TestA503DoesNotCountAsAClientArriving
+// covers a proxy that never had an upstream at all; this covers the case the
+// finding described, where a client polls in the gap between two instances.
+func TestA503DuringReplacementIsNotAClientArriving(t *testing.T) {
+	up := newUpstream(t)
+	p, base := startProxy(t, up, "rig-key")
+	p.AddClient("subtitle-edit", secret.New("tok-se"))
+
+	// No upstream: the rig is being replaced and the listener is held open.
+	p.SetUpstream(Upstream{})
+
+	resp := post(t, base, "tok-se", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503 while no rig is serving", resp.StatusCode)
+	}
+	if ok, _ := ProxyProber(p)("subtitle-edit"); ok {
+		t.Error("a client refused with 503 was recorded as having reached the rig")
+	}
+}

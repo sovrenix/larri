@@ -308,22 +308,41 @@ func (o *Orchestrator) attachTunnel(ctx context.Context, live *Live, rig *core.R
 	if o.ClientKeys != nil {
 		proxy.SetKeys(o.ClientKeys)
 	}
-	if o.needsRigKey() {
-		// A stable token, where the caller has one, is the credential a
-		// client was configured against once (invariant 8); generating here
-		// would invalidate it on every teardown. Named for what it is, so
-		// the proxy's record does not report a stable key as a per-rig one.
-		token, name := o.ClientToken, "larri-client"
-		if token.Empty() {
-			name = "this-rig"
-			var err error
-			if token, err = secret.Generate(32); err != nil {
-				cancel()
-				return err
-			}
+	// Three cases in order, because collapsing two of them lost the third.
+	//
+	// OneRigKey is an explicit request for a credential that goes with the rig
+	// and ends with it — what an agent gets from larri_status. Handing that
+	// caller a stable key would give it one that outlives the rig it came
+	// with, which is the opposite of what it asked for.
+	//
+	// A caller holding a stable token wants it registered even where a key
+	// store is readable — needsRigKey now says so upstream, and the ordering
+	// here is what makes the two agree: with both set, the body preferred the
+	// stable token and quietly overrode the explicit request above it.
+	mintRigKey := func() error {
+		token, err := secret.Generate(32)
+		if err != nil {
+			cancel()
+			return err
 		}
-		proxy.AddClient(name, token)
+		proxy.AddClient("this-rig", token)
 		live.ClientToken = token
+		return nil
+	}
+	switch {
+	case o.OneRigKey:
+		if err := mintRigKey(); err != nil {
+			return err
+		}
+	case !o.ClientToken.Empty():
+		// Named for what it is, so the proxy's record does not report a key
+		// that outlives the rig as one that does not.
+		proxy.AddClient("larri-client", o.ClientToken)
+		live.ClientToken = o.ClientToken
+	case o.needsRigKey():
+		if err := mintRigKey(); err != nil {
+			return err
+		}
 	}
 	rig.LocalPort = proxy.LocalPort()
 	live.Endpoint = o.endpointURL(rig.LocalPort)
