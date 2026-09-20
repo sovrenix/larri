@@ -188,7 +188,7 @@ func (o *Orchestrator) attachRemote(s *ClawSession) error {
 		// Only work resets the idle clock. Without this an open tab would
 		// hold a GPU overnight on the strength of a reconnecting socket.
 		proxy.CountsAsWork = b.CountsAsWork()
-		o.emit("claw", "open once to log the browser in: %s", s.URL)
+		o.emit("claw", "browser session ready")
 	}
 
 	if h, ok := s.Kind.(claw.Holder); ok {
