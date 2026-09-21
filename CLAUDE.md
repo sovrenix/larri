@@ -45,6 +45,12 @@ summary of them.
 | **Requirements Specification** (LARRI-REQ-001) | [`docs/LARRI_Requirements_Specification.md`](docs/LARRI_Requirements_Specification.md) | Scope, actors, the rig lifecycle state machine, numbered functional requirements (FR-*), non-functional requirements, acceptance criteria per milestone, risks, open questions. |
 | **Design Document** (LARRI-DES-001) | [`docs/LARRI_Design_Document.md`](docs/LARRI_Design_Document.md) | Architecture, package layout, core Go types, Provider/Runtime interfaces, sizing math, ranking function, provisioning sequence, state/reconciliation, teardown protocol, daemon API, error taxonomy, observability and the telemetry plane, testing strategy, milestones. |
 
+[`docs/ADDING_A_CLAW.md`](docs/ADDING_A_CLAW.md) is the how-to that sits under those two:
+the `claw.Kind` contract method by method, how a claw turns what it needs into hardware
+without spending anything, and how the idle clock decides when a rig stops being paid
+for. It implements the invariants below rather than setting them — where the two
+disagree, this file wins.
+
 When code and these documents disagree, fix one of them deliberately — do not leave the
 divergence. **All of Q-01…Q-11 are now resolved** — see §13.1 of the requirements spec,
 which records the reasoning and not just the verdict. New questions go there rather than
