@@ -445,8 +445,9 @@ Hygiene:
 
 ## 10. Verifying
 
-Run in **WSL, not Windows** — `internal/term` needs `syscall.SIGWINCH` and
-`internal/state` cannot `fsync` a directory on Windows.
+Run on **Linux**, which is what CI uses. `internal/term` needs `syscall.SIGWINCH` and
+`internal/state` cannot `fsync` a directory on Windows, so a Windows checkout reports
+failures that have nothing to do with your change.
 
 ```bash
 make check

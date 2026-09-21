@@ -106,7 +106,7 @@ has round-tripped) and **cost safety** (LARRI never loses track of a billable re
 
 Multi-node/distributed inference; training or fine-tuning; provider billing/account
 management; hosting a public endpoint for third parties; model quality benchmarking;
-Kubernetes; Windows-native support (WSL2 acceptable).
+Kubernetes; Windows-native support (a Linux environment is required).
 
 ---
 
