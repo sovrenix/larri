@@ -111,8 +111,22 @@ func (p *Proxy) serveSession(w http.ResponseWriter, r *http.Request) {
 		// back out. The page is served from a host with root (§15.4), so its
 		// contents are not assumed friendly.
 		HttpOnly: true,
-		// Secure so the browser only sends the credential over HTTPS.
-		Secure: true,
+		// Secure is deliberately NOT set, and a scanner will ask for it.
+		//
+		// This listener is http on loopback and there is no TLS to offer it:
+		// the SSH tunnel is the confidentiality boundary (§8), and the cookie
+		// never leaves this machine. Secure stops a client sending the
+		// credential over http at all, which is every request this cookie
+		// exists for. Chrome and Firefox treat http://127.0.0.1 as a secure
+		// context and would send it anyway; Safari and embedded webviews have
+		// not always, and a Go cookie jar does not — so setting it trades a
+		// finding nobody can exploit for a surface that silently 401s in some
+		// browsers and not others.
+		//
+		// It has been set once already, by an automated fix, and the
+		// end-to-end test that caught it was rewritten to assert the 401
+		// rather than the round trip. If a scan asks again, the answer is
+		// still no; suppress the finding rather than the test.
 		// Strict so a cross-site request cannot carry it. Origin is checked
 		// as well rather than instead: the two fail in different ways, and a
 		// control that depends on one browser behaviour is one deprecation

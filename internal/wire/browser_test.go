@@ -105,8 +105,16 @@ func TestBrowserSessionExchangesATokenForACookie(t *testing.T) {
 		t.Error("the session cookie is readable by script in a page served " +
 			"from a host with root")
 	}
-	if !cookie.Secure {
-		t.Error("the session cookie is not Secure")
+	// Asserted absent, deliberately. This listener is http on loopback with
+	// no TLS to offer (§8), and Secure stops a client sending the credential
+	// over http at all — which is every request the cookie exists for. It was
+	// set once by an automated fix and the round-trip test below was rewritten
+	// to assert the resulting 401. Failing here is how that is caught next
+	// time, rather than discovered by an operator whose browser stopped
+	// authenticating.
+	if cookie.Secure {
+		t.Error("the session cookie is Secure: a client will not send it over " +
+			"http, which is the only transport this listener has")
 	}
 	if cookie.SameSite != http.SameSiteStrictMode {
 		t.Error("the session cookie is not SameSite=Strict")
@@ -414,11 +422,23 @@ func TestReissuingRetiresTheUnusedLink(t *testing.T) {
 	}
 }
 
-// A plain HTTP client jar does not replay a Secure cookie, which is the flag
-// CodeQL required here. The browser-session path is therefore tested by the
-// exchange and by explicit cookie replay above, not by trusting an insecure
-// transport to send it back automatically.
-func TestAGoCookieJarDoesNotReplayTheSecureSessionCookieOverHTTP(t *testing.T) {
+// The cookie has to survive a real browser round trip over the loopback HTTP
+// listener, which is the only place it is ever used.
+//
+// Everything else in this file inspects the Set-Cookie header directly, so
+// nothing exercised a client actually sending it back — and an automated
+// CodeQL fix duly marked the cookie Secure, which stops a client transmitting
+// it over http. The exchange still redirected, the follow-up request arrived
+// unauthenticated, and the whole suite stayed green because no test had a jar.
+//
+// That happened, and the response was to rewrite this test to assert the 401.
+// It is restored, because a test that asserts the broken behaviour is worse
+// than no test: it makes the regression permanent and looks like coverage.
+//
+// LARRI has no TLS to offer here by design: the listener binds loopback and
+// the SSH tunnel is the confidentiality boundary (§8). So the cookie must work
+// over http, and this asserts it end to end rather than by reading a flag.
+func TestTheSessionCookieSurvivesTheLoopbackRoundTrip(t *testing.T) {
 	p, _, _ := browserProxy(t)
 	p.EnableBrowserSession(secret.New("cookie-secret"))
 
@@ -439,18 +459,19 @@ func TestAGoCookieJarDoesNotReplayTheSecureSessionCookieOverHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("following the session link ended at %d, want 401", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("following the session link ended at %d, want 200: the cookie "+
+			"was not sent back over the loopback listener", resp.StatusCode)
 	}
 
-	// And it stays unusable to the jar for the same reason.
+	// And it keeps working, because a browser makes many requests per page.
 	again, err := cl.Get(p.addr() + "/")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer again.Body.Close()
-	if again.StatusCode != http.StatusUnauthorized {
-		t.Errorf("the jar replayed a Secure cookie over http with %d", again.StatusCode)
+	if again.StatusCode != http.StatusOK {
+		t.Errorf("a later request got %d: the session did not persist", again.StatusCode)
 	}
 }
 
