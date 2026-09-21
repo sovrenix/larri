@@ -227,7 +227,14 @@ func Sync(ctx context.Context, sess runtime.Session, localDir string, opt SyncOp
 			res.Failed[a.Rel] = "path escapes the output directory"
 			continue
 		}
-		if st, err := os.Stat(dest); err == nil && uint64(st.Size()) == a.Bytes {
+		// Same size AND not older than what is on the host. Size alone was
+		// not identity: ComfyUI restarts its counter, so a later session can
+		// render a different image under the same name, and if the two happen
+		// to be the same length the new one was reported as already held and
+		// then destroyed with the host. fetchOne stamps each copy with the
+		// host's own timestamp, so this compares like with like.
+		if st, err := os.Stat(dest); err == nil && uint64(st.Size()) == a.Bytes &&
+			!st.ModTime().Before(a.ModTime) {
 			res.Skipped = append(res.Skipped, a.Rel)
 			continue
 		}
@@ -281,7 +288,17 @@ func fetchOne(ctx context.Context, sess runtime.Session, a Artifact, dest string
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, dest)
+	if err := os.Rename(tmp, dest); err != nil {
+		return err
+	}
+	// Carry the host's timestamp onto the copy, so "already have this one" is
+	// an exact comparison rather than one against whenever the download
+	// happened. Without it the local file is always newer than the artefact
+	// it came from, and the only thing left to compare is the size — which a
+	// different render of the same name can match. Not fatal if it fails: the
+	// file is saved, and the worst outcome is fetching it again.
+	_ = os.Chtimes(dest, a.ModTime, a.ModTime)
+	return nil
 }
 
 // underDir reports whether path stays inside root.

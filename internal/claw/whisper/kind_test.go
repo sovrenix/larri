@@ -238,3 +238,52 @@ func containsIn(lines []string, want string) bool {
 	}
 	return false
 }
+
+// A client's name is its whole identity: the key is derived from it, the
+// proxy records arrivals under it, and revocation is per name. Two entries
+// spelled the same are one client wearing two hats — same derived key, one
+// surviving entry in the writer index, and a probe that cannot say which
+// arrived. Refused where it costs nothing.
+//
+// Driven through Plan, not through validClients: a guard nothing calls is not
+// a guard, and calling the helper directly would pass with it unwired.
+func TestDuplicateClientNamesAreRefusedBeforeTheMoney(t *testing.T) {
+	plan := func(t *testing.T, clientsYAML string) error {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "job.yml")
+		job := "type: whisper\nmodel: large-v3\n" + clientsYAML
+		if err := os.WriteFile(path, []byte(job), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := claw.LoadConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		k := &Kind{measurer: sizes()}
+		_, err = k.Plan(context.Background(), cfg, claw.Options{})
+		return err
+	}
+
+	for _, c := range []struct {
+		name string
+		yaml string
+		ok   bool
+	}{
+		{"distinct names each get their own key",
+			"clients:\n  - buzz\n  - subtitle-edit\n", true},
+		{"none named is the default single client", "", true},
+		{"the same client twice", "clients:\n  - buzz\n  - buzz\n", false},
+		{"an empty name", "clients:\n  - buzz\n  - \"\"\n", false},
+		{"whitespace is not a name", "clients:\n  - \"  \"\n", false},
+	} {
+		err := plan(t, c.yaml)
+		if c.ok && err != nil {
+			t.Errorf("%s: refused with %v", c.name, err)
+		}
+		if !c.ok && err == nil {
+			t.Errorf("%s: planned, so two clients would share one credential "+
+				"and the rig would be rented before anyone noticed", c.name)
+		}
+	}
+}

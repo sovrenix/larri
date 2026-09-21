@@ -6,9 +6,11 @@ package whisper
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"go.sovrenix.com/larri/internal/claw"
 	"go.sovrenix.com/larri/internal/core"
+	"go.sovrenix.com/larri/internal/errs"
 	"go.sovrenix.com/larri/internal/runtime"
 	"go.sovrenix.com/larri/internal/sizing"
 	"go.sovrenix.com/larri/internal/wire"
@@ -83,6 +85,9 @@ func (k *Kind) Describe() string {
 // cannot read, ends the run here for nothing rather than on a rented host.
 func (k *Kind) Plan(ctx context.Context, cfg *claw.Config, opt claw.Options) (*claw.Plan, error) {
 	if err := cfg.Decode(&k.cfg); err != nil {
+		return nil, err
+	}
+	if err := validClients(k.cfg.Clients); err != nil {
 		return nil, err
 	}
 	k.repo = Repo(k.cfg.Model)
@@ -239,4 +244,32 @@ func joinOr(items []string, empty string) string {
 		out += ", " + s
 	}
 	return out
+}
+
+// validClients refuses a client list that cannot give each client its own
+// credential.
+//
+// A name is the whole identity here: the key is derived from it, the proxy
+// records arrivals under it, and revocation is per name. Two entries spelled
+// the same are therefore one client wearing two hats — same derived key, one
+// surviving entry in the writer index, and a probe that cannot say which of
+// them arrived. That is precisely the isolation FR-SEC-23 asks for, lost to a
+// copy-paste in a config file.
+//
+// Refused in Plan, where it costs nothing, rather than discovered on a rig
+// that is already billing (§4a).
+func validClients(names []string) error {
+	seen := make(map[string]bool, len(names))
+	for _, n := range names {
+		if strings.TrimSpace(n) == "" {
+			return errs.Newf(errs.ClassModelFailure, "whisper.Plan",
+				"empty client name")
+		}
+		if seen[n] {
+			return errs.Newf(errs.ClassModelFailure, "whisper.Plan",
+				"duplicate client %q: each needs its own name to get its own key", n)
+		}
+		seen[n] = true
+	}
+	return nil
 }

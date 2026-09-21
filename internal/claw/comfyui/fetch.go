@@ -126,7 +126,16 @@ func WriteCredential(ctx context.Context, sess runtime.Session, token secret.Sec
 		// Nothing to write, and the absence is not an error: most ComfyUI
 		// models are public, and a token is only needed for a gated
 		// repository, which resolution has already proven readable.
-		_, _ = sess.Run(ctx, "rm -f "+shellQuote(curlConfig))
+		//
+		// The removal itself is checked, though. This runs on a host that may
+		// have been adopted or resumed, so the file it is clearing can hold a
+		// previous session's token — and a discarded error meant a credential
+		// the operator believes was withdrawn stays readable by root on a
+		// machine they do not own (invariant 9).
+		if _, err := sess.Run(ctx, "rm -f "+shellQuote(curlConfig)); err != nil {
+			return errs.Newf(errs.ClassHostFailure, "comfyui.WriteCredential",
+				"clear the fetch credential: %v", err)
+		}
 		return nil
 	}
 	cmd := fmt.Sprintf(

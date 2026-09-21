@@ -933,6 +933,22 @@ func cmdResume(ctx context.Context, args []string) error {
 	}()
 	defer close(events)
 
+	// A claw's workload cannot be rebuilt from the rig alone. Server takes the
+	// Plan that Plan() produced, and that came from a job file this process
+	// has never seen — so there is nothing here to reconnect with.
+	//
+	// Said as its own refusal rather than left to pickRuntime, which returns
+	// "unknown runtime" and returns *before* the billing warning below. That
+	// left the operator with a bare error about a name, no price, and no
+	// remedy, for a machine that was still charging by the second (§4).
+	if !target.Runtime.ServesInference() {
+		fmt.Fprintf(os.Stderr,
+			"\n  ! rig %s is still billing at $%.3f/hr — 'larri down %s' destroys it\n",
+			target.ID, target.BilledPriceHr(), target.ID)
+		return fmt.Errorf("resume: rig %s runs %s: no job file to rebuild it from",
+			target.ID, target.Runtime)
+	}
+
 	// The engine the rig was brought up with, not vLLM for everything: each
 	// engine finds its own server process and port, and a llama.cpp rig
 	// adopted as vLLM could never be reconnected to.

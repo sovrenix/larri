@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go.sovrenix.com/larri/internal/claw"
+	"go.sovrenix.com/larri/internal/errs"
 )
 
 // CountsAsWork reports whether a proxied request is the operator using the rig.
@@ -63,7 +64,14 @@ func (c *Client) Queue(ctx context.Context) (QueueState, error) {
 		return QueueState{}, err
 	}
 	if code != http.StatusOK {
-		return QueueState{}, nil
+		// An error, not an empty queue. The two were the same value here, so
+		// a 503 from a ComfyUI busy enough to shed a request read as "nothing
+		// outstanding" — which is the answer least likely to be true at that
+		// moment. HoldWhileBusy releases on either, deliberately (see
+		// claw.Holder), but a caller that cannot tell a failed poll from a
+		// finished queue cannot make that choice at all.
+		return QueueState{}, errs.Newf(errs.ClassHostFailure, "comfyui.Queue",
+			"queue returned %d", code)
 	}
 	var doc struct {
 		Running []json.RawMessage `json:"queue_running"`

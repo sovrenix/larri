@@ -539,3 +539,31 @@ func TestAClawIgnoresTheModelHalfOfAProfile(t *testing.T) {
 		t.Errorf("max price = %v", maxPrice)
 	}
 }
+
+// A claw's workload is rebuilt from its job file, which the rig does not
+// carry — so resume cannot reconnect to one. What matters is how it says so:
+// pickRuntime answers "unknown runtime" and returns before the billing
+// warning, leaving an operator with a complaint about a name and no mention
+// of the machine still charging by the second.
+func TestAClawRigCannotBeResumedAndSaysWhatItCosts(t *testing.T) {
+	for _, k := range []core.RuntimeKind{core.RuntimeComfyUI, core.RuntimeWhisper} {
+		if k.ServesInference() {
+			t.Errorf("%s reports itself an inference engine, so resume would "+
+				"try to rebuild a workload it has no job file for", k)
+		}
+		if _, err := pickRuntime(string(k), core.ModelSpec{}); err == nil {
+			t.Errorf("pickRuntime built an engine for %s; the refusal in "+
+				"cmdResume is what has to catch this, and it is keyed on "+
+				"ServesInference rather than on this error", k)
+		}
+	}
+	// And the engines resume still has to handle.
+	for _, k := range []core.RuntimeKind{core.RuntimeVLLM, core.RuntimeLlamaCpp, core.RuntimeOllama} {
+		if !k.ServesInference() {
+			t.Errorf("%s would be refused by resume", k)
+		}
+		if _, err := pickRuntime(string(k), core.ModelSpec{Ref: "org/model"}); err != nil {
+			t.Errorf("%s: %v", k, err)
+		}
+	}
+}

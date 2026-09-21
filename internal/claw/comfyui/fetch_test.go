@@ -5,9 +5,18 @@ package comfyui
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"go.sovrenix.com/larri/internal/secret"
 )
 
 // A model name comes out of a workflow file, which operators download from
@@ -115,5 +124,81 @@ func TestAnOutputListingThatWasCutShortSaysSo(t *testing.T) {
 	}}
 	if _, cut, err := List(context.Background(), short, ""); err != nil || cut {
 		t.Errorf("a listing of one file reported truncated=%v err=%v", cut, err)
+	}
+}
+
+// A non-200 from the queue is a failed poll, not an empty one. They shared a
+// return value, so a ComfyUI busy enough to shed a request answered "nothing
+// outstanding" — the reading least likely to be true at that moment.
+func TestANonOKQueueIsNotAnEmptyQueue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	c := &Client{Addr: strings.TrimPrefix(srv.URL, "http://")}
+	q, err := c.Queue(context.Background())
+	if err == nil {
+		t.Fatal("a 503 was reported as a successful, empty queue")
+	}
+	if q.Busy() {
+		t.Error("a failed poll reported work outstanding")
+	}
+}
+
+// Size was being used as identity. ComfyUI restarts its output counter, so a
+// later session renders a different image under the same name — and if the
+// lengths match, the newer one was reported as already held and then
+// destroyed with the host.
+func TestARenderIsNotSkippedJustForMatchingInSize(t *testing.T) {
+	local := t.TempDir()
+	dest := filepath.Join(local, "larri_00001_.png")
+	old := time.Unix(1700000000, 0)
+	if err := os.WriteFile(dest, []byte("AAAA"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(dest, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	// The host holds a file of the same name and the same size, rendered
+	// after the local copy was taken.
+	newer := old.Add(time.Hour)
+	f := &fakeSession{rule: func(cmd string) (string, error) {
+		if strings.Contains(cmd, "find ") {
+			return fmt.Sprintf("4\t%d\tlarri_00001_.png\n", newer.Unix()), nil
+		}
+		return base64.StdEncoding.EncodeToString([]byte("BBBB")), nil
+	}}
+	res, err := Sync(context.Background(), f, local, SyncOptions{})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if len(res.Skipped) != 0 {
+		t.Errorf("a newer render of the same size was skipped: %+v", res.Skipped)
+	}
+	got, _ := os.ReadFile(dest)
+	if string(got) != "BBBB" {
+		t.Errorf("local file is %q; the host's newer render was not collected", got)
+	}
+}
+
+// Clearing the credential is the withdrawal of a token from a machine the
+// operator does not own. A discarded error meant the file could survive on an
+// adopted host while LARRI reported nothing wrong (invariant 9).
+func TestAFailedCredentialRemovalIsReported(t *testing.T) {
+	f := &fakeSession{rule: func(cmd string) (string, error) {
+		if strings.Contains(cmd, "rm -f") {
+			return "", errors.New("read-only file system")
+		}
+		return "", nil
+	}}
+	if err := WriteCredential(context.Background(), f, secret.Secret{}); err == nil {
+		t.Error("a credential that could not be removed was reported as cleared")
+	}
+	// And the ordinary case still succeeds.
+	ok := &fakeSession{rule: func(string) (string, error) { return "", nil }}
+	if err := WriteCredential(context.Background(), ok, secret.Secret{}); err != nil {
+		t.Errorf("clearing an absent credential failed: %v", err)
 	}
 }
