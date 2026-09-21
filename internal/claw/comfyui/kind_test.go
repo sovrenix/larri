@@ -122,7 +122,7 @@ func TestThePlanIsDerivedFromTheGraph(t *testing.T) {
 	if k.graph.Steps != 20 || k.graph.Image.Width != 1024 {
 		t.Errorf("graph = %+v, the latent and the steps were not read", k.graph)
 	}
-	if got := k.urls["sd_xl_base_1.0.safetensors"]; got == "" {
+	if got := k.urls["checkpoints/sd_xl_base_1.0.safetensors"]; got == "" {
 		t.Error("no source url for the checkpoint")
 	}
 }

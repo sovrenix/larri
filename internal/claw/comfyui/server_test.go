@@ -554,8 +554,8 @@ func TestListReadsTheFilesystemNotTheAPI(t *testing.T) {
 		if !strings.Contains(cmd, "find") {
 			return "", nil
 		}
-		return "1024\t1700000000\tComfyUI_00001_.png\n" +
-			"2048\t1700000100\tportraits/ComfyUI_00002_.png\n", nil
+		return "1024\t1700000000\tComfyUI_00001_.png\x00" +
+			"2048\t1700000100\tportraits/ComfyUI_00002_.png\x00", nil
 	}}
 	arts, _, err := List(context.Background(), f, "")
 	if err != nil {
@@ -579,7 +579,7 @@ func TestListHandlesSpacesInFilenames(t *testing.T) {
 		if !strings.Contains(cmd, "find") {
 			return "", nil
 		}
-		return "99\t1700000000\tmy render 01.png\n", nil
+		return "99\t1700000000\tmy render 01.png\x00", nil
 	}}
 	arts, _, err := List(context.Background(), f, "")
 	if err != nil {
@@ -595,7 +595,7 @@ func TestSyncSavesRendersLocally(t *testing.T) {
 	f := &fakeSession{rule: func(cmd string) (string, error) {
 		switch {
 		case strings.Contains(cmd, "find"):
-			return fmt.Sprintf("%d\t1700000000\ta.png\n", len(payload)), nil
+			return fmt.Sprintf("%d\t1700000000\ta.png\x00", len(payload)), nil
 		case strings.Contains(cmd, "base64"):
 			return encodeBase64(payload), nil
 		}
@@ -624,7 +624,7 @@ func TestSyncRejectsACorruptedTransfer(t *testing.T) {
 	f := &fakeSession{rule: func(cmd string) (string, error) {
 		switch {
 		case strings.Contains(cmd, "find"):
-			return "500\t1700000000\ta.png\n", nil
+			return "500\t1700000000\ta.png\x00", nil
 		case strings.Contains(cmd, "base64"):
 			return encodeBase64([]byte("too short")), nil
 		}
@@ -648,7 +648,7 @@ func TestSyncRejectsACorruptedTransfer(t *testing.T) {
 func TestSyncRefusesAnEscapingRemoteName(t *testing.T) {
 	f := &fakeSession{rule: func(cmd string) (string, error) {
 		if strings.Contains(cmd, "find") {
-			return "10\t1700000000\t../../escaped.png\n", nil
+			return "10\t1700000000\t../../escaped.png\x00", nil
 		}
 		return encodeBase64([]byte("0123456789")), nil
 	}}
@@ -676,7 +676,7 @@ func TestSyncSkipsWhatIsAlreadyLocal(t *testing.T) {
 	fetched := false
 	f := &fakeSession{rule: func(cmd string) (string, error) {
 		if strings.Contains(cmd, "find") {
-			return fmt.Sprintf("%d\t1700000000\ta.png\n", len(payload)), nil
+			return fmt.Sprintf("%d\t1700000000\ta.png\x00", len(payload)), nil
 		}
 		fetched = true
 		return encodeBase64(payload), nil
@@ -697,7 +697,7 @@ func TestSyncSkipsWhatIsAlreadyLocal(t *testing.T) {
 func TestSyncHonoursTheSinceCutoff(t *testing.T) {
 	f := &fakeSession{rule: func(cmd string) (string, error) {
 		if strings.Contains(cmd, "find") {
-			return "10\t1000000000\told.png\n10\t2000000000\tnew.png\n", nil
+			return "10\t1000000000\told.png\x0010\t2000000000\tnew.png\x00", nil
 		}
 		return encodeBase64([]byte("0123456789")), nil
 	}}
@@ -960,7 +960,7 @@ func TestTheSmokeTestRunsBeforeTheDownload(t *testing.T) {
 		"a.safetensors": {Repo: "r/a", File: "a.safetensors", Bytes: 10},
 	}}
 	b, _ := workflow.Resolve(context.Background(), g, nil, workflow.ResolveOptions{Manifest: m})
-	rt := New(g, b, map[string]string{"a.safetensors": "https://x.invalid/a"})
+	rt := New(g, b, map[string]string{"checkpoints/a.safetensors": "https://x.invalid/a"})
 	rt.PollInterval = time.Millisecond
 
 	if err := rt.Bootstrap(context.Background(), host, core.ModelSpec{}, core.SizingPlan{}, nil); err != nil {

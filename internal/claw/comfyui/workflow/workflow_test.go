@@ -385,3 +385,32 @@ func TestIsPickleCoversTheTorchContainers(t *testing.T) {
 		}
 	}
 }
+
+// A filename is not unique across a graph. ComfyUI resolves each reference
+// under the models/ subdirectory its node implies, so the same name can be a
+// checkpoint and a LoRA at once — two files, two directories, two downloads.
+// Keyed on the name alone they collapsed to one, and the node whose copy was
+// dropped found nothing on a rig that was already billing.
+func TestOneNameUnderTwoKindsIsTwoAssets(t *testing.T) {
+	g := &Graph{Assets: []Asset{
+		{Name: "shared.safetensors", Kind: KindCheckpoint, NodeID: "1"},
+		{Name: "shared.safetensors", Kind: KindLoRA, NodeID: "2"},
+		// And a genuine repeat, which must still collapse: two LoRA nodes
+		// loading one file are one download.
+		{Name: "shared.safetensors", Kind: KindLoRA, NodeID: "3"},
+	}}
+	got := g.Distinct()
+	if len(got) != 2 {
+		t.Fatalf("Distinct() kept %d of 3 assets, want 2: %+v", len(got), got)
+	}
+	kinds := map[Kind]bool{}
+	for _, a := range got {
+		kinds[a.Kind] = true
+	}
+	if !kinds[KindCheckpoint] || !kinds[KindLoRA] {
+		t.Errorf("kept %v; one directory's copy was dropped", kinds)
+	}
+	if a, b := got[0].Key(), got[1].Key(); a == b {
+		t.Errorf("both assets key to %q, so one url overwrites the other", a)
+	}
+}

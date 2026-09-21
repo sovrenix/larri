@@ -80,13 +80,18 @@ func (r SyncResult) Summary() string {
 // the tunnel before the rig goes.
 const maxArtifactBytes = 256 << 20
 
-// maxListed bounds one listing, so a pathological output directory cannot
+// maxListBytes bounds one listing, so a pathological output directory cannot
 // produce a command output the local process has to hold whole.
 //
-// A cap that silently drops the overflow is worse than no cap here: what it
-// drops is destroyed moments later, and the sync reports a clean sweep. It is
-// therefore measured rather than assumed — see List.
-const maxListed = 5000
+// Bytes rather than rows, because the records are NUL-terminated and cannot be
+// counted without reading them. A cap that silently drops the overflow is
+// worse than no cap here: what it drops is destroyed moments later, and the
+// sync reports a clean sweep. It is therefore measured — see List.
+const maxListBytes = 1 << 20
+
+// listFile is where find writes on the host before the output is capped, so
+// find's own exit status survives the pipeline that reads it.
+const listFile = "/tmp/.larri-comfy-outputs"
 
 // List enumerates what the session rendered.
 //
@@ -99,49 +104,73 @@ const maxListed = 5000
 // error because a truncated listing is still worth collecting: the caller
 // saves what it can and records the rest as lost, which is what stops a
 // teardown reporting a clean sweep it did not make.
-func List(ctx context.Context, sess runtime.Session, dir string) ([]Artifact, bool, error) {
+func List(ctx context.Context, sess runtime.Session, dir string) ([]Artifact, map[string]string, error) {
 	if dir == "" {
 		dir = OutputDir
 	}
-	// -printf keeps this one round-trip instead of a stat per file. The tab
-	// separator is safe where a space is not: ComfyUI filenames routinely
-	// contain spaces, and splitting on whitespace loses them.
-	// One more than the cap, so hitting it is detectable. Reading exactly the
-	// cap could not tell "five thousand files" from "five thousand and one",
-	// and the difference decides whether a destroy loses anything.
+	problems := map[string]string{}
+
+	// NUL-terminated records, and find's own exit status.
+	//
+	// Both were wrong in ways that end the same: a destroy that reports a
+	// clean sweep it did not make. Piping into head reported *head's* status,
+	// so an output directory that could not be read looked exactly like one
+	// with nothing in it — and the stderr that would have said so was thrown
+	// away. And newline-terminated records lose any filename containing a
+	// newline, which the graph, not LARRI, chooses.
+	//
+	// A NUL cannot appear in a filename, so it is the one safe terminator.
+	// Tabs inside a name survive too, because the name is the last field and
+	// SplitN stops at three.
+	tmp := listFile
 	cmd := fmt.Sprintf(
-		`find %s -type f -printf '%%s\t%%T@\t%%P\n' 2>/dev/null | head -n %d`,
-		shellQuote(dir), maxListed+1)
+		`find %s -type f -printf '%%s\t%%T@\t%%P\0' 2>/dev/null > %s; rc=$?; `+
+			`head -c %d %s; rm -f %s; exit $rc`,
+		shellQuote(dir), shellQuote(tmp), maxListBytes+1, shellQuote(tmp), shellQuote(tmp))
 	out, err := sess.Run(ctx, cmd)
 	if err != nil && len(out) == 0 {
-		return nil, false, errs.Newf(errs.ClassHostFailure, "comfyui.List",
+		return nil, nil, errs.Newf(errs.ClassHostFailure, "comfyui.List",
 			"list outputs: %v", err)
 	}
-	rows, truncated := 0, false
+	if err != nil {
+		// Some of it listed and some of it did not. What came back is still
+		// worth saving; what did not is recorded so the teardown cannot call
+		// this complete.
+		problems["(listing)"] = "incomplete: " + shortErr(err)
+	}
+
+	raw := string(out)
+	if len(raw) > maxListBytes {
+		// Cut mid-record, so the tail is dropped rather than parsed.
+		if i := strings.LastIndexByte(raw[:maxListBytes], 0); i >= 0 {
+			raw = raw[:i+1]
+		} else {
+			raw = ""
+		}
+		problems[fmt.Sprintf("(outputs beyond %d bytes of listing)", maxListBytes)] =
+			"not listed, so not collected"
+	}
+
+	malformed := 0
 	var arts []Artifact
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimRight(line, "\r")
-		if line == "" {
+	for _, rec := range strings.Split(raw, "\x00") {
+		if rec == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 3)
+		parts := strings.SplitN(rec, "\t", 3)
 		if len(parts) != 3 {
+			malformed++
 			continue
 		}
 		size, serr := strconv.ParseUint(strings.TrimSpace(parts[0]), 10, 64)
 		if serr != nil {
+			malformed++
 			continue
-		}
-		// Counted before the filters below, because the cap applies to what
-		// find returned and not to what survived them.
-		rows++
-		if rows > maxListed {
-			truncated = true
-			break
 		}
 		secs, _ := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
 		rel := parts[2]
 		if rel == "" {
+			malformed++
 			continue
 		}
 		// An empty file is never a render. ComfyUI ships a zero-byte
@@ -158,8 +187,19 @@ func List(ctx context.Context, sess runtime.Session, dir string) ([]Artifact, bo
 			ModTime: time.Unix(int64(secs), 0),
 		})
 	}
+	if malformed > 0 {
+		// Recorded, not skipped. A row this could not read is a file on the
+		// host that will not be collected, and the host is about to be
+		// destroyed — so it belongs in the failures the teardown reports,
+		// not in a silent continue.
+		problems[fmt.Sprintf("(%d unreadable listing %s)",
+			malformed, plural(malformed, "row"))] = "not collected"
+	}
 	sort.Slice(arts, func(i, j int) bool { return arts[i].Rel < arts[j].Rel })
-	return arts, truncated, nil
+	if len(problems) == 0 {
+		problems = nil
+	}
+	return arts, problems, nil
 }
 
 // SyncOptions configures retrieval.
@@ -197,7 +237,7 @@ func Sync(ctx context.Context, sess runtime.Session, localDir string, opt SyncOp
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
-	arts, truncated, err := List(ctx, sess, opt.RemoteDir)
+	arts, problems, err := List(ctx, sess, opt.RemoteDir)
 	if err != nil {
 		return nil, err
 	}
@@ -206,14 +246,13 @@ func Sync(ctx context.Context, sess runtime.Session, localDir string, opt SyncOp
 			"create %s: %v", localDir, err)
 	}
 	res := &SyncResult{Failed: map[string]string{}, Dir: localDir}
-	if truncated {
-		// Recorded as a failure, which is what makes Complete false and what
-		// stops larri down destroying the host on a clean-looking summary.
-		// The files beyond the cap were never listed, so they cannot be named
-		// individually — what can be said is that they exist and are about to
-		// be lost.
-		res.Failed[fmt.Sprintf("(outputs beyond the first %d)", maxListed)] =
-			"not listed, so not collected"
+	// Whatever the listing could not account for, recorded as a failure —
+	// which is what makes Complete false and stops larri down destroying the
+	// host on a clean-looking summary. These files were never listed, so they
+	// cannot be named individually; what can be said is that they exist and
+	// are about to be lost.
+	for k, v := range problems {
+		res.Failed[k] = v
 	}
 
 	for _, a := range arts {

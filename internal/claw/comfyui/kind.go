@@ -134,7 +134,7 @@ func (k *Kind) Plan(ctx context.Context, cfg *claw.Config, opt claw.Options) (*c
 	k.bundle = bundle
 	k.urls = make(map[string]string, len(bundle.Items))
 	for _, it := range bundle.Items {
-		k.urls[it.Asset.Name] = sizer.DownloadURL(it.Source)
+		k.urls[it.Asset.Key()] = sizer.DownloadURL(it.Source)
 	}
 
 	plan, err := sizing.PlanDiffusion(sizing.DiffusionRequest{

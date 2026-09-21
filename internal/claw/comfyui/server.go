@@ -511,7 +511,7 @@ func (r *Runtime) fetchModels(ctx context.Context, sess runtime.Session,
 
 	dl := Download{Dir: ModelsDir, Log: FetchLog}
 	for _, it := range r.Bundle.Items {
-		url, ok := r.URLs[it.Asset.Name]
+		url, ok := r.URLs[it.Asset.Key()]
 		if !ok || url == "" {
 			return errs.Newf(errs.ClassModelFailure, "comfyui.Bootstrap",
 				"no download url for %s", it.Asset.Name)

@@ -6,7 +6,9 @@ package config
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -111,7 +113,14 @@ func ResolveClientKey(env func(string) string) (secret.Secret, ClientKeySource, 
 	if err != nil {
 		return secret.Secret{}, ClientKeyEphemeral, err
 	}
-	if err := writeClientKey(path, key); err != nil {
+	switch stored, err := createClientKey(path, key); {
+	case err == nil && stored != "":
+		// Somebody else created it between the check above and this call.
+		// Theirs is the one on disk, so theirs is the one every future
+		// session will read — and a credential that disagrees with the file
+		// is the churn this whole function exists to prevent (invariant 8).
+		return secret.New(stored), ClientKeyStored, nil
+	case err != nil:
 		// A credential that could not be stored still works for this session;
 		// it simply will not survive it. Reported rather than fatal, because
 		// refusing to bring a rig up over a file permission is worse than
@@ -119,6 +128,50 @@ func ResolveClientKey(env func(string) string) (secret.Secret, ClientKeySource, 
 		return secret.New(key), ClientKeyEphemeral, err
 	}
 	return secret.New(key), ClientKeyCreated, nil
+}
+
+// createClientKey writes the credential only if nothing else got there first,
+// and returns what is on disk when something did.
+//
+// O_EXCL rather than a temporary file and a rename, because the rename was the
+// race. Two first runs — a claw in one terminal, another in the next — both
+// saw no file, both generated a key, and both renamed over the top. Each
+// process then returned the value it made while the file held one of them, so
+// the clients configured by the loser were invalidated by the next rig that
+// read the file.
+//
+// The kernel decides who wins, and the loser reads the winner's value rather
+// than its own.
+func createClientKey(path, key string) (stored string, err error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("config: create %s: %w", filepath.Dir(path), err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		b, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return "", fmt.Errorf("config: read client key: %w", rerr)
+		}
+		v := strings.TrimSpace(string(b))
+		if v == "" {
+			// Created but not yet written — the winner is between the two
+			// calls. Nothing to read, so this session uses its own value and
+			// says so rather than returning an empty credential.
+			return "", fmt.Errorf("config: %s is empty", path)
+		}
+		return v, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("config: write %s: %w", path, err)
+	}
+	if _, err := f.WriteString(key + "\n"); err != nil {
+		f.Close()
+		return "", fmt.Errorf("config: write %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("config: write %s: %w", path, err)
+	}
+	return "", nil
 }
 
 func generateClientKey() (string, error) {
@@ -129,36 +182,6 @@ func generateClientKey() (string, error) {
 	// Prefixed so it is recognisable in a config file somebody is debugging,
 	// and URL-safe so it survives being pasted into a query string.
 	return "larri-" + base64.RawURLEncoding.EncodeToString(b), nil
-}
-
-// writeClientKey stores the credential readable only by its owner.
-func writeClientKey(path, key string) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("config: create %s: %w", dir, err)
-	}
-	// Written through a temporary file with the final mode set before the
-	// rename, so the credential is never briefly world-readable.
-	tmp, err := os.CreateTemp(dir, ".client-*.key")
-	if err != nil {
-		return fmt.Errorf("config: write %s: %w", path, err)
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return fmt.Errorf("config: write %s: %w", path, err)
-	}
-	if _, err := tmp.WriteString(key + "\n"); err != nil {
-		tmp.Close()
-		return fmt.Errorf("config: write %s: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("config: write %s: %w", path, err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("config: write %s: %w", path, err)
-	}
-	return nil
 }
 
 func secureClientKeyFile(path string) error {

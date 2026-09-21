@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -208,5 +209,48 @@ func TestAGeneratedCredentialIsRecognisableAndURLSafe(t *testing.T) {
 	}
 	if len(v) < 40 {
 		t.Errorf("credential = %q is short enough to be worth guessing", v)
+	}
+}
+
+// Two first runs racing each other must agree with the file.
+//
+// Both saw no key, both generated one, and both renamed over the top — so
+// each returned the value it made while the file held one of them. The
+// clients configured by the loser were then invalidated by the next rig that
+// read the file, which is exactly the churn a stable credential exists to
+// prevent (invariant 8).
+func TestConcurrentFirstRunsAllAgreeWithTheStoredKey(t *testing.T) {
+	path := isolate(t)
+
+	const racers = 8
+	var wg sync.WaitGroup
+	got := make([]string, racers)
+	wg.Add(racers)
+	for i := 0; i < racers; i++ {
+		go func(i int) {
+			defer wg.Done()
+			k, _, err := ResolveClientKey(noEnv)
+			if err != nil {
+				t.Errorf("resolve: %v", err)
+				return
+			}
+			got[i] = k.Reveal()
+		}(i)
+	}
+	wg.Wait()
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("no key was stored at all: %v", err)
+	}
+	onDisk := strings.TrimSpace(string(b))
+	if onDisk == "" {
+		t.Fatal("the stored key is empty")
+	}
+	for i, g := range got {
+		if g != onDisk {
+			t.Errorf("racer %d returned a credential the file does not hold: "+
+				"every client it configured would stop working on the next rig", i)
+		}
 	}
 }

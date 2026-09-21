@@ -344,19 +344,31 @@ func (g *Graph) Names() []string {
 	return out
 }
 
-// Distinct collapses assets named more than once.
+// Key identifies an asset by where it has to land, not just by what it is
+// called.
+//
+// A filename alone is not unique across a graph. ComfyUI resolves each
+// reference under the models/ subdirectory its node implies, so the same
+// name can legitimately be a checkpoint and a LoRA — two files, two
+// directories, two downloads. Keyed on the name alone they are one, and the
+// one that survives is fetched into a single directory while the other node
+// finds nothing: a graph that fails on a rig that is already billing, for a
+// reason nothing in the plan mentioned.
+func (a Asset) Key() string { return string(a.Kind) + "/" + a.Name }
+
+// Distinct collapses assets referenced more than once.
 //
 // Two LoRA nodes loading the same file are one download, and counting it twice
 // would both double the estimated cold start and rank the market against a
-// size that does not exist.
+// size that does not exist. Same file means same kind and same name — see Key.
 func (g *Graph) Distinct() []Asset {
 	seen := map[string]bool{}
 	var out []Asset
 	for _, a := range g.Assets {
-		if seen[a.Name] {
+		if seen[a.Key()] {
 			continue
 		}
-		seen[a.Name] = true
+		seen[a.Key()] = true
 		out = append(out, a)
 	}
 	return out

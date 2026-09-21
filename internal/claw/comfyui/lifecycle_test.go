@@ -128,7 +128,7 @@ func (h *hostSim) Run(_ context.Context, cmd string) ([]byte, error) {
 	case strings.Contains(cmd, "find "):
 		var b strings.Builder
 		for name, data := range h.outputs {
-			fmt.Fprintf(&b, "%d\t1700000000\t%s\n", len(data), name)
+			fmt.Fprintf(&b, "%d\t1700000000\t%s\x00", len(data), name)
 		}
 		return []byte(b.String()), nil
 
@@ -197,8 +197,8 @@ func TestOneWorkflowAllTheWayThrough(t *testing.T) {
 	}
 
 	urls := map[string]string{
-		"base.safetensors": "https://hf.invalid/r/base/resolve/main/base.safetensors",
-		"vae.safetensors":  "https://hf.invalid/r/vae/resolve/main/vae.safetensors",
+		"checkpoints/base.safetensors": "https://hf.invalid/r/base/resolve/main/base.safetensors",
+		"vae/vae.safetensors":          "https://hf.invalid/r/vae/resolve/main/vae.safetensors",
 	}
 	rt := New(g, bundle, urls)
 	rt.PollInterval = time.Millisecond
@@ -316,7 +316,7 @@ func TestAStalledFetchEndsTheWait(t *testing.T) {
 		workflow.ResolveOptions{Manifest: m})
 
 	rt := New(g, bundle, map[string]string{
-		"base.safetensors": "https://x.invalid/b", "vae.safetensors": "https://x.invalid/v",
+		"checkpoints/base.safetensors": "https://x.invalid/b", "vae/vae.safetensors": "https://x.invalid/v",
 	})
 	rt.PollInterval = time.Millisecond
 	rt.FetchStall = 20 * time.Millisecond
@@ -346,7 +346,7 @@ func TestAFailedFetchIsReportedImmediately(t *testing.T) {
 	bundle, _ := workflow.Resolve(context.Background(), g, nil,
 		workflow.ResolveOptions{Manifest: m})
 	rt := New(g, bundle, map[string]string{
-		"base.safetensors": "https://x.invalid/b", "vae.safetensors": "https://x.invalid/v",
+		"checkpoints/base.safetensors": "https://x.invalid/b", "vae/vae.safetensors": "https://x.invalid/v",
 	})
 	rt.PollInterval = time.Millisecond
 
@@ -374,7 +374,7 @@ func TestAnImagePreloadedWithComfyUISkipsTheInstall(t *testing.T) {
 	bundle, _ := workflow.Resolve(context.Background(), g, nil,
 		workflow.ResolveOptions{Manifest: m})
 	rt := New(g, bundle, map[string]string{
-		"base.safetensors": "https://x.invalid/b", "vae.safetensors": "https://x.invalid/v",
+		"checkpoints/base.safetensors": "https://x.invalid/b", "vae/vae.safetensors": "https://x.invalid/v",
 	})
 	rt.PollInterval = time.Millisecond
 

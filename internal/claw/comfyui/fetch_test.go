@@ -100,30 +100,30 @@ func TestAFetchThatCannotFinishNeverMarksItselfDone(t *testing.T) {
 // clean sweep. The cap stays; what changed is that hitting it is a fact the
 // teardown can see.
 func TestAnOutputListingThatWasCutShortSaysSo(t *testing.T) {
-	var rows strings.Builder
-	for i := 0; i < maxListed+3; i++ {
-		fmt.Fprintf(&rows, "10\t1700000000\tr%04d.png\n", i)
+	var recs strings.Builder
+	for recs.Len() <= maxListBytes+64 {
+		fmt.Fprintf(&recs, "10\t1700000000\tr%06d.png\x00", recs.Len())
 	}
-	out := rows.String()
+	out := recs.String()
 	f := &fakeSession{rule: func(string) (string, error) { return out, nil }}
-	arts, truncated, err := List(context.Background(), f, "")
+	arts, problems, err := List(context.Background(), f, "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if !truncated {
+	if len(problems) == 0 {
 		t.Error("a listing that hit the cap reported itself complete")
 	}
-	if len(arts) > maxListed {
-		t.Errorf("listed %d artefacts past a cap of %d", len(arts), maxListed)
+	if len(arts) == 0 {
+		t.Error("nothing was listed; the cap dropped everything rather than the tail")
 	}
 
 	// And a listing that fits must not claim it was cut short, or every
 	// teardown would refuse.
 	short := &fakeSession{rule: func(string) (string, error) {
-		return "10\t1700000000\tone.png\n", nil
+		return "10\t1700000000\tone.png\x00", nil
 	}}
-	if _, cut, err := List(context.Background(), short, ""); err != nil || cut {
-		t.Errorf("a listing of one file reported truncated=%v err=%v", cut, err)
+	if _, p, err := List(context.Background(), short, ""); err != nil || len(p) != 0 {
+		t.Errorf("a listing of one file reported problems=%v err=%v", p, err)
 	}
 }
 
@@ -166,7 +166,7 @@ func TestARenderIsNotSkippedJustForMatchingInSize(t *testing.T) {
 	newer := old.Add(time.Hour)
 	f := &fakeSession{rule: func(cmd string) (string, error) {
 		if strings.Contains(cmd, "find ") {
-			return fmt.Sprintf("4\t%d\tlarri_00001_.png\n", newer.Unix()), nil
+			return fmt.Sprintf("4\t%d\tlarri_00001_.png\x00", newer.Unix()), nil
 		}
 		return base64.StdEncoding.EncodeToString([]byte("BBBB")), nil
 	}}
@@ -200,5 +200,62 @@ func TestAFailedCredentialRemovalIsReported(t *testing.T) {
 	ok := &fakeSession{rule: func(string) (string, error) { return "", nil }}
 	if err := WriteCredential(context.Background(), ok, secret.Secret{}); err != nil {
 		t.Errorf("clearing an absent credential failed: %v", err)
+	}
+}
+
+// find piped into head reports head's status, so a directory that could not
+// be read looked exactly like one with nothing in it — and the stderr saying
+// so was discarded. Sync then reported a clean sweep and the host was
+// destroyed with the only copy on it.
+func TestAFailedListingIsNotAnEmptyDirectory(t *testing.T) {
+	f := &fakeSession{rule: func(cmd string) (string, error) {
+		if strings.Contains(cmd, "find ") {
+			return "", errors.New("exit status 1")
+		}
+		return "", nil
+	}}
+	if _, _, err := List(context.Background(), f, ""); err == nil {
+		t.Error("a listing that failed outright was reported as an empty directory")
+	}
+
+	// A partial listing keeps what it got and still refuses to call the
+	// collection complete.
+	part := &fakeSession{rule: func(cmd string) (string, error) {
+		if strings.Contains(cmd, "find ") {
+			return "10\t1700000000\tgot-this-one.png\x00", errors.New("exit status 1")
+		}
+		return encodeBase64([]byte("0123456789")), nil
+	}}
+	res, err := Sync(context.Background(), part, t.TempDir(), SyncOptions{})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if res.Complete() {
+		t.Error("a partial listing was reported as a complete collection")
+	}
+	if len(res.Saved) != 1 {
+		t.Errorf("saved %v; what did list must still be collected", res.Saved)
+	}
+}
+
+// A record this cannot parse is a file on the host that will not be
+// collected, moments before the host is destroyed. Skipping it silently made
+// it disappear from a summary that still read as complete.
+func TestAnUnreadableListingRowIsRecordedAsLost(t *testing.T) {
+	f := &fakeSession{rule: func(cmd string) (string, error) {
+		if strings.Contains(cmd, "find ") {
+			return "10\t1700000000\tgood.png\x00" + "not-a-record\x00", nil
+		}
+		return encodeBase64([]byte("0123456789")), nil
+	}}
+	res, err := Sync(context.Background(), f, t.TempDir(), SyncOptions{})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if res.Complete() {
+		t.Error("an unreadable row left the collection looking complete")
+	}
+	if len(res.Saved) != 1 {
+		t.Errorf("saved %v, want the one row that did parse", res.Saved)
 	}
 }
