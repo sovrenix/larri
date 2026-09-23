@@ -288,3 +288,63 @@ func TestSearchOffersCarriesTheLowStockChoice(t *testing.T) {
 		t.Errorf("offers = %v; the low-stock offer is returned and marked", rows)
 	}
 }
+
+// A spend ceiling an agent asks for must bound the bring-up, not only the
+// supervisor that starts once the rig is READY.
+//
+// It reached SupervisePolicy alone, so a rig could exhaust the budget during
+// the weight download — most of what an operator pays for on a slow link — and
+// arrive at READY already over it. That is the bug Orchestrator.BudgetUSD was
+// added to fix, and it was fixed for `larri up` and not for the surface where
+// nobody is watching (invariant 6).
+func TestAnAgentsBudgetBoundsTheBringUpAndNotOnlyTheSupervisor(t *testing.T) {
+	d := Deps{}
+	pol := d.policy(upArgs{Budget: 2.50})
+	if pol.Budget.MaxUSD != 2.50 {
+		t.Errorf("the supervisor ceiling is %v, want 2.50", pol.Budget.MaxUSD)
+	}
+
+	// And the same figure has to reach the orchestrator that provisions, which
+	// is what bounds everything before READY.
+	// Enough of a rig to reach the search and fail there: an empty market ends
+	// the bring-up cleanly, after the ceiling has been applied and before
+	// anything could be rented.
+	var got *daemon.Orchestrator
+	d = Deps{
+		Session: &Session{},
+		NewOrchestrator: func(string, string, core.ModelSpec) (*daemon.Orchestrator, error) {
+			got = &daemon.Orchestrator{
+				Store:    newStore(t),
+				Provider: pfake.New("fake", nil, pfake.Behaviour{}),
+				Runtime:  rfake.New(rfake.Behaviour{}),
+				Policy:   rank.DefaultPolicy(),
+				// Sizes itself, so no model resolver is needed.
+				Planner: func(context.Context, daemon.UpRequest) (core.SizingPlan, error) {
+					return core.SizingPlan{RequiredVRAMBytes: 1 << 30, FitsInVRAM: true}, nil
+				},
+			}
+			return got, nil
+		},
+	}
+	d.bringUp(context.Background(), core.Criteria{}, core.ModelSpec{Ref: "x/y"},
+		upArgs{Budget: 2.50}, pol)
+
+	if got == nil {
+		t.Fatal("no orchestrator was built")
+	}
+	if got.BudgetUSD != 2.50 {
+		t.Errorf("the provisioning ceiling is %v, want 2.50: a rig could spend "+
+			"the whole budget before reaching READY", got.BudgetUSD)
+	}
+}
+
+// newStore opens a throwaway state directory.
+func newStore(t *testing.T) *state.Store {
+	t.Helper()
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return st
+}

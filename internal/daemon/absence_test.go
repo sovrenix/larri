@@ -26,7 +26,7 @@ func legacyRig(t *testing.T, st *state.Store, instance string) *core.Rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rig := &core.Rig{ID: id, State: core.StateSelected, Offer: offers()[0], Model: upReq().Model}
+	rig := &core.Rig{ID: id, State: core.StateSelected, Runtime: core.RuntimeVLLM, Offer: offers()[0], Model: upReq().Model}
 	for _, to := range []core.LifecycleState{core.StateCreating, core.StateFailed, core.StateDraining} {
 		if err := st.Transition(rig, to, "legacy"); err != nil {
 			t.Fatal(err)
@@ -104,7 +104,7 @@ func TestNothingCreatedIsRefusedWhereTheRecordSaysOtherwise(t *testing.T) {
 	t.Run("the rig is not destroyed", func(t *testing.T) {
 		o, _, st := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
 		id, _ := state.NewID(time.Now())
-		rig := &core.Rig{ID: id, State: core.StateSelected, Offer: offers()[0]}
+		rig := &core.Rig{ID: id, State: core.StateSelected, Runtime: core.RuntimeVLLM, Offer: offers()[0]}
 		if err := st.Transition(rig, core.StateFailed, "create failed"); err != nil {
 			t.Fatal(err)
 		}

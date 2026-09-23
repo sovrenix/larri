@@ -1,0 +1,44 @@
+# Copyright (C) 2026 Sovrenix Inc.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# A claw job file. Run it with:
+#
+#     larri claw --config examples/whisper/transcribe.yml
+#
+# This one is a *local* claw: the transcription server runs on the rented GPU
+# and your own application stays on your machine. Nothing is produced on the
+# host, so there is nothing to collect — but the values LARRI prints are
+# configuration on your computer, and teardown puts that back.
+
+type: whisper
+
+# A catalogue name, or any repository holding a CTranslate2 conversion.
+# large-v3 is the accurate one; distil-large-v3 is roughly twice as fast for a
+# small accuracy cost; tiny and base are for checking the plumbing works.
+model: large-v3
+
+# CTranslate2 quantises when it loads, not when the model is published — so
+# int8_float16 does NOT shrink the download and DOES shrink the card you need,
+# by roughly the weight difference rather than by half. About 6.6 GB of VRAM at
+# float16, about 5.0 GB at int8_float16; either fits an 8 GB card.
+compute_type: float16
+
+# Pin the spoken language to skip detection, or leave it out to detect per
+# file. Pinning is worth it when you know: detection occasionally picks wrong
+# on a short or noisy opening, and gets the whole transcript wrong with it.
+language: en
+
+# How many transcriptions may be in flight at once. This is what the working
+# set scales with, so raising it raises the card you need.
+concurrency: 1
+
+# The applications to point at the endpoint. Each name gets its own credential,
+# so one can be revoked without touching the others, and LARRI can tell you
+# which of them actually connected rather than only that something did.
+#
+# The name is whatever you call the app — nothing is detected and nothing is
+# written. LARRI prints a base URL, a model name and a key; you paste them once
+# into Subtitle Edit, Buzz, or whatever you already use, and the address stays
+# the same across teardowns so you do not paste them again.
+clients:
+  - subtitle-edit

@@ -102,7 +102,14 @@ func (o *Orchestrator) Sync(ctx context.Context) {
 type Orchestrator struct {
 	Store    *state.Store
 	Provider provider.Provider
-	Runtime  runtime.Runtime
+
+	// Runtime is the payload this rig stands up. Typed as a Workload rather
+	// than a Runtime because the lifecycle around it — renting, pinning,
+	// tunnelling, supervising, destroying — never depended on the endpoint
+	// speaking /v1, and a ComfyUI rig exercises every line of it without
+	// serving a completion. Callers that do need /v1 ask Protocol.
+	Runtime runtime.Workload
+
 	Resolver sizing.Resolver
 	Policy   rank.Policy
 	Proxy    *wire.Proxy
@@ -121,6 +128,19 @@ type Orchestrator struct {
 	// `larri status` can say who is serving it and where its output went.
 	Detached  bool
 	HolderLog string
+
+	// Planner overrides how a rig's VRAM requirement is computed.
+	//
+	// Nil is the transformer path: resolve the model's facts from Hugging
+	// Face and run the KV-cache arithmetic. That computation has no meaning
+	// for a workload with no context length and no attention heads, and a
+	// ComfyUI graph has neither — what it has is a set of files and a latent
+	// area, which sizing.PlanDiffusion turns into the same SizingPlan.
+	//
+	// A hook rather than a branch on the workload's kind, because survey must
+	// not know what is running: the moment it asks, the abstraction that lets
+	// ComfyUI reuse this whole sequence is gone.
+	Planner func(ctx context.Context, req UpRequest) (core.SizingPlan, error)
 
 	// Deadline bounds the whole provisioning sequence. On expiry the rig is
 	// torn down rather than abandoned (FR-PROV-04).
@@ -231,10 +251,53 @@ type Orchestrator struct {
 	// network activity before LARRI says so. Zero means five minutes.
 	HostIdleLimit time.Duration
 
+	// BudgetUSD is the operator's spend ceiling, and it covers **bring-up**
+	// as well as the session after it.
+	//
+	// It exists because the ceiling did not bind where the money was actually
+	// going. Budget enforcement lived only in Supervise, which starts once a
+	// rig is READY — so a bring-up that hung spent past the stated limit and
+	// stopped only at the provisioning deadline. A live run set --budget 0.50
+	// on a $0.34/hr host, hung in launch, and was on course for $0.51 with
+	// nothing to show. A ceiling that does not apply while spending is not a
+	// ceiling.
+	//
+	// Zero disables it, which is the historical behaviour.
+	BudgetUSD float64
+
+	// ColdStart overrides what a fresh rental is expected to download before
+	// it can work. Zero derives it from the plan's weights.
+	//
+	// It exists because "weights" is the wrong word for some payloads. A claw
+	// that fetches a bundle of unrelated files knows the total exactly, and
+	// ranking on a number derived from a field that does not describe it
+	// would sort the market against a size that does not exist (§4b).
+	ColdStart uint64
+
+	// OutputBudget bounds how long a teardown spends retrieving rendered
+	// files before it destroys anyway. Zero means ten minutes.
+	//
+	// A ceiling rather than a best effort, because the two costs are not
+	// symmetric. Files left behind are lost once; a rig left alive because it
+	// was still copying them bills until somebody notices.
+	OutputBudget time.Duration
+
 	// LabelSealer encrypts the descriptive half of the provider-side label.
 	// Nil writes it in the clear, which is attributable but readable by the
 	// host and the provider.
 	LabelSealer core.Sealer
+
+	// ClientToken is the credential local clients authenticate to the proxy
+	// with, and it is **stable across rigs** by design (invariant 8): a client
+	// is configured against it once, so minting a fresh one per rig would
+	// silently invalidate every client's configuration on every teardown —
+	// the churn the fixed local port exists to prevent, arriving through the
+	// credential instead of the address.
+	//
+	// Empty generates a per-rig one, which is correct only where nothing
+	// outside the process is configured against it: tests, and `up` before
+	// any client is wired.
+	ClientToken secret.Secret
 
 	// LabelLimit is the provider's cap on marker length. Zero uses the
 	// conservative default.
@@ -343,6 +406,12 @@ type UpRequest struct {
 	// lets the kernel choose, which is only useful in tests: P3 depends on
 	// this being stable across the rig's life.
 	LocalPort int
+
+	// ClawSite records where the payload runs, for a rig a claw asked for.
+	// Empty is an ordinary rig. Carried here rather than set afterwards so
+	// it is on the record before the create call, like everything else a
+	// crash mid-create has to leave behind (§4).
+	ClawSite string
 }
 
 // Up provisions a rig and returns it ready to serve.
@@ -384,16 +453,28 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 	}
 	req.Model = model
 	o.emit("sizing", "resolving %s", req.Model.Ref)
-	facts, err := o.Resolver.Resolve(ctx, req.Model.Ref, req.Model.Revision)
-	if err != nil {
-		return nil, err
+	var (
+		facts sizing.Facts
+		plan  core.SizingPlan
+		base  sizing.Request
+	)
+	if o.Planner != nil {
+		// A planned workload sizes itself. It has no transformer facts, so
+		// there is no base request to build the shard arithmetic from and
+		// nothing below may reach for one.
+		plan, err = o.Planner(ctx, req)
+	} else {
+		facts, err = o.Resolver.Resolve(ctx, req.Model.Ref, req.Model.Revision)
+		if err != nil {
+			return nil, err
+		}
+		// A runtime that already knows how large its weights are beats the
+		// estimate, and every Plan below is built from this one so the filter,
+		// the launch plan and the shortfall cannot disagree about the model's
+		// size (invariant 5).
+		base = sizing.Request{Spec: req.Model, Facts: facts, WeightBytes: o.weightBytes()}
+		plan, err = sizing.Plan(base)
 	}
-	// A runtime that already knows how large its weights are beats the
-	// estimate, and every Plan below is built from this one so the filter,
-	// the launch plan and the shortfall cannot disagree about the model's
-	// size (invariant 5).
-	base := sizing.Request{Spec: req.Model, Facts: facts, WeightBytes: o.weightBytes()}
-	plan, err := sizing.Plan(base)
 	if err != nil {
 		return nil, err
 	}
@@ -476,6 +557,18 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 		// and the allocator live in the same memory. Measuring against the
 		// advertised total gets both wrong in the direction that spends: it
 		// selects hardware the engine then refuses to start on.
+		if o.Planner != nil {
+			// A planned workload executes on one device, so the shard
+			// arithmetic below has nothing to divide and the facts it needs
+			// do not exist. Per-GPU VRAM is the number that has to hold it —
+			// summing across cards would select headroom nothing can reach.
+			avail := uint64(of.VRAMPerGPUGB) * sizing.GiB
+			if avail >= plan.RequiredVRAMBytes {
+				return rank.ReasonEligible, ""
+			}
+			return rank.ReasonVRAM, fmt.Sprintf("%s short of usable VRAM",
+				sizing.HumanBytes(plan.RequiredVRAMBytes-avail))
+		}
 		shards := sizing.Shards(facts, of.GPUCount, reqs.TensorParallel)
 		avail := sizing.ShardVRAM(of.VRAMPerGPUGB, shards)
 		perOffer := base
@@ -533,13 +626,18 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 	// that kept selecting hosts too slow to deliver.
 	policy := o.Policy
 	policy.ColdStartBytes = coldStartBytes(plan)
+	if o.ColdStart > 0 {
+		policy.ColdStartBytes = o.ColdStart
+	}
 	// A scheme the engine cannot load is a model failure, not a host failure:
 	// every offer in the market would fail it identically, so the refusal
 	// belongs here rather than after a rental has paid to discover it. A live
 	// run rented twice for a bitsandbytes build before vLLM rejected it at
 	// launch with "Unknown quantization method".
-	if err := o.checkQuantSupported(facts); err != nil {
-		return nil, err
+	if o.Planner == nil {
+		if err := o.checkQuantSupported(facts); err != nil {
+			return nil, err
+		}
 	}
 	sel := rank.Select(offers, req.Criteria, fits, policy)
 	if sel.Selected == nil && providerRefused != nil {
@@ -549,6 +647,14 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 			return nil, providerRefused
 		}
 		return nil, errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.survey", "%v\n%s", providerRefused, hints)
+	}
+	if sel.Selected == nil && o.Planner != nil {
+		// Analyse reasons from transformer facts, which a planned workload
+		// does not have. The shortfall is still the useful thing to report,
+		// so it is stated from the plan itself.
+		return nil, errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.survey",
+			"no offer holds %s across %d offers",
+			sizing.HumanBytes(plan.RequiredVRAMBytes), len(offers))
 	}
 	if sel.Selected == nil {
 		shortReq := base
@@ -569,6 +675,24 @@ func (o *Orchestrator) survey(ctx context.Context, req UpRequest) (*Survey, erro
 	// and both are wrong until a card is known. A dry run printing the
 	// baseline is the same lie told earlier and more cheaply.
 	chosen := sel.Selected.Offer
+	if o.Planner != nil {
+		// Nothing to re-size: the plan was never a per-card baseline, and
+		// there is no shard degree to settle now that a card is known.
+		//
+		// Everything else on a Survey still applies, and an earlier version of
+		// this return dropped two fields by omission. Up assigns req.Model =
+		// sv.Model, so a zero one erased the spec the claw had resolved: a
+		// live whisper rig persisted an empty model ref and served name. And
+		// the create call passes sv.DiskGB, so a zero one asked RunPod for its
+		// 20 GB floor after the *search* had filtered the market on the disk
+		// the payload actually needs — the mismatch this type's own doc
+		// comment forbids, and the failure sizeDisk exists to prevent, on the
+		// one path that bypassed it.
+		return &Survey{
+			Plan: plan, Selection: sel, Offers: len(offers),
+			DiskGB: disk, Model: req.Model,
+		}, nil
+	}
 	shards := sizing.Shards(facts, chosen.GPUCount, reqs.TensorParallel)
 	placedReq := base
 	placedReq.GPUCount = shards
@@ -804,6 +928,7 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 		ID: id, State: core.StateSelected, Criteria: req.Criteria,
 		Model: req.Model, Runtime: o.Runtime.Kind(), Offer: chosen,
 		Plan: plan, CreatedAt: time.Now().UTC(),
+		ClawSite: req.ClawSite,
 	}
 	release, err := o.hold(rig, "daemon.Up")
 	if err != nil {
@@ -917,11 +1042,20 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 		attempts = 3
 	}
 	var lastErr error
+	// Spend accumulates across attempts, because the ceiling is the
+	// operator's for the whole command and not for each try of it. Three
+	// attempts each bounded to the full budget would spend three budgets,
+	// which is the opposite of what asking for one means.
+	var spent float64
 	for attempt := 1; attempt <= attempts; attempt++ {
 		if attempt > 1 {
 			o.warn("fallback", "attempt %d of %d on the next-ranked offer", attempt, attempts)
 		}
-		live, rig, err := o.attempt(ctx, req)
+		attemptStart := time.Now()
+		live, rig, err := o.attempt(ctx, req, spent)
+		if rig != nil {
+			spent += rig.Offer.PriceHr * time.Since(attemptStart).Hours()
+		}
 		if err == nil {
 			return live, nil
 		}
@@ -968,6 +1102,23 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 		// Held through the teardown, so nothing reconnects to a rig while it
 		// is being ended; given up once it has been.
 		o.dropUpHold()
+		// The budget stops the fallback, and it is decided *after* the
+		// teardown above rather than before it.
+		//
+		// Ordered the other way round it was the one exit that leaked. The
+		// budget context tightens Serve, so exhausting the ceiling is a
+		// likely way for an attempt to fail; attempt closes the tunnel and
+		// returns the rig with its instance still alive, because Live.Close
+		// releases the forward and never the machine. Returning there skipped
+		// the only teardown on the path, and the ceiling whose entire purpose
+		// is to stop the spending became the single case that left a rig
+		// billing until the operator noticed — the host watchdog is
+		// containment, not a teardown.
+		if o.BudgetUSD > 0 && spent >= o.BudgetUSD {
+			o.warn("budget", "$%.2f spent against a $%.2f ceiling — stopping rather than trying another host",
+				spent, o.BudgetUSD)
+			return nil, err
+		}
 		// Only host-attributable failures are worth another machine.
 		if errs.ClassOf(err) != errs.ClassHostFailure {
 			return nil, err
@@ -979,6 +1130,36 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 	return nil, lastErr
 }
 
+// budgetBounded shortens a bring-up context to what the budget still affords.
+//
+// The ceiling covers the whole rig, so a bring-up that would exhaust it before
+// ever serving is one to end early: the operator asked not to spend more than
+// this, and a rig that reaches READY with the budget already gone is a rig
+// that is destroyed on its first supervision tick anyway.
+//
+// It only ever tightens. A generous budget leaves the provisioning deadline in
+// charge, which is the behaviour every rig had before this existed.
+func (o *Orchestrator) budgetBounded(ctx context.Context, priceHr, spent float64,
+	started time.Time) (context.Context, context.CancelFunc) {
+
+	if o.BudgetUSD <= 0 || priceHr <= 0 {
+		return context.WithCancel(ctx)
+	}
+	remaining := o.BudgetUSD - spent - priceHr*time.Since(started).Hours()
+	if remaining <= 0 {
+		// Already past it. A zero timeout ends the attempt immediately rather
+		// than letting it run on to the provisioning deadline.
+		return context.WithTimeout(ctx, time.Millisecond)
+	}
+	affordable := time.Duration(remaining / priceHr * float64(time.Hour))
+	if dl, ok := ctx.Deadline(); ok && time.Until(dl) <= affordable {
+		return context.WithCancel(ctx) // the deadline is already the tighter one
+	}
+	o.emit("budget", "$%.2f left of $%.2f — bounding this bring-up to %s at $%.3f/hr",
+		remaining, o.BudgetUSD, roundETA(affordable), priceHr)
+	return context.WithTimeout(ctx, affordable)
+}
+
 // attempt runs one full provisioning cycle against the best remaining offer.
 //
 // FR-PROV-04 requires the WHOLE sequence under one deadline, and an earlier
@@ -987,7 +1168,7 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 // waiting for sshd, pinning, bootstrap, launch, readiness — ran unbounded. A
 // host that never finished booting would have held the attempt open forever
 // while billing, which is the failure the deadline exists to prevent.
-func (o *Orchestrator) attempt(ctx context.Context, req UpRequest) (*Live, *core.Rig, error) {
+func (o *Orchestrator) attempt(ctx context.Context, req UpRequest, spent float64) (*Live, *core.Rig, error) {
 	deadline := o.Deadline
 	if deadline == 0 {
 		// Generous on purpose: a stock vLLM image is 10-15 GB and the weight
@@ -1003,7 +1184,14 @@ func (o *Orchestrator) attempt(ctx context.Context, req UpRequest) (*Live, *core
 	if err != nil {
 		return nil, rig, o.explainDeadline(ctx, err, deadline, started)
 	}
-	live, serr := o.Serve(ctx, rig, o.lastKeys, req.LocalPort, req.HFToken)
+
+	// The price is only known once an offer is selected, so the budget can
+	// only tighten the clock from here — which is also where the time
+	// actually goes: bootstrap, download, launch and readiness.
+	sctx, scancel := o.budgetBounded(ctx, rig.Offer.PriceHr, spent, started)
+	defer scancel()
+
+	live, serr := o.Serve(sctx, rig, o.lastKeys, req.LocalPort, req.HFToken)
 	if serr != nil {
 		if live != nil {
 			// Held through the teardown UpAndServe does next, and released
@@ -1149,6 +1337,11 @@ func (o *Orchestrator) teardownAfterFailure(rig *core.Rig, code core.ReasonCode,
 		Actor: core.ActorFault, Code: code, At: time.Now().UTC(),
 		Summary:  "bring-up failed: " + shortErr(cause),
 		Evidence: map[string]string{"error": shortErr(cause)},
+		// Nothing was produced: the rig never reached the point of doing
+		// work. Said explicitly rather than left undecided, because an
+		// undecided teardown is refused and this one must not be — a failed
+		// bring-up is exactly when a host has to go.
+		Outputs: core.OutputsDiscarded,
 	}
 	// The provider's last word on what the host was doing. Without it a
 	// post-mortem cannot tell a stalled image pull from a host that never
@@ -1594,6 +1787,19 @@ func (o *Orchestrator) Down(ctx context.Context, rig *core.Rig, term *core.Termi
 			At: time.Now().UTC(), Summary: "requested from the CLI",
 		}
 	}
+	// Refused here rather than in one front-end. The CLI asked this question
+	// and the MCP tool and the TUI did not, so either could destroy the only
+	// copy of a session's renders with nobody deciding to — a rule that lives
+	// in one surface is in the wrong layer (invariant 6).
+	//
+	// It does not make a billing rig undestroyable: saying "discard" is one
+	// field, and every caller that has already collected says "collected".
+	// What it removes is the silent default.
+	if rig.HoldsHostResults() && term.Outputs == core.OutputsUndecided {
+		return errs.Newf(errs.ClassModelFailure, "daemon.Down",
+			"rig %s holds results that exist only on the host: collect them, or record them discarded",
+			rig.ID)
+	}
 	if err := o.Store.RecordIntent(rig, core.StateDraining, term.Summary); err != nil {
 		return err
 	}
@@ -1724,13 +1930,14 @@ func (o *Orchestrator) clientKeysUnreadable() error {
 	return nil
 }
 
-// needsRigKey reports whether a rig being wired needs a key of its own: one
-// was asked for, there is no store, or the store cannot be read. The last is
-// the case that matters. A reconnected rig is already billing, and one being
-// served has been rented, so a key file that broke since the check before
-// renting gets the rig its own key rather than no usable key at all.
+// needsRigKey reports whether a rig being wired needs a directly accepted key:
+// one was asked for, the caller supplied a stable token that must be accepted,
+// there is no store, or the store cannot be read. The last is the case that
+// matters most. A reconnected rig is already billing, and one being served has
+// been rented, so a key file that broke since the check before renting gets the
+// rig its own key rather than no usable key at all.
 func (o *Orchestrator) needsRigKey() bool {
-	if o.OneRigKey || o.ClientKeys == nil {
+	if o.OneRigKey || !o.ClientToken.Empty() || o.ClientKeys == nil {
 		return true
 	}
 	if err := o.clientKeysUnreadable(); err != nil {

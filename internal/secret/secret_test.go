@@ -102,3 +102,34 @@ func TestGenerate(t *testing.T) {
 		t.Error("zero entropy must be rejected")
 	}
 }
+
+// A credential that begins with a dash is read as a flag by every argument
+// parser it is handed to, and quoting cannot help: argparse decides on the
+// first character of an argv element that is already one word.
+//
+// base64url's alphabet contains '-', so one value in sixty-four began with it.
+// A live run lost a rig to that — vLLM launched with a correctly quoted
+// --api-key whose value started with '-', argparse read the next token as an
+// option, and the server exited with "expected at least one argument".
+func TestAGeneratedSecretCannotBeMistakenForAFlag(t *testing.T) {
+	// Enough draws that a 1-in-64 leading character would appear many times
+	// over if the guarantee were only probabilistic.
+	for i := 0; i < 2000; i++ {
+		s, err := Generate(32)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v := s.Reveal()
+		if v == "" {
+			t.Fatal("an empty secret was generated")
+		}
+		if strings.HasPrefix(v, "-") {
+			t.Fatalf("secret %q begins with a dash and would be parsed as an option", v)
+		}
+		// Still safe in a URL query, which is where the browser session link
+		// carries one.
+		if strings.ContainsAny(v, "+/= &?#") {
+			t.Fatalf("secret %q contains characters a url would escape", v)
+		}
+	}
+}

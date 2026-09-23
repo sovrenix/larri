@@ -409,3 +409,43 @@ func TestDownloadReportsNothingWithoutAMeasuredSize(t *testing.T) {
 		}
 	}
 }
+
+// An engine that refuses its own command line, or the file it was pointed at,
+// refuses it on every host — so the failure must not buy another machine.
+//
+// This is the third engine to need this. The ComfyUI claw paid three rentals
+// for the lesson and vLLM paid one more; llama.cpp had the same gap waiting.
+func TestALlamaRefusalIsNotTheHostsFault(t *testing.T) {
+	r := New()
+
+	for _, log := range []string{
+		// The command line, including the shape that cost a live rig: a
+		// credential beginning with a dash, read as a flag.
+		"error: invalid argument: -Y-hdHwYwZQ",
+		"error while handling argument \"--api-key\"",
+		"main: error: unknown argument: --nope",
+		// The weights, which are the same bytes on the next machine.
+		"llama_model_load: error loading model: wrong number of tensors",
+		"failed to load model '/opt/models/x.gguf'",
+		"llama_model_load: unknown model architecture 'qwen9'",
+		// The card against this model, and the fallback picks by price.
+		"ggml_cuda_host_malloc: failed to allocate 4096 MB",
+		"CUDA error: out of memory",
+	} {
+		if got := r.ClassifyFailure(log); got != errs.ClassModelFailure {
+			t.Errorf("class = %v for %q, want model-failure: the next host "+
+				"runs the same command against the same file", got, log)
+		}
+	}
+
+	// A machine that died says nothing about the configuration, and the
+	// caller's host-failure default is right for it.
+	for _, log := range []string{
+		"", "connection reset by peer", "no space left on device",
+		"ssh: handshake failed",
+	} {
+		if got := r.ClassifyFailure(log); got != errs.ClassUnknown {
+			t.Errorf("class = %v for %q, want unknown so the host default stands", got, log)
+		}
+	}
+}

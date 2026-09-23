@@ -121,8 +121,10 @@ internal/errs/          The error taxonomy (§16)
 internal/provider/      Provider interface, registry, normalization
     vastai/             Vast.ai adapter
     runpod/             RunPod adapter
-internal/runtime/       Runtime interface, selection heuristic
+internal/runtime/       Workload and Runtime interfaces, selection heuristic
     llamacpp/  ollama/  vllm/
+internal/claw/          Claw contract and registry (§6.8)
+    <name>/             One application each
 internal/sizing/        VRAM / KV-cache / context math; model fact catalogue
 internal/rank/          Offer scoring
 internal/state/         Durable store, journal, reconciliation
@@ -456,20 +458,62 @@ stated separately.
 
 ### 6.1 Interface
 
+The second abstraction has two tiers. **Workload** is the general one — anything LARRI
+rents hardware for and holds open — and **Runtime** is the inference-engine case, which
+additionally promises the OpenAI-compatible `/v1` surface of P2.
+
 ```go
-type Runtime interface {
+type Protocol string
+
+const (
+    ProtocolOpenAI  Protocol = "openai-v1"
+    ProtocolComfyUI Protocol = "comfyui"
+)
+
+type Workload interface {
     Kind() RuntimeKind
+    Protocol() Protocol                      // what the endpoint speaks
+    Requires() Requirements                  // hardware floors, applied during selection
     Image(spec ModelSpec, plan SizingPlan) string
     Bootstrap(ctx context.Context, sess Session, spec ModelSpec, plan SizingPlan, progress chan<- Progress) error
     Launch(ctx context.Context, sess Session, spec ModelSpec, plan SizingPlan) (Endpoint, error)
-    Ready(ctx context.Context, ep Endpoint, spec ModelSpec) error  // real completion
+    Ready(ctx context.Context, ep Endpoint, spec ModelSpec) error  // a real round-trip
     Logs(ctx context.Context, sess Session, tail int) (io.ReadCloser, error)
     Stop(ctx context.Context, sess Session) error
 }
+
+// Runtime is a Workload whose endpoint speaks /v1. The method set is identical;
+// the type exists because the distinction it names is load-bearing.
+type Runtime interface { Workload }
 ```
 
 `Session` is an SSH exec session against the instance. `Progress` carries phase, percent,
 and bytes so a 40-GB weight download does not look like a hang (FR-RT-06).
+
+**Why the widening.** The lifecycle underneath this interface — renting, pinning a host
+key, tunnelling to a loopback bind, supervising on evidence, destroying with confirmation —
+never depended on the payload serving `/v1`. It was written as though it did because the
+only payloads were engines. The alternative to widening was an adapter whose `Ready()`
+returned something other than a completion while its interface promised one — a lie the
+type system would have helped nobody catch.
+
+**P2 is unchanged.** "`/v1` is the contract" is a statement about *inference clients*: the
+IDE wiring, the chat clients, and the chat pane all depend on it and always will. What
+changes is that a caller can now *ask*, so code about to issue a completion can require the
+protocol rather than discover its absence on a rig that is already billing.
+`TestEveryRuntimeServesOpenAI` checks that every compiled-in engine still answers
+`ProtocolOpenAI`, so the promise is enforced rather than merely documented.
+
+`Protocol.Browser()` reports whether a surface is opened rather than configured, and two
+consequences follow from that one bit: the local listener needs a cookie-shaped credential
+(§10.1.1), because neither a navigation nor a WebSocket handshake can carry an
+`Authorization` header; and the content it renders comes from a host with root (§15.4).
+
+**Failure classification.** `waitReady` cannot tell a dead host from a broken
+configuration, and its default — try another machine — is wrong for a payload that died on
+an import error, where the next machine runs the same image and dies identically
+(FR-PROV-05). A workload may implement `FailureClassifier` to read its own log and say
+which it was; returning `ClassUnknown` keeps the host-failure default.
 
 ### 6.2 Per-Runtime Differences
 
@@ -597,6 +641,197 @@ Two consequences the operator sees:
   rig and neither the catalogue nor the model's chat template indicates tool-calling support,
   that is `ErrModelFailure` before the create call, not a discovery made after paying to
   boot.
+
+---
+
+### 6.8 Claws: Applications on Rented Hardware (FR-CLAW)
+
+LARRI is an inference engine. `larri up` is what that means, and it is unchanged. But the
+lifecycle underneath it — renting, pinning a host key, tunnelling to a loopback bind,
+supervising on evidence, destroying with confirmation — never depended on the payload being
+an engine, and a **claw** is any other application that wants exactly that lifecycle.
+
+The word is deliberately not "workload", which already means something one layer down. A
+`runtime.Workload` is the process that ends up running on the rented box; a claw is the job
+the operator asked for. One `claw.Kind` produces one of the other.
+
+```
+larri claw --type <name> --config job.yml
+  │
+  ▼
+internal/claw         the contract: registry, Kind, Plan, Result
+  │                   internal/claw/<name>/ implements it
+  ▼
+internal/runtime      Workload / Runtime — what runs on the box (§6.1)
+  ▼
+internal/daemon       the rental lifecycle — imports the contract, never an implementation
+```
+
+That last line is the property the layer exists for, and it is enforced by a test rather
+than a comment. The state it replaces had thirteen references to one application inside the
+daemon and a bespoke command per type; the coupling decays silently, because reaching into
+an implementation for a single field compiles, works, and licenses the next exception.
+
+#### 6.8.1 Two Sites
+
+A claw declares where the application runs, and every difference in handling follows from
+that one declaration.
+
+| | remote | local |
+|---|---|---|
+| Runs on the box | the application | an inference engine |
+| Operator reaches it | the fixed local port, usually a browser | their own client, configured once |
+| Sizing | often the claw's own (a measured bundle) | the standard transformer path |
+| Idle clock | needs a rule for what counts as work | ordinary `/v1` traffic *is* the work |
+| Before the destroy | **collect results** | **revert client wiring** |
+| The host sees | the application, its inputs and its outputs | prompts and completions only |
+
+Both pre-destroy steps are bounded, reported loudly, and **must never block the teardown**.
+The asymmetry is the reason: what is left on a destroyed host is lost once, a configuration
+that could not be restored is recoverable from its backup, and a rig left alive bills until
+somebody notices (§4). Reverting first also closes the window in which a client points at a
+dead endpoint, which is invariant 3 applied to teardown.
+
+The local site is where §10.2 lands. A local claw returns `wire.ClientWriter`s rather than
+an Apply/Revert pair of its own, so every one of them gets detect-back-up-write-record-
+revert-probe and the A/B/C writability tiers without being able to invent a weaker version.
+
+#### 6.8.2 Everything Before the Money
+
+`Kind.Plan` is produced without spending, which is the whole point of separating it from the
+rest. §4a says a precondition establishable without renting must be, and a claw has a great
+many: which files it needs, whether they exist, how large they are, what VRAM that implies,
+whether the operator's token can read them. All of it is local, free, and before the create
+call — which is also what lets `--dry-run` print a real report rather than a rehearsal.
+
+`Plan.Sizing` is the one field worth explaining. Nil is the common case and means the
+standard path sizes the model from live facts, re-planning per candidate offer so shard
+degree and per-card headroom are accounted for (§4a). A claw that measured its own bundle
+sets it, and fit becomes a fixed requirement against a single card. `Plan.ColdStartBytes`
+exists for the same reason: "weights" is the wrong word for a bundle of unrelated files, and
+ranking on a number derived from a field that does not describe it would sort the market
+against a size that does not exist (§4b).
+
+`Plan.Criteria` may raise the operator's floors and never lower them. An operator who asked
+for 80 GB has said something about the hardware they want, and renting something smaller
+than what was asked for is the one direction that cannot be undone after the fact.
+
+#### 6.8.3 The Job File
+
+One file rather than a flag per application, because a generic command that grows a
+`--workflow` the day something wants one is not a generic command. The type owns everything
+below `type:` and decodes it itself; this layer never learns the shape.
+
+```yaml
+type: <name>
+# ... whatever that type needs
+```
+
+Relative paths resolve against the file's own directory, not the working directory: a job
+that only works from one place breaks the first time it runs anywhere else. A `--type` flag
+may supply the type when the file omits it, and disagreeing with the file is refused rather
+than resolved — the two disagreeing means one of them is a mistake, and guessing which would
+run the wrong application against somebody's configuration.
+
+#### 6.8.4 ComfyUI, the First Claw (FR-COMFY)
+
+`internal/claw/comfyui` is the type the layer above was extracted from, and it exercises
+every part of the contract: it is *remote*, it computes its own sizing, it needs a rule for
+what a browser's traffic means, and it has results that exist nowhere else until they are
+collected.
+
+```
+internal/claw/comfyui/           the Kind: config, Plan, Server, Collect, and the browser rules
+internal/claw/comfyui/workflow/  graphs and model bundles: parse, resolve, measure
+```
+
+`workflow` is where a graph becomes a set of facts. It reads both serialisations ComfyUI
+writes — the API export, which `/prompt` accepts, and the UI save, which it does not — and
+from either one it can name the models and read the latent. That asymmetry is stated rather
+than discovered: a UI graph can be planned against and cannot be submitted, so readiness for
+one proves the server and the GPU rather than a render, and the operator is told so before
+they spend.
+
+Resolution is the expensive-to-get-wrong part and it is all local. A graph names bare
+filenames — `sd_xl_base_1.0.safetensors` — and says nothing about where they come from or how
+large they are. A manifest beside the job supplies what the built-in catalogue does not, and
+is consulted first so an explicit mapping is never silently overridden. Each file is then
+measured against the repository's live listing, which is the number both the VRAM floor and
+the cold-start ranking are built on. Measured rather than estimated, for the reason §4a gives
+about weights generally.
+
+Three ComfyUI-specific facts shape the rest:
+
+- **The VRAM floor is per-GPU.** A graph executes on one device, so a bundle that fits only
+  when two cards are summed fits nowhere. Host RAM is raised alongside it, because ComfyUI's
+  answer to insufficient VRAM is to offload — and on a box with too little, offload is swap.
+- **Readiness means a file.** The operator's own graph is submitted and waited on, and a
+  server that reports no CUDA device is refused. ComfyUI starts perfectly well without a GPU
+  and falls back to the CPU, where a render takes minutes per step: a rig paying GPU rates
+  for nothing, indistinguishable from a healthy one at the endpoint.
+- **The image and the ComfyUI revision are one pin.** The image supplies torch and the
+  revision supplies the custom ops that call into it, and a pair nobody has run together
+  fails at `import nodes` — after 6.5 GB and twenty minutes of billing. So the pairing is
+  smoke-tested immediately after install and before anything large is downloaded, and the
+  failure is classified as a fault of the configuration rather than of the host, which is
+  what stops it being retried on three more machines.
+
+#### 6.8.5 Speech to Text, the First Local Claw (FR-WHISPER)
+
+`internal/claw/whisper` is the other half of §6.8.1. ComfyUI exercised the remote site — the
+application on the box, a browser at the local port, results collected before the destroy.
+This one exercises the local site: the server is on the box, the operator's application is
+not, and what happens either side of the rental is configuration rather than files.
+
+```
+internal/claw/whisper/     the Kind, the server, the audio client, the fetch
+internal/wire/clients/     the client writers (§10.2), shared by every local claw
+```
+
+Three things about it are worth stating because they are not obvious from the code.
+
+**OpenAI-compatible is not the chat contract.** The server answers `/v1/audio/transcriptions`
+with the same base path, the same bearer credential and the same client ecosystem as
+`/v1/chat/completions`, and answers no completion at all. So it declares
+`runtime.ProtocolOpenAIAudio`, and the two questions callers actually have — *is this chat*
+and *where is it published* — became separate methods on the protocol. They had been one
+comparison against `ProtocolOpenAI`, which answered the first and silently got the second
+wrong for any third protocol.
+
+**The download and the resident weights are different numbers.** CTranslate2 quantises when
+it loads rather than when the model is published, so `int8_float16` leaves the repository
+exactly as large and halves what occupies the card — and saves the weight difference rather
+than half the requirement, because the working set is computed in float16 either way. The
+disk floor comes from the first number and the VRAM floor from the second;
+`sizing.SpeechRequest` carries both for that reason, and sizing activations off the quantised
+figure is how an int8 rig gets a card too small.
+
+**Nothing about the image is assumed.** The module path, the console script and the
+environment variable names are facts about somebody else's container, and the ComfyUI claw
+paid three rentals for guessing that class of thing. Bootstrap asks the host how the server is
+exposed and carries what it found into the failure; a setting still wrong after that is caught
+by readiness asking `/v1/models` what actually loaded, rather than by a server quietly running
+a different model.
+
+##### The local site, concretely
+
+`Kind.Clients()` returns one `wire.ClientWriter` per application the job names, and the daemon
+runs §10.2 over them: detect, apply, record, persist, probe, and revert before the destroy.
+
+The writer that exists is **tier C by decision rather than by fallback**. A writer per
+application bets the integration on that application's configuration format, and every such
+bet has to be settled by *watching* the application rather than reading its documentation
+(FR-WIRE-13) — desktop GUIs that read settings at startup and write them back on exit clobber
+an edit made while they run, whatever the file format looks like. None of that needs settling
+before the endpoint is useful, so the operator pastes two values into whatever they already
+use and the probe says whether it worked.
+
+The probe is the part that makes this a real integration rather than a suggestion, and it is
+nearly free. Each wired client holds its own credential (FR-SEC-23), derived from the stable
+client token, so the proxy — which already resolves an identity to authenticate every
+request — can say whether *that* application arrived. Checking a file proves LARRI can write
+files; checking that the application authenticated with its own key proves what the operator
+cares about. LARRI's own probes are excluded, or the wiring would verify itself.
 
 ---
 
