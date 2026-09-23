@@ -299,6 +299,13 @@ const (
 	// the clients and not with the chat contract. See
 	// runtime.ProtocolOpenAIAudio.
 	RuntimeWhisper RuntimeKind = "whisper"
+
+	// RuntimeFake is the in-process test double. It is a real Runtime — a
+	// test asserts it serves /v1 like the other three — so it belongs with
+	// them below rather than defaulting into the application case, where
+	// every rig a test brings up would read as holding renders on a host
+	// that does not exist.
+	RuntimeFake RuntimeKind = "fake"
 )
 
 // ServesInference reports whether this kind is an inference engine.
@@ -314,7 +321,7 @@ const (
 // question exists to prevent.
 func (k RuntimeKind) ServesInference() bool {
 	switch k {
-	case RuntimeVLLM, RuntimeLlamaCpp, RuntimeOllama:
+	case RuntimeVLLM, RuntimeLlamaCpp, RuntimeOllama, RuntimeFake:
 		return true
 	}
 	return false

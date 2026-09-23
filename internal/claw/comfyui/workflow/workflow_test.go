@@ -5,6 +5,8 @@ package workflow
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -412,5 +414,27 @@ func TestOneNameUnderTwoKindsIsTwoAssets(t *testing.T) {
 	}
 	if a, b := got[0].Key(), got[1].Key(); a == b {
 		t.Errorf("both assets key to %q, so one url overwrites the other", a)
+	}
+}
+
+// Hugging Face reports no size for a file whose LFS pointer it has not
+// resolved. Taking that at face value planned the model at nothing — VRAM and
+// disk understated, and the fetch script's own check skipped, since it only
+// verifies a positive expectation. Zero is worse than an estimate: it is an
+// estimate that always fits.
+func TestAListingWithNoSizeIsNotAModelOfZeroBytes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"siblings":[
+			{"rfilename":"sized.safetensors","size":1234},
+			{"rfilename":"unsized.safetensors","size":0}]}`))
+	}))
+	defer srv.Close()
+
+	h := &HFSizer{Endpoint: srv.URL, repos: map[string]map[string]uint64{}}
+	if n, err := h.Size(context.Background(), "r/m", "main", "sized.safetensors"); err != nil || n != 1234 {
+		t.Fatalf("a measured file returned %d, %v", n, err)
+	}
+	if _, err := h.Size(context.Background(), "r/m", "main", "unsized.safetensors"); err == nil {
+		t.Error("a file with no listed size was reported as measured at zero bytes")
 	}
 }

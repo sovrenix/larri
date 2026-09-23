@@ -305,6 +305,15 @@ func (d Deps) bringUp(ctx context.Context, crit core.Criteria, spec core.ModelSp
 
 type downArgs struct {
 	Rig string `json:"rig"`
+
+	// DiscardOutputs answers the question a remote claw's teardown asks: the
+	// renders exist only on the host and this surface cannot collect them.
+	//
+	// An argument rather than a refusal, because an agent that cannot destroy
+	// a rig is worse than one that destroys a render — the rig bills until
+	// somebody notices, and nothing else here is watching. The agent is told
+	// exactly what to pass, and passing it is a decision on the record.
+	DiscardOutputs bool `json:"discard_outputs,omitempty"`
 }
 
 func (d Deps) down(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -355,6 +364,16 @@ func (d Deps) down(ctx context.Context, raw json.RawMessage) (any, error) {
 	term := &core.Termination{
 		Actor: core.ActorOperator, Code: core.ReasonOperatorRequest,
 		At: time.Now().UTC(), Summary: "requested through the mcp tool surface",
+	}
+	if target.HoldsHostResults() {
+		if !a.DiscardOutputs {
+			return nil, fmt.Errorf(
+				"rig %s holds results that exist only on the host and this surface "+
+					"cannot collect them: stop the claw session to collect, or call "+
+					"larri_down again with discard_outputs true",
+				target.ID)
+		}
+		term.Outputs = core.OutputsDiscarded
 	}
 	if err := o.Down(ctx, target, term); err != nil {
 		return nil, err

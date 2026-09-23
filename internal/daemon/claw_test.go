@@ -496,3 +496,50 @@ func TestTheBusyPollUsesLARRIsOwnCredential(t *testing.T) {
 		t.Errorf("token = %q; the poll must not present the operator's key", got)
 	}
 }
+
+// The teardown guard has to live where every surface reaches it.
+//
+// It was in the CLI's cmdDown alone, so the MCP tool and the TUI called Down
+// directly and destroyed the only copy of a session's renders with nobody
+// deciding to. A rule enforced in one front-end is in the wrong layer
+// (invariant 6).
+func TestNoSurfaceDestroysUncollectedResultsBySilence(t *testing.T) {
+	o, live := liveRig(t)
+	rig := live.Rig
+	rig.Runtime = core.RuntimeComfyUI
+	rig.ClawSite = core.ClawSiteRemote
+
+	undecided := &core.Termination{
+		Actor: core.ActorOperator, Code: core.ReasonOperatorRequest,
+		Summary: "a surface that never asked",
+	}
+	if err := o.Down(context.Background(), rig, undecided); err == nil {
+		t.Fatal("a teardown that said nothing about the renders destroyed the host")
+	}
+
+	// Saying so is one field, so nothing is made undestroyable — a billing
+	// rig nobody can stop is worse than a lost render.
+	decided := &core.Termination{
+		Actor: core.ActorOperator, Code: core.ReasonOperatorRequest,
+		Summary: "discarded on purpose", Outputs: core.OutputsDiscarded,
+	}
+	if err := o.Down(context.Background(), rig, decided); err != nil {
+		t.Errorf("an explicit discard was refused: %v", err)
+	}
+}
+
+// And a local claw has nothing on the host, so it must not be caught by it.
+func TestALocalClawIsNotHeldUpByTheOutputGuard(t *testing.T) {
+	o, live := liveRig(t)
+	rig := live.Rig
+	rig.Runtime = core.RuntimeWhisper
+	rig.ClawSite = core.ClawSiteLocal
+
+	term := &core.Termination{
+		Actor: core.ActorOperator, Code: core.ReasonOperatorRequest,
+		Summary: "nothing was ever on that host",
+	}
+	if err := o.Down(context.Background(), rig, term); err != nil {
+		t.Errorf("a local claw was refused over renders it never made: %v", err)
+	}
+}

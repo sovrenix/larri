@@ -683,6 +683,11 @@ func cmdDown(ctx context.Context, args []string) error {
 	}
 	// Refused rather than warned. A warning scrolls past above a teardown that
 	// proceeds anyway, and by the time it is read the host is gone.
+	//
+	// The refusal itself now lives in daemon.Down, where every surface reaches
+	// it. What stays here is the wording: this one knows the flag that answers
+	// it, and "record them discarded" is not a useful instruction to somebody
+	// holding a command line.
 	if target.HoldsHostResults() && !*discard {
 		return fmt.Errorf(
 			"down: rig %s holds results that exist only on the host: "+
@@ -722,7 +727,17 @@ func cmdDown(ctx context.Context, args []string) error {
 		fmt.Printf("\n  ✓ rig %s recorded as never created — it no longer accrues\n", target.ID)
 		return nil
 	}
-	if err := o.Down(ctx, target, nil); err != nil {
+	// The decision the guard above already took, recorded where the teardown
+	// can see it. Reaching here for a rig that holds results means --discard-
+	// outputs was given, and the termination says so rather than implying it.
+	term := &core.Termination{
+		Actor: core.ActorOperator, Code: core.ReasonOperatorRequest,
+		At: time.Now().UTC(), Summary: "requested from the CLI",
+	}
+	if target.HoldsHostResults() {
+		term.Outputs = core.OutputsDiscarded
+	}
+	if err := o.Down(ctx, target, term); err != nil {
 		return err
 	}
 	c := target.End.Cost

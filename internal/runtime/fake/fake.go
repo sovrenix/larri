@@ -59,6 +59,33 @@ type Runtime struct {
 	behaviour Behaviour
 	launched  bool
 	stopped   bool
+
+	// hfToken and tokenAtBootstrap record the weight-download credential and
+	// what it was when Bootstrap ran.
+	//
+	// The second is the one worth having. The daemon used to hand the token
+	// over *after* Bootstrap, which is fine for an engine that downloads at
+	// launch and silently wrong for a workload that downloads during
+	// bootstrap — a gated repository was then fetched anonymously on a rented
+	// host. Nothing could observe the ordering, so nothing caught it.
+	hfToken           secret.Secret
+	tokenAtBootstrap  secret.Secret
+	bootstrapObserved bool
+}
+
+// SetHuggingFaceToken takes the weight-download credential.
+func (r *Runtime) SetHuggingFaceToken(t secret.Secret) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.hfToken = t
+}
+
+// TokenAtBootstrap is the credential this runtime held when Bootstrap ran,
+// and whether Bootstrap ran at all.
+func (r *Runtime) TokenAtBootstrap() (secret.Secret, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.tokenAtBootstrap, r.bootstrapObserved
 }
 
 var _ runtime.Runtime = (*Runtime)(nil)
@@ -84,7 +111,7 @@ func (r *Runtime) downloadBytes() int64 {
 	return r.behaviour.WeightBytes
 }
 
-func (r *Runtime) Kind() core.RuntimeKind { return "fake" }
+func (r *Runtime) Kind() core.RuntimeKind { return core.RuntimeFake }
 
 // Protocol reports the OpenAI-compatible /v1 surface, which is what makes
 // this a Runtime rather than merely a Workload: the fake serves /v1 and the
@@ -107,6 +134,10 @@ func (r *Runtime) Bootstrap(ctx context.Context, _ runtime.Session, spec core.Mo
 		case <-ctx.Done():
 		}
 	}
+	r.mu.Lock()
+	r.tokenAtBootstrap, r.bootstrapObserved = r.hfToken, true
+	r.mu.Unlock()
+
 	send(runtime.Progress{Phase: runtime.PhaseImagePull, Percent: 100})
 
 	if r.behaviour.BootstrapFails {

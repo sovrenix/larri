@@ -287,16 +287,26 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 			}
 		}
 	}()
+	// Hand the weight-download credential over *before* Bootstrap, because
+	// that is where the weights are fetched.
+	//
+	// It used to be handed over after, which worked for every engine that
+	// downloads at launch and silently broke the two that do not: both claws
+	// build their fetch command inside Bootstrap and read this token while
+	// doing it, so a gated repository passed local planning and was then
+	// pulled anonymously on the rented host. Public weights hid it — the runs
+	// that proved these claws used SDXL and whisper large-v3, neither gated.
+	//
+	// The reason it was late still holds and is unaffected: the rig was
+	// journalled and snapshotted in Up, long before this line, so the token
+	// reaches neither (FR-STATE-05).
+	if taker, ok := o.Runtime.(runtime.CredentialTaker); ok && !hfToken.Empty() {
+		taker.SetHuggingFaceToken(hfToken)
+	}
 	err = o.Runtime.Bootstrap(ctx, sess, rig.Model, rig.Plan, progress)
 	close(progress)
 	if err != nil {
 		return live, err
-	}
-
-	// Hand the weight-download credential over at launch, so it never reaches
-	// a snapshot or a journal entry (FR-STATE-05).
-	if taker, ok := o.Runtime.(runtime.CredentialTaker); ok && !hfToken.Empty() {
-		taker.SetHuggingFaceToken(hfToken)
 	}
 	o.emit("launch", "starting %s", o.Runtime.Kind())
 	ep, err := o.Runtime.Launch(ctx, sess, rig.Model, rig.Plan)

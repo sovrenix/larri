@@ -287,3 +287,34 @@ func TestDuplicateClientNamesAreRefusedBeforeTheMoney(t *testing.T) {
 		}
 	}
 }
+
+// compute_type reaches CTranslate2 untouched, so an unknown one is either
+// rejected there — after a rig is rented — or accepted with a memory profile
+// nothing here predicted. float32 was the expensive case: it fell through to
+// the float16 branch, so the rig was sized for half what it needed and failed
+// on the card with the weights already paid for.
+func TestComputeTypeIsSizedAndValidatedBeforeTheMoney(t *testing.T) {
+	const published = 3 << 30 // the repository is float16, whatever is asked for
+
+	if got := ResidentBytes(published, "float32"); got != published*2 {
+		t.Errorf("float32 resident = %d, want %d: widening on load makes the "+
+			"model larger than the download, not equal to it", got, published*2)
+	}
+	if got := ResidentBytes(published, "int8"); got != published/2 {
+		t.Errorf("int8 resident = %d, want %d", got, published/2)
+	}
+	if got := ResidentBytes(published, "float16"); got != published {
+		t.Errorf("float16 resident = %d, want %d", got, published)
+	}
+
+	for _, ok := range ValidComputeTypes {
+		if !ValidComputeType(ok) {
+			t.Errorf("%s is listed as valid and rejected", ok)
+		}
+	}
+	for _, bad := range []string{"fp16", "int4", "", "FLOAT32"} {
+		if ValidComputeType(bad) {
+			t.Errorf("%q was accepted; it reaches the server unchecked", bad)
+		}
+	}
+}

@@ -90,6 +90,11 @@ func (k *Kind) Plan(ctx context.Context, cfg *claw.Config, opt claw.Options) (*c
 	if err := validClients(k.cfg.Clients); err != nil {
 		return nil, err
 	}
+	if !ValidComputeType(k.computeType()) {
+		return nil, errs.Newf(errs.ClassModelFailure, "whisper.Plan",
+			"unknown compute type %q: expected one of %s",
+			k.computeType(), strings.Join(ValidComputeTypes, ", "))
+	}
 	k.repo = Repo(k.cfg.Model)
 
 	m := k.measurer

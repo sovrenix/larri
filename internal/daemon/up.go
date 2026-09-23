@@ -1337,6 +1337,11 @@ func (o *Orchestrator) teardownAfterFailure(rig *core.Rig, code core.ReasonCode,
 		Actor: core.ActorFault, Code: code, At: time.Now().UTC(),
 		Summary:  "bring-up failed: " + shortErr(cause),
 		Evidence: map[string]string{"error": shortErr(cause)},
+		// Nothing was produced: the rig never reached the point of doing
+		// work. Said explicitly rather than left undecided, because an
+		// undecided teardown is refused and this one must not be — a failed
+		// bring-up is exactly when a host has to go.
+		Outputs: core.OutputsDiscarded,
 	}
 	// The provider's last word on what the host was doing. Without it a
 	// post-mortem cannot tell a stalled image pull from a host that never
@@ -1781,6 +1786,19 @@ func (o *Orchestrator) Down(ctx context.Context, rig *core.Rig, term *core.Termi
 			Actor: core.ActorOperator, Code: core.ReasonOperatorRequest,
 			At: time.Now().UTC(), Summary: "requested from the CLI",
 		}
+	}
+	// Refused here rather than in one front-end. The CLI asked this question
+	// and the MCP tool and the TUI did not, so either could destroy the only
+	// copy of a session's renders with nobody deciding to — a rule that lives
+	// in one surface is in the wrong layer (invariant 6).
+	//
+	// It does not make a billing rig undestroyable: saying "discard" is one
+	// field, and every caller that has already collected says "collected".
+	// What it removes is the silent default.
+	if rig.HoldsHostResults() && term.Outputs == core.OutputsUndecided {
+		return errs.Newf(errs.ClassModelFailure, "daemon.Down",
+			"rig %s holds results that exist only on the host: collect them, or record them discarded",
+			rig.ID)
 	}
 	if err := o.Store.RecordIntent(rig, core.StateDraining, term.Summary); err != nil {
 		return err

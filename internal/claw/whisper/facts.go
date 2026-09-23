@@ -171,7 +171,34 @@ func ResidentBytes(downloaded uint64, computeType string) uint64 {
 	switch computeType {
 	case "int8", "int8_float16", "int8_bfloat16":
 		return downloaded / 2
+	case "float32":
+		// Twice the published size, not the same. The repository is float16;
+		// asking for float32 widens every weight on load, so the resident
+		// model is larger than the download rather than equal to it. Falling
+		// through to the float16 case sized the rig for half what it needed
+		// and failed on the card, after the weights had been paid for.
+		return downloaded * 2
 	default:
 		return downloaded
 	}
+}
+
+// ValidComputeTypes are the CTranslate2 precisions this claw will plan for.
+//
+// Checked rather than passed through. compute_type reaches the server
+// untouched, so an unknown one is either rejected there — after a rig is
+// rented — or accepted with a memory profile nothing here predicted. Both are
+// discovered on a billing host, which is what §4a exists to prevent.
+var ValidComputeTypes = []string{
+	"int8", "int8_float16", "int8_bfloat16", "float16", "bfloat16", "float32",
+}
+
+// ValidComputeType reports whether a precision is one this claw can size.
+func ValidComputeType(s string) bool {
+	for _, v := range ValidComputeTypes {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }

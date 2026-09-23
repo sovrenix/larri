@@ -52,12 +52,27 @@ func (h *HFSizer) Size(ctx context.Context, repo, revision, file string) (uint64
 	if err != nil {
 		return 0, err
 	}
+	// A zero is not a measurement. Hugging Face reports no size for a file
+	// whose LFS pointer it has not resolved, and taking that at face value
+	// planned the model at nothing: VRAM and disk understated, and the fetch
+	// script's own size check skipped, since it only verifies a positive
+	// expectation. §4a says measure the weights rather than estimate them,
+	// and zero is worse than an estimate — it is an estimate that always
+	// fits.
 	if n, ok := files[file]; ok {
+		if n == 0 {
+			return 0, errs.Newf(errs.ClassModelFailure, "workflow.Size",
+				"%s in %s lists no size", file, repo)
+		}
 		return n, nil
 	}
 	// Graphs address models through ComfyUI's directory layout, so a name may
 	// carry a folder the repository does not use.
 	if n, ok := files[baseName(file)]; ok {
+		if n == 0 {
+			return 0, errs.Newf(errs.ClassModelFailure, "workflow.Size",
+				"%s in %s lists no size", baseName(file), repo)
+		}
 		return n, nil
 	}
 	return 0, errs.Newf(errs.ClassModelFailure, "workflow.Size",

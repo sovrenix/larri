@@ -318,6 +318,12 @@ func (o *Orchestrator) ClawDown(ctx context.Context, s *ClawSession,
 	if s.hold != nil {
 		s.hold()
 	}
+	if term != nil && term.Outputs == core.OutputsUndecided {
+		// Collection ran above, for a remote claw, and a local one has
+		// nothing on the host to collect. Either way the question has been
+		// answered by the time the destroy is issued.
+		term.Outputs = core.OutputsCollected
+	}
 	err := o.Down(ctx, s.Live.Rig, term)
 	_ = s.Close()
 	return res, err
