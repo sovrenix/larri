@@ -110,6 +110,27 @@ func (p *Proxy) serveSession(w http.ResponseWriter, r *http.Request) {
 		// HttpOnly so script in the proxied page cannot read the credential
 		// back out. The page is served from a host with root (§15.4), so its
 		// contents are not assumed friendly.
+		//
+		// What HttpOnly does not do is stop that script *using* it. The
+		// proxied page is same-origin with this listener, so host-controlled
+		// JavaScript can fetch /prompt with the cookie attached and neither
+		// SameSite nor the Origin check can tell it from the operator. That
+		// is accepted rather than solved, and the reasoning is worth having
+		// in one place:
+		//
+		// It reaches the workload and nothing else. This listener forwards to
+		// one upstream — the rig's own application — so the cookie buys
+		// access to a GPU the host already has root on. There is no control
+		// plane on this origin to escalate to; the daemon API is a separate
+		// listener with a separate credential.
+		//
+		// The one thing it can do that the host cannot do by itself is keep
+		// LARRI paying: queued work counts as activity, so a page that
+		// submits something every few minutes holds the idle clock open
+		// indefinitely. The bound on that is --budget, which is checked
+		// before idle on every supervision pass and destroys on breach
+		// however busy the rig looks. An operator renting a browser surface
+		// from an untrusted host should set one.
 		HttpOnly: true,
 		// Secure is deliberately NOT set, and a scanner will ask for it.
 		//

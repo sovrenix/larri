@@ -469,6 +469,17 @@ accident:
   and for LARRI a request that fires is a request that spends. Validate `Host` too.
 - **DoS here is a financial attack.** Rate limits, concurrency caps, and per-request token
   ceilings are cost controls, not just availability controls.
+- **A browser surface is same-origin with the host that serves it.** The session cookie is
+  HttpOnly, which stops the proxied page *reading* the credential and not the page *using*
+  it: host-controlled script can fetch `/prompt` with the cookie attached, and neither
+  SameSite nor the `Origin` check can tell that page from the operator. Accepted rather
+  than solved, because it reaches the workload and nothing else — one upstream, on a GPU
+  the host already has root on, with no control plane on that origin to escalate to. The
+  one thing it buys that the host does not already have is **the operator's money**:
+  queued work counts as activity, so a page submitting something every few minutes holds
+  the idle clock open for as long as it likes. `--budget` is the bound, and it is the
+  reason the ceiling is checked *before* idle on every pass — it destroys on breach
+  however busy a rig looks. Rent a browser surface from an untrusted host with a budget set.
 - **Model output is untrusted *content*, not just untrusted tool calls.** The chat pane renders
   text from a host you do not trust. Safe-subset markdown only, escaped by default, never raw
   `innerHTML`; strict CSP; and **chat and console are served on separate origins**, so XSS in

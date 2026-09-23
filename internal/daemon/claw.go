@@ -198,11 +198,7 @@ func (o *Orchestrator) attachRemote(s *ClawSession) error {
 		// requests.
 		ctx, cancel := context.WithCancel(context.Background())
 		s.hold = cancel
-		ep := claw.LocalEndpoint{
-			Addr:  fmt.Sprintf("127.0.0.1:%d", proxy.LocalPort()),
-			Token: s.Live.ClientToken.Reveal(),
-		}
-		go h.HoldWhileBusy(ctx, ep, s.Live.Activity())
+		go h.HoldWhileBusy(ctx, holderEndpoint(s.Live, proxy.LocalPort()), s.Live.Activity())
 	}
 	return nil
 }
@@ -454,4 +450,21 @@ func clientToken(base secret.Secret, name string) (secret.Secret, error) {
 	mac := hmac.New(sha256.New, []byte(base.Reveal()))
 	mac.Write([]byte(name))
 	return secret.New("lc-" + hex.EncodeToString(mac.Sum(nil))[:40]), nil
+}
+
+// holderEndpoint is the local address and credential a claw polls its own
+// application with.
+//
+// LARRI's own credential, not the operator's. This traffic is LARRI's — it
+// carries the probe header, so it cannot reset the clock it exists to hold
+// open — and probeToken is the only one registered unconditionally.
+// ClientToken is not: a rig whose stored client keys are readable leaves it
+// empty, and every poll would then be unauthenticated, the hold would never
+// engage, and a long render would be destroyed by the idle timer it is there
+// to hold off.
+func holderEndpoint(live *Live, port int) claw.LocalEndpoint {
+	return claw.LocalEndpoint{
+		Addr:  fmt.Sprintf("127.0.0.1:%d", port),
+		Token: live.probeToken.Reveal(),
+	}
 }

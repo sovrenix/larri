@@ -38,7 +38,16 @@ const (
 	// and a pair nobody has run fails after six gigabytes of weights. Here
 	// the image *is* the server, so there is no second half to disagree with
 	// it.
-	DefaultImage = "fedirz/faster-whisper-server:latest-cuda"
+	//
+	// Pinned by digest, not by tag. It was `latest-cuda`, which is mutable —
+	// so the floors below, and the live run that established them, described
+	// whatever that tag happened to point at on the day. A later push could
+	// have raised the CUDA requirement under a rig already selected against
+	// the old one, and the first sign would have been a host that had
+	// finished billing for the download. `make refresh-image
+	// IMAGE=fedirz/faster-whisper-server:latest-cuda` re-reads the digest and
+	// the floors together; they are updated together or not at all.
+	DefaultImage = "fedirz/faster-whisper-server@sha256:f736655f783c4fedb6bb3cb83e7d7377c1544c7f4e3c57d88383c2aab457b654"
 
 	// DefaultModel is the CTranslate2 conversion of whisper large-v3.
 	DefaultModel = "Systran/faster-whisper-large-v3"

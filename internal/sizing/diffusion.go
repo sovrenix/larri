@@ -76,10 +76,20 @@ type DiffusionRequest struct {
 // short it moves modules back to host RAM between nodes and carries on, so an
 // undersized card produces the right image slowly instead of no image at all.
 //
-// That is why FitsInVRAM being false is not fatal here, and why it is still
-// worth computing. A rig that thrashes its weights across PCIe for every
+// That is why FitsInVRAM being false is not fatal *to the engine*. It is still
+// fatal to the rental, and the ComfyUI claw enforces the target as a hard
+// floor for that reason: a rig that thrashes its weights across PCIe for every
 // sampling step is one the operator is paying full price for and getting a
-// fraction of, which is a bad rental even though it is not a failed one.
+// fraction of, and §4b prices a slow rig as an expensive one. "No offers" is
+// free and recoverable; a billing rig producing an image an hour is not.
+//
+// So the offload path is a property of the engine that LARRI declines to rely
+// on, not a selection outcome an operator can reach. Said plainly because the
+// wording here previously implied the opposite, and a reader looking for the
+// warning that goes with it would not have found one: the claw passes no
+// AvailableVRAMBytes, so the branch below never runs for a ComfyUI graph, and
+// an undersized offer is rejected by ranking with the shortfall named rather
+// than rented with a caveat.
 //
 // Multi-GPU does not help and is deliberately not counted. ComfyUI executes a
 // graph on one device; a second card adds VRAM that nothing in the graph can

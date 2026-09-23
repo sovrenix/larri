@@ -464,3 +464,35 @@ func TestAnEmptyBaseDerivesNoCredential(t *testing.T) {
 		t.Error("a credential was returned alongside the refusal")
 	}
 }
+
+// The busy-work poll is LARRI's own traffic and must carry LARRI's own key.
+//
+// It used the operator's client token, which attachTunnel leaves empty
+// whenever a readable client-key store is configured — the ordinary setup for
+// anyone who has run `larri token`. Every /queue poll would then be
+// unauthenticated, HoldWhileBusy would never bracket the render, and the idle
+// timer it exists to hold off would destroy a job mid-flight.
+func TestTheBusyPollUsesLARRIsOwnCredential(t *testing.T) {
+	// The case that was broken: a rig with no per-rig client token, which is
+	// what a readable key store produces.
+	live := &Live{probeToken: secret.New("probe-key")}
+	ep := holderEndpoint(live, 8188)
+
+	if ep.Token == "" {
+		t.Fatal("the poll carries no credential, so every /queue request is " +
+			"rejected and the render is never held")
+	}
+	if ep.Token != "probe-key" {
+		t.Errorf("token = %q, want LARRI's own probe credential", ep.Token)
+	}
+	if ep.Addr != "127.0.0.1:8188" {
+		t.Errorf("addr = %q, want the fixed local port", ep.Addr)
+	}
+
+	// And it stays LARRI's own even where a client token does exist, so the
+	// poll is never attributed to the operator.
+	both := &Live{probeToken: secret.New("probe-key"), ClientToken: secret.New("client-key")}
+	if got := holderEndpoint(both, 8188).Token; got != "probe-key" {
+		t.Errorf("token = %q; the poll must not present the operator's key", got)
+	}
+}

@@ -164,6 +164,11 @@ func (k *Kind) Plan(ctx context.Context, cfg *claw.Config, opt claw.Options) (*c
 func (k *Kind) criteria(base core.Criteria, plan core.SizingPlan) core.Criteria {
 	need := int((plan.RequiredVRAMBytes + sizing.GiB - 1) / sizing.GiB)
 	want := core.Criteria{
+		// A floor, deliberately, even though PlanDiffusion computes a target
+		// the engine could miss and survive. ComfyUI offloads to host RAM
+		// rather than dying, so an undersized card renders the right image
+		// slowly — and a slow rig is an expensive one (§4b). Refusing costs
+		// the operator nothing; renting one costs them by the second.
 		VRAMPerGPUGB: need,
 		VRAMTotalGB:  need,
 		// ComfyUI's answer to insufficient VRAM is host RAM, so the two are
