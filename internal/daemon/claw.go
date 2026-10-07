@@ -40,6 +40,19 @@ type ClawRequest struct {
 	OutputDir string
 
 	Confirm func(offer core.Offer, plan core.SizingPlan) bool
+
+	// ClientKeys records a local claw's per-client keys where
+	// `larri token revoke` can reach them. Nil keeps them in the proxy alone,
+	// which works for the session and cannot be revoked short of ending it.
+	ClientKeys ClientKeyStore
+}
+
+// ClientKeyStore is where a local claw's client keys are kept: derived per
+// client, accepted by the proxy, and revocable by name from another process.
+// clientkeys.Store is the implementation; the daemon only names the contract.
+type ClientKeyStore interface {
+	wire.KeySet
+	Derive(name string, derive func(salt string) (secret.Secret, error)) (secret.Secret, error)
 }
 
 // ClawSession is a claw held open for an operator to use.
@@ -68,6 +81,7 @@ type ClawSession struct {
 	Wiring []core.WiringRecord
 
 	clients map[string]wire.ClientWriter
+	keys    ClientKeyStore
 	hold    context.CancelFunc
 }
 
@@ -133,6 +147,7 @@ func (o *Orchestrator) ClawUp(ctx context.Context, req ClawRequest) (*ClawSessio
 	s := &ClawSession{
 		Live: live, Kind: req.Kind, Plan: req.Plan,
 		OutputDir: req.OutputDir, StartedAt: started,
+		keys: req.ClientKeys,
 	}
 	if err := o.attachClaw(s); err != nil {
 		// Destroyed, not closed. Live.Close releases the forward and the
@@ -230,16 +245,38 @@ func (o *Orchestrator) attachLocal(s *ClawSession) {
 		errList []error
 		probe   = wire.ProxyProber(s.Live.proxy)
 	)
+	if s.Live.ClientToken.Empty() {
+		// One cause shared by every writer — there is no base to derive from
+		// — so it is reported once rather than once per client, and nothing is
+		// wired rather than everything wired identically.
+		errList = append(errList, errs.Newf(errs.ClassWiring, "daemon.wire",
+			"no rig credential to derive the clients' keys from"))
+		writers = nil
+	}
+	var accepted []string
 	for _, w := range writers {
-		key, err := clientToken(s.Live.ClientToken, w.Name())
+		key, err := o.clientKey(s, w.Name())
 		if err != nil {
-			// One cause shared by every writer — there is no base to derive
-			// from — so it is reported once rather than once per client, and
-			// nothing is wired rather than everything wired identically.
+			// This client alone: a name the store refuses says nothing
+			// about the others.
 			errList = append(errList, err)
-			break
+			continue
 		}
-		if s.Live.proxy != nil {
+		switch {
+		case s.Live.proxy == nil:
+		case s.keys != nil:
+			// Accepted through the store rather than added to the proxy,
+			// because the store is re-read when it changes: `larri token
+			// revoke <client>` from another terminal ends that client's
+			// access on its next request, which an entry held only in this
+			// process's memory never could.
+			//
+			// Named only once its key is derived. A name the store refused
+			// belongs to one of the operator's own keys, and listing it
+			// would let that key in here.
+			accepted = append(accepted, w.Name())
+			s.Live.proxy.SetKeys(wire.AnyOf(o.ClientKeys, wire.OnlyNames(s.keys, accepted)))
+		default:
 			s.Live.proxy.AddClient(w.Name(), key)
 		}
 		// Applied one at a time because each client is handed its own key, and
@@ -426,6 +463,26 @@ func (s *ClawSession) Endpoint() string {
 		return ""
 	}
 	return s.Live.Endpoint
+}
+
+// clientKey is the credential one local client is wired with.
+//
+// With a key store it is derived under a salt the store keeps, so a revoke
+// takes the salt with it and the next session cannot reproduce the revoked
+// value. Without one it is derived from the name alone, accepted by this
+// session's proxy, and revocable only by ending the session.
+func (o *Orchestrator) clientKey(s *ClawSession, name string) (secret.Secret, error) {
+	if s.keys == nil {
+		return clientToken(s.Live.ClientToken, name)
+	}
+	key, err := s.keys.Derive(name, func(salt string) (secret.Secret, error) {
+		return clientToken(s.Live.ClientToken, name+"/"+salt)
+	})
+	if err != nil {
+		return secret.Secret{}, errs.Newf(errs.ClassWiring, "daemon.wire",
+			"%s: %v", name, err)
+	}
+	return key, nil
 }
 
 // clientToken derives one client's credential from the rig's.

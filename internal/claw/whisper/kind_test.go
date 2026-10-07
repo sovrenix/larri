@@ -276,6 +276,8 @@ func TestDuplicateClientNamesAreRefusedBeforeTheMoney(t *testing.T) {
 		{"the same client twice", "clients:\n  - buzz\n  - buzz\n", false},
 		{"an empty name", "clients:\n  - buzz\n  - \"\"\n", false},
 		{"whitespace is not a name", "clients:\n  - \"  \"\n", false},
+		{"a name larri token revoke could not take",
+			"clients:\n  - \"Buzz Desktop\"\n", false},
 	} {
 		err := plan(t, c.yaml)
 		if c.ok && err != nil {
@@ -316,5 +318,17 @@ func TestComputeTypeIsSizedAndValidatedBeforeTheMoney(t *testing.T) {
 		if ValidComputeType(bad) {
 			t.Errorf("%q was accepted; it reaches the server unchecked", bad)
 		}
+	}
+}
+
+// The disk floor rounds up after doubling. Flooring the download to whole GiB
+// first gave a 3.09e9-byte (2.88 GiB) repository 4 GB of cache room where the
+// partial file beside its finished self needs 5.76 GiB, and the fetch would
+// fail with the host already paid for.
+func TestDiskFloorRoundsUpAfterDoubling(t *testing.T) {
+	k := &Kind{downloaded: 3_090_000_000}
+	got := k.criteria(core.Criteria{}, core.SizingPlan{}).DiskGB
+	if want := 6 + 30; got != want {
+		t.Errorf("DiskGB = %d, want %d: 2 x 3.09e9 bytes is 5.76 GiB, which needs 6 GB, not 4", got, want)
 	}
 }

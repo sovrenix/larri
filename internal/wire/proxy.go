@@ -184,6 +184,51 @@ type KeySet interface {
 	Match(presented string) (name string, ok bool)
 }
 
+// OnlyNames narrows a KeySet to the named keys.
+//
+// A local claw's client keys live in the same store as the operator's
+// `larri token` keys, so a revoke reaches both. Narrowing is what keeps that
+// from widening the rig: the claw's endpoint accepts the clients it wired,
+// not every key the operator has ever made for something else.
+func OnlyNames(ks KeySet, names []string) KeySet {
+	allowed := make(map[string]bool, len(names))
+	for _, n := range names {
+		allowed[n] = true
+	}
+	return onlyNames{ks: ks, allowed: allowed}
+}
+
+type onlyNames struct {
+	ks      KeySet
+	allowed map[string]bool
+}
+
+func (o onlyNames) Match(presented string) (string, bool) {
+	name, ok := o.ks.Match(presented)
+	if !ok || !o.allowed[name] {
+		return "", false
+	}
+	return name, true
+}
+
+// AnyOf accepts a key any of the sets accepts, asking them in order. Nil sets
+// are skipped.
+func AnyOf(sets ...KeySet) KeySet { return anyOf(sets) }
+
+type anyOf []KeySet
+
+func (a anyOf) Match(presented string) (string, bool) {
+	for _, ks := range a {
+		if ks == nil {
+			continue
+		}
+		if name, ok := ks.Match(presented); ok {
+			return name, true
+		}
+	}
+	return "", false
+}
+
 // NewProxy binds the local port. Binding here, before anything is declared
 // healthy, is what makes a port already in use an error rather than a rig that
 // reports READY while every client gets connection refused.

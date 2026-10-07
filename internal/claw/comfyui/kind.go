@@ -176,8 +176,9 @@ func (k *Kind) criteria(base core.Criteria, plan core.SizingPlan) core.Criteria 
 		RAMGB: int(sizing.DiffusionHostRAMBytes(k.bundle.TotalBytes) / sizing.GiB),
 		// Disk holds the image, the bundle and the renders. Doubling the
 		// bundle covers a partial file sitting beside its finished self
-		// during a resumed fetch.
-		DiskGB: int(k.bundle.TotalBytes/sizing.GiB)*2 + 40,
+		// during a resumed fetch, and is rounded up after doubling rather
+		// than floored before it, which could leave the volume two GiB short.
+		DiskGB: int((2*k.bundle.TotalBytes+sizing.GiB-1)/sizing.GiB) + 40,
 	}
 	return claw.RaiseCriteria(base, want)
 }

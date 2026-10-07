@@ -33,11 +33,13 @@ language: en
 concurrency: 1
 
 # The applications to point at the endpoint. Each name gets its own credential,
-# so one can be revoked without touching the others, and LARRI can tell you
-# which of them actually connected rather than only that something did.
+# so one can be revoked without touching the others — `larri token revoke
+# subtitle-edit`, even while the rig serves — and LARRI can tell you which of
+# them actually connected rather than only that something did. A revoked client
+# is given a new key the next session.
 #
-# The name is whatever you call the app — nothing is detected and nothing is
-# written. LARRI prints a base URL, a model name and a key; you paste them once
+# The name is whatever you call the app, in a-z 0-9 _ - since it is also the
+# key's name; nothing is detected and nothing is written. LARRI prints a base URL, a model name and a key; you paste them once
 # into Subtitle Edit, Buzz, or whatever you already use, and the address stays
 # the same across teardowns so you do not paste them again.
 clients:

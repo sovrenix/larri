@@ -294,6 +294,18 @@ func cmdClaw(ctx context.Context, args []string) error {
 		Kind: kind, Plan: plan, LocalPort: *port,
 		HFToken: hf, OutputDir: out,
 	}
+	if kind.Site() == claw.SiteLocal {
+		// Each client's key is recorded beside the operator's own, so
+		// `larri token revoke <client>` ends one client's access mid-session
+		// without rewiring the others (FR-SEC-23). Checked before renting: a
+		// store that cannot be read would leave every client unwired on a
+		// rig already billing.
+		keys := openClientKeys()
+		if err := keys.Check(); err != nil {
+			return fmt.Errorf("claw: client keys: %w: repair or remove it", err)
+		}
+		req.ClientKeys = keys
+	}
 	mode := config.DetectMode(config.Invocation{ForceNonInteractive: *yes}, os.Getenv)
 	switch {
 	case *dryRun:

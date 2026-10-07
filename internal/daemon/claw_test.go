@@ -6,6 +6,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"go.sovrenix.com/larri/internal/errs"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 
 	"go.sovrenix.com/larri/internal/claw"
 	cfake "go.sovrenix.com/larri/internal/claw/fake"
+	"go.sovrenix.com/larri/internal/clientkeys"
 	"go.sovrenix.com/larri/internal/core"
 	pfake "go.sovrenix.com/larri/internal/provider/fake"
 	"go.sovrenix.com/larri/internal/rank"
@@ -541,5 +543,121 @@ func TestALocalClawIsNotHeldUpByTheOutputGuard(t *testing.T) {
 	}
 	if err := o.Down(context.Background(), rig, term); err != nil {
 		t.Errorf("a local claw was refused over renders it never made: %v", err)
+	}
+}
+
+// wiredSession is a local claw session with a real proxy in front of it and
+// the client keys kept in store, wired the way ClawUp leaves it.
+func wiredSession(t *testing.T, o *Orchestrator, store *clientkeys.Store,
+	base secret.Secret, names ...string) *ClawSession {
+
+	t.Helper()
+	var ws []wire.ClientWriter
+	for _, n := range names {
+		ws = append(ws, cfake.NewClient(n))
+	}
+	s := sessionFor(t, o, cfake.NewLocal("demo", cfake.Behaviour{Clients: ws}))
+	p, err := wire.NewProxy(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { p.Close() })
+	s.Live.proxy, s.Live.ClientToken, s.keys = p, base, store
+	o.attachLocal(s)
+	return s
+}
+
+// accepts reports whether the session's proxy lets a key past
+// authentication. There is no upstream behind it, so an accepted request is
+// answered 503 and a refused one 401.
+func accepts(s *ClawSession, key secret.Secret) bool {
+	r := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	r.Host = fmt.Sprintf("127.0.0.1:%d", s.Live.proxy.LocalPort())
+	r.Header.Set("Authorization", "Bearer "+key.Reveal())
+	w := httptest.NewRecorder()
+	s.Live.proxy.ServeHTTP(w, r)
+	return w.Code != http.StatusUnauthorized
+}
+
+// FR-SEC-23 promises one client can be revoked without rewiring the rest. The
+// keys used to live only in the proxy's memory, where `larri token revoke`
+// running in another terminal could not reach them; and since they were
+// derived from the name alone, the next session would have handed a revoked
+// client its old key back.
+func TestRevokingOneWiredClientEndsItsAccessAndOnlyItsAccess(t *testing.T) {
+	o := clawOrch(t)
+	store := clientkeys.Open(t.TempDir())
+	base := secret.New("larri-stable-base")
+	s := wiredSession(t, o, store, base, "buzz", "subtitle-edit")
+
+	keyOf := func(name string) secret.Secret {
+		t.Helper()
+		k, err := o.clientKey(s, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return k
+	}
+	buzz, sub := keyOf("buzz"), keyOf("subtitle-edit")
+	if !accepts(s, buzz) || !accepts(s, sub) {
+		t.Fatal("a wired client's key was not accepted")
+	}
+
+	if err := store.Revoke("buzz"); err != nil {
+		t.Fatal(err)
+	}
+	if accepts(s, buzz) {
+		t.Error("a revoked client was still accepted by the serving rig")
+	}
+	if !accepts(s, sub) {
+		t.Error("revoking one client cut off another")
+	}
+
+	// The next session derives buzz a new key; the revoked one stays dead.
+	next := wiredSession(t, o, store, base, "buzz", "subtitle-edit")
+	if accepts(next, buzz) {
+		t.Error("the next session accepted the key that was revoked")
+	}
+	if fresh, _ := o.clientKey(next, "buzz"); fresh.Equal(buzz) || !accepts(next, fresh) {
+		t.Error("the next session did not wire buzz with a new, working key")
+	}
+	if !accepts(next, sub) {
+		t.Error("an unrevoked client's key changed between sessions")
+	}
+}
+
+// The store also holds the operator's own `larri token` keys. Sharing it is
+// what lets a revoke reach a claw client; it must not let those keys in.
+func TestAClawEndpointAcceptsOnlyTheClientsItWired(t *testing.T) {
+	o := clawOrch(t)
+	store := clientkeys.Open(t.TempDir())
+	other, err := store.Create("laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := wiredSession(t, o, store, secret.New("larri-stable-base"), "buzz")
+	if accepts(s, other) {
+		t.Error("a key made for something else was accepted by a claw's endpoint")
+	}
+}
+
+// A name already held by an operator's key is that client's problem alone.
+func TestANameTakenByAnOperatorKeyLeavesTheOtherClientsWired(t *testing.T) {
+	o := clawOrch(t)
+	store := clientkeys.Open(t.TempDir())
+	taken, err := store.Create("buzz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := wiredSession(t, o, store, secret.New("larri-stable-base"), "buzz", "subtitle-edit")
+	if _, err := o.clientKey(s, "buzz"); err == nil {
+		t.Error("a claw client took over a name an operator's key holds")
+	}
+	if accepts(s, taken) {
+		t.Error("the operator's key leaked into the claw endpoint")
+	}
+	sub, err := o.clientKey(s, "subtitle-edit")
+	if err != nil || !accepts(s, sub) {
+		t.Errorf("one refused name left the other client unwired: %v", err)
 	}
 }

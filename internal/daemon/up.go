@@ -412,6 +412,11 @@ type UpRequest struct {
 	// it is on the record before the create call, like everything else a
 	// crash mid-create has to leave behind (§4).
 	ClawSite string
+
+	// spent is what earlier attempts of the same bring-up have already cost,
+	// so Up can refuse an offer the rest of the budget cannot carry to READY
+	// before the create call rather than after it. Set by attempt.
+	spent float64
 }
 
 // Up provisions a rig and returns it ready to serve.
@@ -913,6 +918,17 @@ func (o *Orchestrator) Up(ctx context.Context, req UpRequest) (*core.Rig, error)
 		}
 	}
 
+	// The budget is checked here, before the create, and not only by the
+	// clock attempt starts once Up returns. That clock counts from before the
+	// search, so nothing Up does goes unbilled against it — but by then the
+	// instance exists, and an offer whose own cold-start estimate is more than
+	// the budget left is one the clock can only cut off partway through the
+	// download: paid for, and never served. Refusing costs nothing.
+	if err := o.checkBudgetToReady(chosen, plan, req.spent); err != nil {
+		o.Sync(ctx)
+		return nil, err
+	}
+
 	// The report above is queued, not printed. Let it land before asking.
 	o.Sync(ctx)
 	if req.Confirm != nil && !req.Confirm(chosen, plan) {
@@ -1130,6 +1146,38 @@ func (o *Orchestrator) UpAndServe(ctx context.Context, req UpRequest) (*Live, er
 	return nil, lastErr
 }
 
+// checkBudgetToReady refuses an offer the remaining budget cannot bring to
+// READY, judged by the same cold-start estimate the plan report prints.
+//
+// Without a link speed there is no estimate, and only a budget already spent
+// is refused: guessing a download time to refuse on would turn an estimate
+// nobody can see into a refusal nobody can explain.
+func (o *Orchestrator) checkBudgetToReady(chosen core.Offer, plan core.SizingPlan,
+	spent float64) error {
+
+	if o.BudgetUSD <= 0 {
+		return nil
+	}
+	left := o.BudgetUSD - spent
+	if left <= 0 {
+		return errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.Up",
+			"$%.2f spent against a $%.2f budget: nothing rented", spent, o.BudgetUSD)
+	}
+	if chosen.NetDownMbps <= 0 || chosen.PriceHr <= 0 {
+		return nil
+	}
+	ready := provisionEstimate + fetchETA(coldStartBytes(plan), chosen.NetDownMbps)
+	if cost := ready.Hours() * chosen.PriceHr; cost > left {
+		return errs.Newf(errs.ClassCriteriaUnsatisfiable, "daemon.Up",
+			"reaching ready on %s %s is estimated at $%.2f (~%s at $%.3f/hr), "+
+				"more than the $%.2f left of the $%.2f budget: nothing rented — "+
+				"raise --budget or pick a smaller model",
+			chosen.Provider, chosen.Hardware(), cost, roundETA(ready), chosen.PriceHr,
+			left, o.BudgetUSD)
+	}
+	return nil
+}
+
 // budgetBounded shortens a bring-up context to what the budget still affords.
 //
 // The ceiling covers the whole rig, so a bring-up that would exhaust it before
@@ -1180,6 +1228,7 @@ func (o *Orchestrator) attempt(ctx context.Context, req UpRequest, spent float64
 	defer cancel()
 
 	started := time.Now()
+	req.spent = spent
 	rig, err := o.Up(ctx, req)
 	if err != nil {
 		return nil, rig, o.explainDeadline(ctx, err, deadline, started)

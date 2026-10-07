@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"go.sovrenix.com/larri/internal/claw"
+	"go.sovrenix.com/larri/internal/clientkeys"
 	"go.sovrenix.com/larri/internal/core"
 	"go.sovrenix.com/larri/internal/errs"
 	"go.sovrenix.com/larri/internal/runtime"
@@ -145,8 +146,10 @@ func (k *Kind) criteria(base core.Criteria, plan core.SizingPlan) core.Criteria 
 		// image and the operating system.
 		RAMGB: ramFloorGB(k.downloaded),
 		// The image, the download, and room for the cache to hold a partial
-		// file beside its finished self during a resumed fetch.
-		DiskGB: int(k.downloaded/sizing.GiB)*2 + 30,
+		// file beside its finished self during a resumed fetch. Rounded up
+		// after doubling: flooring first loses up to two GiB, and a volume
+		// that much short fails the fetch on a rig already billing.
+		DiskGB: int((2*k.downloaded+sizing.GiB-1)/sizing.GiB) + 30,
 	}
 	return claw.RaiseCriteria(base, want)
 }
@@ -269,6 +272,13 @@ func validClients(names []string) error {
 		if strings.TrimSpace(n) == "" {
 			return errs.Newf(errs.ClassModelFailure, "whisper.Plan",
 				"empty client name")
+		}
+		// The name is what `larri token revoke` takes, so it has to be one
+		// the key store can hold. Refused here, where it costs nothing,
+		// rather than as an unwired client on a rig already billing.
+		if err := clientkeys.ValidName(n); err != nil {
+			return errs.Newf(errs.ClassModelFailure, "whisper.Plan",
+				"client %q: a client name is also its key's name: %v", n, err)
 		}
 		if seen[n] {
 			return errs.Newf(errs.ClassModelFailure, "whisper.Plan",

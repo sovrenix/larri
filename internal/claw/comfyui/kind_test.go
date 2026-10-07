@@ -283,3 +283,14 @@ func hasPrefixIn(lines []string, want string) bool {
 	}
 	return false
 }
+
+// The disk floor rounds up after doubling, as the speech claw's does: a bundle
+// of 6.5 GiB needs 13 GB of cache room, and flooring before doubling asked
+// for 12.
+func TestDiskFloorRoundsUpAfterDoubling(t *testing.T) {
+	k := &Kind{bundle: &workflow.Bundle{TotalBytes: 6_979_321_856}} // 6.5 GiB
+	got := k.criteria(core.Criteria{}, core.SizingPlan{}).DiskGB
+	if want := 13 + 40; got != want {
+		t.Errorf("DiskGB = %d, want %d", got, want)
+	}
+}

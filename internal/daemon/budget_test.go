@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"go.sovrenix.com/larri/internal/errs"
 	pfake "go.sovrenix.com/larri/internal/provider/fake"
 	"go.sovrenix.com/larri/internal/runtime"
 	rfake "go.sovrenix.com/larri/internal/runtime/fake"
@@ -144,5 +145,51 @@ func TestStoppingOnTheBudgetStillDestroysTheRig(t *testing.T) {
 	for _, i := range inst {
 		t.Errorf("instance %s is still alive after the budget stopped the run: "+
 			"the ceiling left a rig billing", i.InstanceID)
+	}
+}
+
+// An offer whose own cold-start estimate is more than the budget is refused
+// before the create call. The bring-up clock would end it anyway, but only
+// partway through a download that was paid for and never served.
+func TestABudgetTooSmallToReachReadyRentsNothing(t *testing.T) {
+	o, _, _ := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	fast := offers()
+	for i := range fast {
+		fast[i].NetDownMbps = 100
+	}
+	p := pfake.New("fake", fast, pfake.Behaviour{})
+	o.Provider = p
+	// Two minutes of provisioning alone is about $0.013 at $0.40/hr.
+	o.BudgetUSD = 0.01
+
+	_, err := o.UpAndServe(context.Background(), upReq())
+	if err == nil {
+		t.Fatal("a budget that cannot reach ready was accepted")
+	}
+	if errs.ClassOf(err) != errs.ClassCriteriaUnsatisfiable {
+		t.Errorf("class = %v, want CriteriaUnsatisfiable: %v", errs.ClassOf(err), err)
+	}
+	for _, c := range p.Calls {
+		if c == "Create" {
+			t.Fatalf("rented with a budget that cannot reach ready: calls %v", p.Calls)
+		}
+	}
+}
+
+// A budget that does cover the cold start is not refused by the estimate.
+func TestABudgetThatReachesReadyStillRents(t *testing.T) {
+	o, _, _ := newOrch(t, pfake.Behaviour{}, rfake.Behaviour{})
+	fast := offers()
+	for i := range fast {
+		fast[i].NetDownMbps = 1000
+	}
+	o.Provider = pfake.New("fake", fast, pfake.Behaviour{})
+	o.BudgetUSD = 5
+	rig, err := o.Up(context.Background(), upReq())
+	if err != nil {
+		t.Fatalf("refused under a budget that covers the cold start: %v", err)
+	}
+	if rig == nil || rig.Instance == nil {
+		t.Fatal("no instance created")
 	}
 }

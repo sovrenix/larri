@@ -133,20 +133,44 @@ func ResolveClientKey(env func(string) string) (secret.Secret, ClientKeySource, 
 // createClientKey writes the credential only if nothing else got there first,
 // and returns what is on disk when something did.
 //
-// O_EXCL rather than a temporary file and a rename, because the rename was the
-// race. Two first runs — a claw in one terminal, another in the next — both
-// saw no file, both generated a key, and both renamed over the top. Each
-// process then returned the value it made while the file held one of them, so
-// the clients configured by the loser were invalidated by the next rig that
-// read the file.
+// Written to a temporary file and then hard-linked into place, because both
+// simpler orders race. A rename replaces whatever is there: two first runs —
+// a claw in one terminal, another in the next — both renamed over the top, and
+// the loser returned a value the file no longer held. O_EXCL on the final path
+// fixes that but makes the file visible empty, between the create and the
+// write; a second run reading in that window found nothing and fell back to a
+// credential of its own, which is the same churn by another route. A link
+// fails if the name exists, like O_EXCL, and the name only ever appears with
+// the key already in it.
 //
 // The kernel decides who wins, and the loser reads the winner's value rather
 // than its own.
 func createClientKey(path, key string) (stored string, err error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", fmt.Errorf("config: create %s: %w", filepath.Dir(path), err)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("config: create %s: %w", dir, err)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	tmp, err := os.CreateTemp(dir, ".client.key.*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("config: write %s: %w", path, err)
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("config: write %s: %w", path, err)
+	}
+	if _, err := tmp.WriteString(key + "\n"); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("config: write %s: %w", path, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("config: write %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("config: write %s: %w", path, err)
+	}
+	err = os.Link(tmp.Name(), path)
 	if errors.Is(err, fs.ErrExist) {
 		b, rerr := os.ReadFile(path)
 		if rerr != nil {
@@ -154,21 +178,15 @@ func createClientKey(path, key string) (stored string, err error) {
 		}
 		v := strings.TrimSpace(string(b))
 		if v == "" {
-			// Created but not yet written — the winner is between the two
-			// calls. Nothing to read, so this session uses its own value and
-			// says so rather than returning an empty credential.
+			// Not one of ours — a link only ever publishes a written file —
+			// so somebody left an empty file there. This session uses its
+			// own value and says so rather than returning an empty
+			// credential.
 			return "", fmt.Errorf("config: %s is empty", path)
 		}
 		return v, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("config: write %s: %w", path, err)
-	}
-	if _, err := f.WriteString(key + "\n"); err != nil {
-		f.Close()
-		return "", fmt.Errorf("config: write %s: %w", path, err)
-	}
-	if err := f.Close(); err != nil {
 		return "", fmt.Errorf("config: write %s: %w", path, err)
 	}
 	return "", nil
