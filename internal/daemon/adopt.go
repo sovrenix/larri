@@ -249,6 +249,24 @@ func (o *Orchestrator) dialPinned(ctx context.Context, inst *core.Instance,
 		"reconnect failed: %v", shortErr(lastErr))
 }
 
+// endpointURL renders the local address in the form its clients actually use.
+//
+// "/v1" is the OpenAI base path, and an inference client is configured with
+// exactly that string. A browser surface has no such base: ComfyUI is served
+// at the root, so advertising /v1 for it names a path that 404s. A live run
+// printed "tunnel http://127.0.0.1:8188/v1" for a rig whose UI was at "/",
+// which is the endpoint an operator would have pasted into a browser first.
+//
+// Asked of the workload rather than branched on its kind, so a future
+// protocol answers this without editing the wiring layer.
+func (o *Orchestrator) endpointURL(port int) string {
+	base := runtime.ProtocolOpenAI.BasePath()
+	if o.Runtime != nil {
+		base = o.Runtime.Protocol().BasePath()
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d%s", port, base)
+}
+
 // attachTunnel opens the forward and proxy for an endpoint and records them on
 // live. Serve and Adopt share it so a restored rig is wired exactly like a
 // fresh one — including the credential substitution, which is what keeps a
@@ -290,7 +308,18 @@ func (o *Orchestrator) attachTunnel(ctx context.Context, live *Live, rig *core.R
 	if o.ClientKeys != nil {
 		proxy.SetKeys(o.ClientKeys)
 	}
-	if o.needsRigKey() {
+	// Three cases in order, because collapsing two of them lost the third.
+	//
+	// OneRigKey is an explicit request for a credential that goes with the rig
+	// and ends with it — what an agent gets from larri_status. Handing that
+	// caller a stable key would give it one that outlives the rig it came
+	// with, which is the opposite of what it asked for.
+	//
+	// A caller holding a stable token wants it registered even where a key
+	// store is readable — needsRigKey now says so upstream, and the ordering
+	// here is what makes the two agree: with both set, the body preferred the
+	// stable token and quietly overrode the explicit request above it.
+	mintRigKey := func() error {
 		token, err := secret.Generate(32)
 		if err != nil {
 			cancel()
@@ -298,8 +327,24 @@ func (o *Orchestrator) attachTunnel(ctx context.Context, live *Live, rig *core.R
 		}
 		proxy.AddClient("this-rig", token)
 		live.ClientToken = token
+		return nil
+	}
+	switch {
+	case o.OneRigKey:
+		if err := mintRigKey(); err != nil {
+			return err
+		}
+	case !o.ClientToken.Empty():
+		// Named for what it is, so the proxy's record does not report a key
+		// that outlives the rig as one that does not.
+		proxy.AddClient("larri-client", o.ClientToken)
+		live.ClientToken = o.ClientToken
+	case o.needsRigKey():
+		if err := mintRigKey(); err != nil {
+			return err
+		}
 	}
 	rig.LocalPort = proxy.LocalPort()
-	live.Endpoint = fmt.Sprintf("http://127.0.0.1:%d/v1", rig.LocalPort)
+	live.Endpoint = o.endpointURL(rig.LocalPort)
 	return nil
 }

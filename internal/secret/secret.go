@@ -42,7 +42,22 @@ func Generate(nbytes int) (Secret, error) {
 	if _, err := rand.Read(b); err != nil {
 		return Secret{}, fmt.Errorf("secret: reading entropy: %w", err)
 	}
-	return Secret{v: base64.RawURLEncoding.EncodeToString(b)}, nil
+	// Prefixed, and the prefix is load-bearing rather than decorative.
+	//
+	// base64url's alphabet contains '-', so one generated value in sixty-four
+	// began with it — and a credential that begins with a dash is read as a
+	// flag by every argument parser it is handed to. A live run lost a rig to
+	// exactly that: vLLM was launched with a correctly quoted --api-key whose
+	// value started with '-', argparse saw the next token as an option, and
+	// the server exited with "expected at least one argument". Quoting cannot
+	// help, because the decision is made on the first character of an argv
+	// element that is already a single word.
+	//
+	// So no secret this package issues can be mistaken for an option, and the
+	// prefix also makes one recognisable in a config file somebody is
+	// debugging. Every consumer is a header, a cookie, a URL parameter or a
+	// command-line value, and a leading letter is safe in all four.
+	return Secret{v: "larri-" + base64.RawURLEncoding.EncodeToString(b)}, nil
 }
 
 // Reveal returns the underlying value. Every call site is a deliberate

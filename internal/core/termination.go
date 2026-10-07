@@ -63,7 +63,36 @@ type Termination struct {
 	Summary  string            `json:"summary"`            // one evidence-bearing line
 	Evidence map[string]string `json:"evidence,omitempty"` // the facts behind Summary
 	Cost     CostSummary       `json:"cost"`
+
+	// Outputs says what became of a remote claw's results, and destroying one
+	// without an answer is refused.
+	//
+	// It lives on the termination rather than in the caller because every
+	// surface tears rigs down and only one of them had the check. `larri
+	// down` asked; the MCP tool and the TUI called Down directly and
+	// destroyed the only copy of somebody's renders without anyone deciding
+	// to. A rule enforced in one front-end is in the wrong layer
+	// (invariant 6), and this is the record that has to exist anyway.
+	Outputs OutputDisposition `json:"outputs,omitempty"`
 }
+
+// OutputDisposition is what happened to results that existed only on the host.
+type OutputDisposition string
+
+const (
+	// OutputsUndecided is the zero value, and the one Down refuses on for a
+	// rig that holds results. Nobody has said what should happen to them.
+	OutputsUndecided OutputDisposition = ""
+
+	// OutputsCollected: retrieval ran. Whether it retrieved everything is a
+	// separate question the Result answers — what matters here is that the
+	// attempt was made before the host went.
+	OutputsCollected OutputDisposition = "collected"
+
+	// OutputsDiscarded: somebody decided to lose them, or there were none to
+	// lose because the rig never got far enough to make any.
+	OutputsDiscarded OutputDisposition = "discarded"
+)
 
 // EvidenceNothingCreated is the evidence key a teardown sets when it has
 // asked the provider and found nothing carrying the rig's label.

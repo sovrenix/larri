@@ -6,6 +6,7 @@ package vllm
 import (
 	"context"
 	"fmt"
+	"go.sovrenix.com/larri/internal/errs"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -631,5 +632,41 @@ func TestToolCallingNoteSpeaksOnlyWhenItWillNotWork(t *testing.T) {
 		Ref: "Qwen/Qwen2.5-1.5B-Instruct", ToolCalling: core.Forbid,
 	}); !strings.Contains(note, "off") {
 		t.Errorf("a deliberate refusal should say so: %q", note)
+	}
+}
+
+// An engine that rejects its own command line will reject it on every host, so
+// the failure must not buy another machine.
+//
+// A live run proved the cost. A rig token that happened to begin with a dash
+// made argparse read the next flag as a missing argument; vLLM exited with
+// "expected at least one argument", the failure was classified host-class, and
+// the same doomed launch was bought on fresh hardware.
+func TestAnArgparseRejectionIsNotTheHostsFault(t *testing.T) {
+	r := New()
+	usage := "usage: vllm serve [model_tag] [options]\n" +
+		"vllm serve: error: argument --api-key: expected at least one argument\n"
+	if got := r.ClassifyFailure(usage); got != errs.ClassModelFailure {
+		t.Errorf("class = %v, want model-failure: the next host runs the same command", got)
+	}
+
+	for _, log := range []string{
+		"ValueError: Unknown quantization method: bitsandbytes",
+		"torch.cuda.OutOfMemoryError: CUDA out of memory",
+		"vllm serve: error: unrecognized arguments --nope",
+	} {
+		if got := r.ClassifyFailure(log); got != errs.ClassModelFailure {
+			t.Errorf("class = %v for %q, want model-failure", got, log)
+		}
+	}
+
+	// A machine that died says nothing about the configuration, and the
+	// caller's host-failure default is right for it.
+	for _, log := range []string{
+		"", "connection reset by peer", "no space left on device",
+	} {
+		if got := r.ClassifyFailure(log); got != errs.ClassUnknown {
+			t.Errorf("class = %v for %q, want unknown so the host default stands", got, log)
+		}
 	}
 }
