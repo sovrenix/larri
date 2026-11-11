@@ -5,19 +5,23 @@ package daemon
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
-	"go.sovrenix.com/larri/internal/errs"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"go.sovrenix.com/larri/internal/claw"
+	"go.sovrenix.com/larri/internal/claw/comfyui"
 	cfake "go.sovrenix.com/larri/internal/claw/fake"
 	"go.sovrenix.com/larri/internal/clientkeys"
 	"go.sovrenix.com/larri/internal/core"
+	"go.sovrenix.com/larri/internal/errs"
 	pfake "go.sovrenix.com/larri/internal/provider/fake"
 	"go.sovrenix.com/larri/internal/rank"
 	rfake "go.sovrenix.com/larri/internal/runtime/fake"
@@ -91,6 +95,67 @@ func TestARemoteClawNeedsSomewhereToPutItsResults(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("a remote claw was rented with no output directory")
+	}
+}
+
+func TestRemoteClawRigsPreserveRendersWithTheSameName(t *testing.T) {
+	const filename = "ComfyUI_00001_.png"
+	root := t.TempDir()
+	o := &Orchestrator{}
+	collector := &comfyui.Kind{}
+	proxy, err := wire.NewProxy(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	renders := []struct{ id, payload string }{
+		{"rig-one", "AAAA"},
+		{"rig-two", "BBBB"},
+	}
+	for _, render := range renders {
+		s := &ClawSession{
+			Live:      &Live{Rig: &core.Rig{ID: render.id}, proxy: proxy},
+			Kind:      cfake.NewRemote("demo", cfake.Behaviour{}),
+			OutputDir: root,
+		}
+		if err := o.attachClaw(s); err != nil {
+			t.Fatal(err)
+		}
+		host := &renderOutputSession{filename: filename, payload: render.payload}
+		res, err := collector.Collect(context.Background(), host, s.OutputDir, time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.Complete() || len(res.Saved) != 1 {
+			t.Fatalf("rig %s did not save its render: %+v", render.id, res)
+		}
+	}
+	for _, render := range renders {
+		got, err := os.ReadFile(filepath.Join(root, render.id, filename))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != render.payload {
+			t.Errorf("rig %s render = %q, want %q", render.id, got, render.payload)
+		}
+	}
+}
+
+type renderOutputSession struct {
+	rfake.Session
+	filename string
+	payload  string
+}
+
+func (s *renderOutputSession) Run(_ context.Context, cmd string) ([]byte, error) {
+	switch {
+	case strings.HasPrefix(cmd, "find "):
+		return []byte(fmt.Sprintf("%d\t1700000000\t%s\x00", len(s.payload), s.filename)), nil
+	case strings.HasPrefix(cmd, "base64 "):
+		return []byte(base64.StdEncoding.EncodeToString([]byte(s.payload))), nil
+	default:
+		return nil, fmt.Errorf("unexpected command: %s", cmd)
 	}
 }
 

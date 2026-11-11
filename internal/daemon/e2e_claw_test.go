@@ -278,7 +278,7 @@ func TestE2EClawComfyUI(t *testing.T) {
 	}
 
 	// The images must actually be on local disk, not merely reported as such.
-	entries, err := os.ReadDir(outDir)
+	entries, err := os.ReadDir(filepath.Join(outDir, rig.ID))
 	if err != nil {
 		t.Fatalf("read output dir: %v", err)
 	}

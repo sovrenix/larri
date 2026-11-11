@@ -69,7 +69,7 @@ func cmdClaw(ctx context.Context, args []string) error {
 	list := fs.Bool("list", false, "list the claw types compiled in")
 	cfgPath := fs.String("config", "", "claw job file")
 	typeName := fs.String("type", "", "claw type, when the job file does not say")
-	outDir := fs.String("output", "", "where a remote claw's results are saved (default: ./claw-output)")
+	outDir := fs.String("output", "", "root for per-rig output directories (default: ./claw-output)")
 	// Fixed, not kernel-chosen. Invariant 3 is about the local address being
 	// the stable half of the pair, and a port that differs every session is a
 	// bookmark that rots and a client that has to be reconfigured — which is
@@ -204,7 +204,7 @@ func cmdClaw(ctx context.Context, args []string) error {
 		fmt.Printf("  download    %s before it can work\n", sizing.HumanBytes(plan.ColdStartBytes))
 	}
 	if kind.Site() == claw.SiteRemote {
-		fmt.Printf("  output      %s\n", out)
+		fmt.Printf("  output root %s\n", out)
 	}
 
 	// ---- the rest of the setup -------------------------------------------
@@ -344,7 +344,7 @@ func cmdClaw(ctx context.Context, args []string) error {
 	fmt.Printf("\n  %s\n", daemon.PrivacyNotice(rig))
 	fmt.Printf("\n  %s\n", describePolicy(conf))
 	if kind.Site() == claw.SiteRemote {
-		fmt.Printf("  results are saved to %s on teardown\n", out)
+		fmt.Printf("  results are saved to %s on teardown\n", sess.OutputDir)
 	}
 	fmt.Printf("  holding the session — Ctrl-C to stop paying\n\n")
 

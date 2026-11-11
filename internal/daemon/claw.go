@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"go.sovrenix.com/larri/internal/claw"
@@ -35,8 +36,8 @@ type ClawRequest struct {
 
 	HFToken secret.Secret
 
-	// OutputDir is where a remote claw's results are saved. Unused by a local
-	// claw, which produces nothing on the host.
+	// OutputDir is the root for remote claw results. Each rig gets its own
+	// subdirectory. Unused by local claws.
 	OutputDir string
 
 	Confirm func(offer core.Offer, plan core.SizingPlan) bool
@@ -69,7 +70,7 @@ type ClawSession struct {
 	// Ask NewSessionURL for another when a second browser needs one.
 	URL string
 
-	// OutputDir is where a remote claw's results are saved locally.
+	// OutputDir is the rig-specific directory for a remote claw's results.
 	OutputDir string
 
 	// StartedAt bounds what a teardown collects, so a rig adopted from an
@@ -167,6 +168,8 @@ func (o *Orchestrator) ClawUp(ctx context.Context, req ClawRequest) (*ClawSessio
 func (o *Orchestrator) attachClaw(s *ClawSession) error {
 	switch s.Kind.Site() {
 	case claw.SiteRemote:
+		// Different rigs can render the same relative names under one output root.
+		s.OutputDir = filepath.Join(s.OutputDir, s.Live.Rig.ID)
 		return o.attachRemote(s)
 	case claw.SiteLocal:
 		o.attachLocal(s)
