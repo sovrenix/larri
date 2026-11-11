@@ -22,10 +22,12 @@ import (
 
 // upstreamRecorder stands in for the rig, capturing what actually arrived.
 type upstreamRecorder struct {
-	mu    sync.Mutex
-	auth  []string
-	probe []string
-	srv   *httptest.Server
+	mu     sync.Mutex
+	auth   []string
+	probe  []string
+	cookie []string
+	refer  []string
+	srv    *httptest.Server
 }
 
 func newUpstream(t *testing.T) *upstreamRecorder {
@@ -35,6 +37,8 @@ func newUpstream(t *testing.T) *upstreamRecorder {
 		u.mu.Lock()
 		u.auth = append(u.auth, r.Header.Get("Authorization"))
 		u.probe = append(u.probe, r.Header.Get(ProbeHeader))
+		u.cookie = append(u.cookie, r.Header.Get("Cookie"))
+		u.refer = append(u.refer, r.Header.Get("Referer"))
 		u.mu.Unlock()
 		fmt.Fprint(w, `{"choices":[{"message":{"content":"pong"}}]}`)
 	}))
@@ -288,5 +292,272 @@ func TestStoredClientKeysAreAcceptedAndStripped(t *testing.T) {
 	}
 	if got := up.lastAuth(); got != "Bearer RIG" {
 		t.Errorf("upstream saw %q; a client key must never reach the host", got)
+	}
+}
+
+// Verification in every tier (FR-WIRE-14) needs evidence that the application
+// reached the endpoint, and for a guided client there is no file to inspect
+// instead. The identity was already resolved to authenticate the request and
+// was being discarded.
+func TestTheProxyRecordsWhichClientsActuallyShowedUp(t *testing.T) {
+	up := newUpstream(t)
+	p, base := startProxy(t, up, "rig-key")
+	p.AddClient("subtitle-edit", secret.New("tok-se"))
+	p.AddClient("buzz", secret.New("tok-buzz"))
+
+	probe := ProxyProber(p)
+
+	for _, name := range []string{"subtitle-edit", "buzz"} {
+		if ok, _ := probe(name); ok {
+			t.Errorf("%s was reported as having arrived before it sent anything", name)
+		}
+	}
+
+	resp := post(t, base, "tok-se", nil)
+	resp.Body.Close()
+
+	if ok, _ := probe("subtitle-edit"); !ok {
+		t.Error("a client that sent a request was not recorded as having arrived")
+	}
+	if ok, _ := probe("buzz"); ok {
+		t.Error("a client that sent nothing was reported as having arrived")
+	}
+}
+
+// LARRI's own probes carry the client's credential, so counting them would
+// verify the wiring against itself — the same mistake as a health check that
+// resets the idle clock it enforces.
+func TestLARRIsOwnProbesDoNotVerifyTheWiring(t *testing.T) {
+	up := newUpstream(t)
+	p, base := startProxy(t, up, "rig-key")
+	p.AddClient("subtitle-edit", secret.New("tok-se"))
+
+	resp := post(t, base, "tok-se", map[string]string{ProbeHeader: "1"})
+	resp.Body.Close()
+
+	if ok, _ := ProxyProber(p)("subtitle-edit"); ok {
+		t.Error("a larri probe was accepted as the operator's client arriving")
+	}
+}
+
+func TestA503DoesNotCountAsAClientArriving(t *testing.T) {
+	p, base := startProxy(t, nil, "")
+	p.AddClient("subtitle-edit", secret.New("tok-se"))
+
+	resp := post(t, base, "tok-se", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+	if ok, _ := ProxyProber(p)("subtitle-edit"); ok {
+		t.Error("a request refused before any upstream existed marked the client seen")
+	}
+}
+
+func TestAProberForNoProxyIsNil(t *testing.T) {
+	if ProxyProber(nil) != nil {
+		t.Error("a nil proxy produced a prober that would claim something")
+	}
+}
+
+// lastCookie is what the rented host was sent.
+func (u *upstreamRecorder) lastCookie() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if len(u.cookie) == 0 {
+		return ""
+	}
+	return u.cookie[len(u.cookie)-1]
+}
+
+func (u *upstreamRecorder) lastReferer() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if len(u.refer) == 0 {
+		return ""
+	}
+	return u.refer[len(u.refer)-1]
+}
+
+// The credential boundary has two headers, not one.
+//
+// Authorization was stripped and substituted from the start; Cookie was
+// forwarded verbatim, so a browser-authenticated request handed LARRI's own
+// session credential to the rented host — which has root and reads whatever
+// arrives. Stripping one and passing the other is not a boundary, and ComfyUI
+// has no use for it either: it holds no server-side credential at all.
+func TestTheSessionCookieNeverReachesTheHost(t *testing.T) {
+	up := newUpstream(t)
+	p, base := startProxy(t, up, "rig-key")
+	tok := secret.New("cookie-secret")
+	p.EnableBrowserSession(tok)
+
+	req, err := http.NewRequest(http.MethodGet, base+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: SessionCookie, Value: tok.Reveal()})
+	// The proxied application's own cookie, which must survive: deleting the
+	// whole header to protect one value breaks somebody else's frontend.
+	req.AddCookie(&http.Cookie{Name: "comfy_layout", Value: "wide"})
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the cookie-authenticated request got %d", resp.StatusCode)
+	}
+
+	got := up.lastCookie()
+	if strings.Contains(got, tok.Reveal()) {
+		t.Errorf("the host was sent LARRI's session credential: %q", got)
+	}
+	if strings.Contains(got, SessionCookie) {
+		t.Errorf("the host was sent the session cookie: %q", got)
+	}
+	if !strings.Contains(got, "comfy_layout=wide") {
+		t.Errorf("the application's own cookie was dropped: %q", got)
+	}
+}
+
+func TestRefererIsNotForwardedToTheHost(t *testing.T) {
+	up := newUpstream(t)
+	p, base := startProxy(t, up, "rig-key")
+	tok := secret.New("cookie-secret")
+	p.EnableBrowserSession(tok)
+
+	req, err := http.NewRequest(http.MethodGet, base+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: SessionCookie, Value: tok.Reveal()})
+	req.Header.Set("Referer", "http://127.0.0.1:8188"+SessionPath+"?t=one-time")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the cookie-authenticated request got %d", resp.StatusCode)
+	}
+	if got := up.lastReferer(); got != "" {
+		t.Errorf("the host saw a referer: %q", got)
+	}
+}
+
+// A request that is still open must not hold the rig alive unless it is work.
+//
+// Classifying the traffic as background was necessary and not sufficient: every
+// request was bracketed in-flight regardless of classification, and IdleFor
+// returns zero while anything is in flight. A ComfyUI frontend holds a
+// WebSocket through this proxy for as long as the tab is on screen, so the
+// handler never returned, in-flight never reached zero, and the rig could not
+// go idle — which is precisely what the comment beside the classification
+// claimed to prevent.
+//
+// Asserted while the request is open, because that is the whole bug: after it
+// completes the counter is zero either way.
+func TestAHeldBackgroundRequestDoesNotHoldTheRig(t *testing.T) {
+	var (
+		open    = make(chan struct{})
+		release = make(chan struct{})
+		once    sync.Once
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(open) })
+		<-release // the socket a browser leaves open
+	}))
+	defer upstream.Close()
+	defer close(release)
+
+	p, base := startProxy(t, nil, "")
+	u, _ := url.Parse(upstream.URL)
+	port, _ := strconv.Atoi(u.Port())
+	p.SetUpstream(Upstream{Host: u.Hostname(), Port: port})
+	p.AddClient("cli", secret.New("tok"))
+	p.CountsAsWork = func(r *http.Request) bool {
+		return r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions"
+	}
+	p.Activity.MarkOperator(time.Now().Add(-time.Hour))
+
+	go func() {
+		req, err := http.NewRequest(http.MethodGet, base+"/ws", nil)
+		if err != nil {
+			return
+		}
+		req.Header.Set("Authorization", "Bearer tok")
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-open // the proxy is carrying it now, and will be until release
+
+	if n := p.Activity.InFlight(); n != 0 {
+		t.Errorf("in flight = %d while a background request is open", n)
+	}
+	if idle := p.Activity.IdleFor(time.Now()); idle < 59*time.Minute {
+		t.Errorf("idle = %s while nothing but a held background request is open: "+
+			"a tab left on screen would hold the rig forever", idle.Round(time.Second))
+	}
+}
+
+// The same, for work: a long generation is activity even though no new request
+// has arrived, and that must keep holding the rig.
+func TestAHeldWorkRequestDoesHoldTheRig(t *testing.T) {
+	var (
+		open    = make(chan struct{})
+		release = make(chan struct{})
+		once    sync.Once
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(open) })
+		<-release
+	}))
+	defer upstream.Close()
+	defer close(release)
+
+	p, base := startProxy(t, nil, "")
+	u, _ := url.Parse(upstream.URL)
+	port, _ := strconv.Atoi(u.Port())
+	p.SetUpstream(Upstream{Host: u.Hostname(), Port: port})
+	p.AddClient("cli", secret.New("tok"))
+	p.Activity.MarkOperator(time.Now().Add(-time.Hour))
+
+	go func() {
+		resp := post(t, base, "tok", nil)
+		resp.Body.Close()
+	}()
+	<-open
+
+	if n := p.Activity.InFlight(); n != 1 {
+		t.Errorf("in flight = %d while a completion is being generated", n)
+	}
+	if idle := p.Activity.IdleFor(time.Now()); idle != 0 {
+		t.Errorf("idle = %s during a completion: a long generation is activity", idle)
+	}
+}
+
+// The replacement window specifically: a rig that WAS serving and is being
+// swapped underneath the held listener. TestA503DoesNotCountAsAClientArriving
+// covers a proxy that never had an upstream at all; this covers the case the
+// finding described, where a client polls in the gap between two instances.
+func TestA503DuringReplacementIsNotAClientArriving(t *testing.T) {
+	up := newUpstream(t)
+	p, base := startProxy(t, up, "rig-key")
+	p.AddClient("subtitle-edit", secret.New("tok-se"))
+
+	// No upstream: the rig is being replaced and the listener is held open.
+	p.SetUpstream(Upstream{})
+
+	resp := post(t, base, "tok-se", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503 while no rig is serving", resp.StatusCode)
+	}
+	if ok, _ := ProxyProber(p)("subtitle-edit"); ok {
+		t.Error("a client refused with 503 was recorded as having reached the rig")
 	}
 }

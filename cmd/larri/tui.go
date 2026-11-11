@@ -97,6 +97,11 @@ func cmdTUI(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The ceiling covers bring-up and not only what follows READY. Without
+	// this a --budget on the dashboard bounded the supervisor alone, so a rig
+	// could exhaust it during the weight download — which on a slow link is
+	// most of what the operator pays for — and reach READY already over.
+	o.BudgetUSD = cfg.Budget.MaxUSD
 	if r, err := pickRuntime(*engine, spec); err == nil {
 		o.Runtime = r
 		for _, n := range securityNotes(r) {
@@ -189,6 +194,13 @@ func runRig(ctx context.Context, cancel context.CancelFunc, prog *term.Program,
 	release := live.EndServing()
 	dctx, dcancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer dcancel()
+	if term != nil && rig.HoldsHostResults() && term.Outputs == core.OutputsUndecided {
+		// The TUI drives `up`, not a claw session, so there is nothing here
+		// that could have collected. Recorded rather than left undecided so
+		// the teardown is not refused — and recorded as *discarded*, because
+		// that is what it is.
+		term.Outputs = core.OutputsDiscarded
+	}
 	derr := o.Down(dctx, rig, term)
 	release()
 

@@ -6,9 +6,9 @@ package daemon
 import (
 	"context"
 	"errors"
-	"go.sovrenix.com/larri/internal/errs"
-	"go.sovrenix.com/larri/internal/runtime"
-	"go.sovrenix.com/larri/internal/wire"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net"
 	"strings"
 	"sync"
@@ -17,6 +17,10 @@ import (
 	"time"
 
 	"go.sovrenix.com/larri/internal/core"
+	"go.sovrenix.com/larri/internal/errs"
+	"go.sovrenix.com/larri/internal/runtime"
+	"go.sovrenix.com/larri/internal/secret"
+	"go.sovrenix.com/larri/internal/wire"
 )
 
 // A live run rented three V100 boxes in a row and abandoned each one while it
@@ -729,5 +733,61 @@ func TestUnreadableClientKeysAreCaughtBeforeTheMoney(t *testing.T) {
 	o = &Orchestrator{ClientKeys: brokenKeys{}}
 	if err := o.CheckClientKeys(); err != nil || o.needsRigKey() {
 		t.Errorf("readable keys: err %v, own key %v", err, o.needsRigKey())
+	}
+	o = &Orchestrator{
+		ClientKeys:  brokenKeys{},
+		ClientToken: secret.New("stable-client-key"),
+	}
+	if err := o.CheckClientKeys(); err != nil || !o.needsRigKey() {
+		t.Errorf("stable key: err %v, own key %v", err, o.needsRigKey())
+	}
+}
+
+// The weight-download credential must be handed over before Bootstrap.
+//
+// It used to be handed over after, which is fine for an engine that downloads
+// at launch and silently wrong for a workload that downloads during
+// bootstrap: both claws build their fetch command inside Bootstrap and read
+// the token while doing it, so a gated repository passed local planning and
+// was then pulled anonymously on the rented host. The runs that proved these
+// claws used public weights, so nothing failed and nothing noticed.
+//
+// Asserted on the syntax tree because Serve cannot be reached from a unit
+// test — it dials a real host — and the ordering is the whole property.
+func TestTheHFCredentialIsHandedOverBeforeBootstrap(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "live.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var setToken, bootstrap int
+	ast.Inspect(f, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		switch sel.Sel.Name {
+		case "SetHuggingFaceToken":
+			if setToken == 0 {
+				setToken = fset.Position(sel.Pos()).Line
+			}
+		case "Bootstrap":
+			if bootstrap == 0 {
+				bootstrap = fset.Position(sel.Pos()).Line
+			}
+		}
+		return true
+	})
+	if setToken == 0 {
+		t.Fatal("nothing hands the workload its weight-download credential")
+	}
+	if bootstrap == 0 {
+		t.Fatal("Bootstrap is no longer called from live.go")
+	}
+	if setToken > bootstrap {
+		t.Errorf("the credential is set at line %d and Bootstrap runs at line %d: "+
+			"a claw fetches its weights during Bootstrap, so a gated repository "+
+			"would be pulled anonymously on a host that is already billing",
+			setToken, bootstrap)
 	}
 }

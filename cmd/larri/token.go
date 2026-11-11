@@ -55,7 +55,11 @@ func cmdToken(args []string) error {
 			return nil
 		}
 		for _, k := range list {
-			fmt.Printf("  %-32s created %s\n", k.Name, k.Created.Format("2006-01-02 15:04 MST"))
+			note := ""
+			if k.Derived() {
+				note = "  (claw client)"
+			}
+			fmt.Printf("  %-32s created %s%s\n", k.Name, k.Created.Format("2006-01-02 15:04 MST"), note)
 		}
 		return nil
 	case "revoke":

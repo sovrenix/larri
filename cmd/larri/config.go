@@ -295,6 +295,46 @@ func applyProfile(p config.Profile, set map[string]bool,
 	}
 }
 
+// applyClawProfile layers a saved profile under a claw's flags.
+//
+// A subset of applyProfile rather than a call to it, and the subset is the
+// point. A profile describes both a market and a model — which engine, which
+// quantisation, what context length — and only the market half means anything
+// to a claw, whose payload is decided by its job file. Applying the rest would
+// let a saved `model:` silently contradict the workflow or the repository the
+// operator actually named.
+//
+// Flags still win. A profile is what to do when nothing was said, never an
+// override of something that was.
+func applyClawProfile(p config.Profile, set map[string]bool,
+	gpu *string, maxPrice *float64, disk *int, minRel *float64, allowLowStock *bool) {
+
+	if !set["gpu"] && len(p.GPUModel) > 0 {
+		*gpu = strings.Join(p.GPUModel, ",")
+	}
+	if !set["max-price"] && p.MaxPriceHr > 0 {
+		*maxPrice = p.MaxPriceHr
+	}
+	if !set["disk"] && p.DiskGB > 0 {
+		*disk = p.DiskGB
+	}
+	if !set["min-reliability"] && p.MinReliability > 0 {
+		*minRel = p.MinReliability
+	}
+	if !set["allow-low-stock"] && p.AllowLowStock {
+		*allowLowStock = true
+	}
+}
+
+// sourceNote says whether a value came from the command line or from a file,
+// because a ceiling nobody typed is one worth naming (FR-CFG-08).
+func sourceNote(fromFlag bool) string {
+	if fromFlag {
+		return ""
+	}
+	return " (from the saved profile)"
+}
+
 // splitList parses a comma-separated flag value.
 //
 // Shared with the editor's parsing so a `--gpu` typed on the command line and

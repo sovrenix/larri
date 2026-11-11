@@ -220,7 +220,7 @@ func TestDownOfARigThatCreatedNothingStopsItsCostInTheJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rig := &core.Rig{ID: id, State: core.StateSelected, Offer: offers()[0], Model: upReq().Model}
+	rig := &core.Rig{ID: id, State: core.StateSelected, Runtime: core.RuntimeVLLM, Offer: offers()[0], Model: upReq().Model}
 	for _, to := range []core.LifecycleState{core.StateCreating, core.StateFailed} {
 		if err := st.Transition(rig, to, "create failed"); err != nil {
 			t.Fatal(err)
@@ -250,7 +250,7 @@ func TestDownOfARigWithNoInstanceWaitsForTheProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rig := &core.Rig{ID: id, State: core.StateSelected, Offer: offers()[0], Model: upReq().Model}
+	rig := &core.Rig{ID: id, State: core.StateSelected, Runtime: core.RuntimeVLLM, Offer: offers()[0], Model: upReq().Model}
 	for _, to := range []core.LifecycleState{core.StateCreating, core.StateFailed} {
 		if err := st.Transition(rig, to, "create failed"); err != nil {
 			t.Fatal(err)

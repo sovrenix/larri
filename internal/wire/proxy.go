@@ -43,6 +43,7 @@ type Activity struct {
 	lastOperator atomic.Int64 // unix nanos
 	requests     atomic.Int64
 	probes       atomic.Int64
+	background   atomic.Int64
 	inFlight     atomic.Int64
 }
 
@@ -62,6 +63,12 @@ func (a *Activity) Requests() int64 { return a.requests.Load() }
 // Probes counts LARRI's own health checks, kept separately so the exclusion is
 // auditable rather than invisible.
 func (a *Activity) Probes() int64 { return a.probes.Load() }
+
+// Background counts requests that were carried but not treated as work — an
+// open browser tab polling a queue it has nothing in. Counted rather than
+// discarded for the same reason probes are: an exclusion nobody can see is an
+// exclusion nobody can check, and this one decides when a rig is destroyed.
+func (a *Activity) Background() int64 { return a.background.Load() }
 
 // InFlight counts requests currently being served. A long generation is
 // activity even though no new request has arrived.
@@ -88,6 +95,16 @@ func (a *Activity) EnterInFlight() { a.inFlight.Add(1) }
 func (a *Activity) ExitInFlight()  { a.inFlight.Add(-1) }
 
 // IdleFor reports how long the rig has been without operator inference.
+//
+// Zero while work is in flight, because a long generation is activity even
+// though no new request has arrived.
+//
+// Zero also when the clock has never been set, and that case is meant to be
+// unreachable: MarkOperator is called the moment a rig reaches READY, so idle
+// is measured from the point the operator could first have used it. Without
+// that seed a rig nobody ever touched had no clock to run down and could never
+// be reclaimed — which is the likeliest way to abandon one, and exactly what
+// idle reclamation exists for.
 func (a *Activity) IdleFor(now time.Time) time.Duration {
 	if a.InFlight() > 0 {
 		return 0
@@ -116,6 +133,47 @@ type Proxy struct {
 	upstream Upstream
 	clients  map[string]string // sha256 of a token -> client name
 	keys     KeySet
+
+	// seen records which wired clients have actually sent a request.
+	//
+	// This is what makes verification possible in every tier (FR-WIRE-14),
+	// and it is nearly free because the identity is already resolved to
+	// authenticate the request and was previously discarded. Configuration
+	// written correctly to an application that never re-read it is
+	// indistinguishable from configuration that was never written, and the
+	// operator finds out when their client fails rather than when LARRI does.
+	// For a guided client it is the *only* evidence there is: nothing was
+	// written, so there is no file to inspect.
+	seen map[string]bool
+
+	// exchangeToken is the one-time secret in the link an operator opens. It
+	// is cleared the moment it is traded for a cookie, which is what makes
+	// the link one-time rather than merely named that.
+	//
+	// Distinct from browserToken, and it has to be: while the two were the
+	// same value the cookie could not be issued without leaving the URL
+	// credential live, so a printed link stayed valid for the rig's whole
+	// life. These are pasted into terminals, screen shares and issue threads.
+	exchangeToken secret.Secret
+
+	// browserToken is the cookie-shaped credential for a surface the
+	// operator opens rather than configures. Empty disables that path
+	// entirely, which is the default: a /v1 endpoint has no business
+	// accepting a cookie.
+	browserToken secret.Secret
+
+	// CountsAsWork decides which requests reset the idle clock.
+	//
+	// Nil means every non-probe request does, which is right for /v1, where
+	// a request is a completion and a completion is the work. It is wrong
+	// for a surface with a browser attached to it: ComfyUI's frontend polls
+	// its queue, reloads assets, and reconnects a WebSocket for as long as
+	// the tab is open, so an idle timeout counting all of that would never
+	// fire and the reclamation it implements would be decorative.
+	//
+	// Supplied by the caller rather than decided here, so wire keeps no
+	// knowledge of any particular protocol's paths.
+	CountsAsWork func(r *http.Request) bool
 }
 
 // KeySet is a store of client keys the proxy accepts beside the ones added to
@@ -124,6 +182,51 @@ type Proxy struct {
 type KeySet interface {
 	// Match reports the name of the key a presented value is, if any.
 	Match(presented string) (name string, ok bool)
+}
+
+// OnlyNames narrows a KeySet to the named keys.
+//
+// A local claw's client keys live in the same store as the operator's
+// `larri token` keys, so a revoke reaches both. Narrowing is what keeps that
+// from widening the rig: the claw's endpoint accepts the clients it wired,
+// not every key the operator has ever made for something else.
+func OnlyNames(ks KeySet, names []string) KeySet {
+	allowed := make(map[string]bool, len(names))
+	for _, n := range names {
+		allowed[n] = true
+	}
+	return onlyNames{ks: ks, allowed: allowed}
+}
+
+type onlyNames struct {
+	ks      KeySet
+	allowed map[string]bool
+}
+
+func (o onlyNames) Match(presented string) (string, bool) {
+	name, ok := o.ks.Match(presented)
+	if !ok || !o.allowed[name] {
+		return "", false
+	}
+	return name, true
+}
+
+// AnyOf accepts a key any of the sets accepts, asking them in order. Nil sets
+// are skipped.
+func AnyOf(sets ...KeySet) KeySet { return anyOf(sets) }
+
+type anyOf []KeySet
+
+func (a anyOf) Match(presented string) (string, bool) {
+	for _, ks := range a {
+		if ks == nil {
+			continue
+		}
+		if name, ok := ks.Match(presented); ok {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 // NewProxy binds the local port. Binding here, before anything is declared
@@ -178,6 +281,46 @@ func (p *Proxy) SetKeys(k KeySet) {
 func hashToken(t string) string {
 	sum := sha256.Sum256([]byte(t))
 	return hex.EncodeToString(sum[:])
+}
+
+// markSeen records that a wired client has reached the endpoint.
+func (p *Proxy) markSeen(client string) {
+	if client == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.seen == nil {
+		p.seen = make(map[string]bool)
+	}
+	p.seen[client] = true
+}
+
+// Seen reports whether a wired client has sent a request through the proxy.
+//
+// The answer is per rig rather than per session, because the proxy is what a
+// rig replacement holds constant: a client that reached the old instance has
+// demonstrably been configured, and demonstrating it again after a migration
+// would ask the operator to do something they already did.
+func (p *Proxy) Seen(client string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.seen[client]
+}
+
+// ProxyProber verifies wiring by asking the proxy whether the client showed up.
+//
+// The strongest verification available and the cheapest, which is an unusual
+// combination worth taking. Checking that a file was written proves LARRI can
+// write files; checking that the application it configures then authenticated
+// with that client's own credential proves the thing the operator actually
+// cares about. Per-client tokens (FR-SEC-23) are what make the attribution
+// possible at all.
+func ProxyProber(p *Proxy) Prober {
+	if p == nil {
+		return nil
+	}
+	return func(client string) (bool, error) { return p.Seen(client), nil }
 }
 
 // authenticate resolves a presented token to a client name.
@@ -238,15 +381,30 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "wire: unexpected Host header", http.StatusForbidden)
 		return
 	}
+	// Checked before authentication, so a cross-origin request is refused
+	// whatever credential a browser was persuaded to attach to it.
+	if !validOrigin(r.Header.Get("Origin"), p.LocalPort()) {
+		http.Error(w, "wire: cross-origin request refused", http.StatusForbidden)
+		return
+	}
+	if p.browserSessionEnabled() && r.URL.Path == SessionPath {
+		p.serveSession(w, r)
+		return
+	}
 	isProbe := r.Header.Get(ProbeHeader) != ""
 
 	client, ok := p.authenticate(r.Header.Get("Authorization"))
+	if !ok && p.cookieAuthenticated(r) {
+		client, ok = "browser", true
+	}
 	if !ok {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		http.Error(w, "wire: missing or unknown API key", http.StatusUnauthorized)
 		return
 	}
-	_ = client
+	if p.browserSessionEnabled() {
+		browserHeaders(w.Header())
+	}
 
 	p.mu.RLock()
 	up := p.upstream
@@ -257,15 +415,35 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "wire: no rig is currently serving", http.StatusServiceUnavailable)
 		return
 	}
+	// Only the operator's own traffic counts as having reached the endpoint.
+	// LARRI's probes carry the same credential and would otherwise verify the
+	// wiring against itself, which is the same mistake as a health check that
+	// resets the idle clock it enforces.
+	if !isProbe {
+		p.markSeen(client)
+	}
 
-	if isProbe {
+	switch {
+	case isProbe:
 		p.Activity.probes.Add(1)
-	} else {
+	case p.CountsAsWork != nil && !p.CountsAsWork(r):
+		// Carried, but not counted. A browser keeping a tab open is not an
+		// operator using the rig, and treating it as one would hold a GPU
+		// overnight on the strength of a reconnecting WebSocket.
+		p.Activity.background.Add(1)
+	default:
 		p.Activity.requests.Add(1)
 		p.Activity.lastOperator.Store(time.Now().UnixNano())
+		// In flight only for work, and this is the line the comment above was
+		// describing while the code did the opposite. Bracketing *every*
+		// request meant IdleFor returned zero for as long as any request was
+		// open — and a ComfyUI tab holds a WebSocket through this proxy for as
+		// long as it is on screen, so the handler never returned, in-flight
+		// never reached zero, and the rig could not go idle. The classification
+		// above was correct and then discarded one line later.
+		p.Activity.inFlight.Add(1)
+		defer p.Activity.inFlight.Add(-1)
 	}
-	p.Activity.inFlight.Add(1)
-	defer p.Activity.inFlight.Add(-1)
 
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
@@ -278,9 +456,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// rig's substituted; neither is ever visible to the other side.
 			req.Header.Del("Authorization")
 			req.Header.Del(ProbeHeader)
+			req.Header.Del("Referer")
 			if !up.Key.Empty() {
 				req.Header.Set("Authorization", "Bearer "+up.Key.Reveal())
 			}
+			// The same boundary, through the other header a browser
+			// authenticates with. Stripping Authorization and forwarding the
+			// Cookie sent the local credential to the rented host anyway,
+			// which is the thing this whole paragraph exists to prevent — and
+			// the host has root, so it reads whatever arrives. ComfyUI has no
+			// use for it either: it holds no server-side credential at all.
+			stripSessionCookie(req)
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			http.Error(w, "wire: upstream unreachable: "+err.Error(),
@@ -288,6 +474,28 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// stripSessionCookie removes LARRI's own cookie and forwards the rest.
+//
+// Only ours. The proxied application may set and read cookies of its own — UI
+// state, a layout, a collapsed panel — and deleting the whole header to protect
+// one value would break somebody else's frontend to fix a problem in ours.
+func stripSessionCookie(r *http.Request) {
+	cookies := r.Cookies()
+	kept := cookies[:0]
+	for _, c := range cookies {
+		if c.Name != SessionCookie {
+			kept = append(kept, c)
+		}
+	}
+	if len(kept) == len(cookies) {
+		return // nothing of ours was there
+	}
+	r.Header.Del("Cookie")
+	for _, c := range kept {
+		r.AddCookie(c)
+	}
 }
 
 // validHost accepts only loopback names, so a rebinding attack that resolves

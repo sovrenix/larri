@@ -38,6 +38,7 @@ import (
 const usage = `larri — Local Agent for Remote Rigging of Inference
 
   larri up      rent a GPU, serve a model, wire local clients
+  larri claw    rent a GPU for an application (--list for the types)
   larri down    revert wiring, destroy the rig, confirm it is gone
   larri resume  rebuild the tunnel to a rig that outlived the last process
   larri offers  search and rank without spending anything
@@ -133,6 +134,8 @@ func main() {
 	switch os.Args[1] {
 	case "up":
 		err = cmdUp(ctx, os.Args[2:])
+	case "claw":
+		err = cmdClaw(ctx, os.Args[2:])
 	case "down":
 		err = cmdDown(ctx, os.Args[2:])
 	case "resume":
@@ -517,6 +520,7 @@ func cmdUp(ctx context.Context, args []string) error {
 		// timeout and always longer, so the supervisor — which can tell a
 		// busy rig from an idle one — acts first.
 		IdleTimeout:        cfg.Idle.Timeout,
+		BudgetUSD:          cfg.Budget.MaxUSD,
 		DeadmanDeadline:    *deadman,
 		EndpointStallLimit: sshWait,
 		AuthStallTimeout:   sshWait,
@@ -618,6 +622,18 @@ func cmdDown(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("down", flag.ExitOnError)
 	nothingCreated := fs.String("nothing-created", "",
 		"for a destroyed rig no instance was ever recorded for: record that nothing was created, and how you checked")
+	// A claw that renders holds the only copy of what it made, and this
+	// command cannot fetch it: the rig's SSH identity is ephemeral and
+	// deliberately never persisted (FR-STATE-05), so a second process has no
+	// way to reach the host. Destroying is therefore irreversible here in a
+	// way it is not for an inference rig, where nothing of the operator's
+	// lives on the machine.
+	//
+	// A live run lost a render to exactly this: `larri down` in one shell
+	// destroyed the instance while the session that would have collected it
+	// was still running in another.
+	discard := fs.Bool("discard-outputs", false,
+		"destroy a rig whose results have not been collected")
 	_ = fs.Parse(args)
 
 	st, err := openStore()
@@ -665,6 +681,19 @@ func cmdDown(ctx context.Context, args []string) error {
 		fmt.Printf("  rig %s is already destroyed\n", target.ID)
 		return nil
 	}
+	// Refused rather than warned. A warning scrolls past above a teardown that
+	// proceeds anyway, and by the time it is read the host is gone.
+	//
+	// The refusal itself now lives in daemon.Down, where every surface reaches
+	// it. What stays here is the wording: this one knows the flag that answers
+	// it, and "record them discarded" is not a useful instruction to somebody
+	// holding a command line.
+	if target.HoldsHostResults() && !*discard {
+		return fmt.Errorf(
+			"down: rig %s holds results that exist only on the host: "+
+				"stop the claw session to collect them, or --discard-outputs",
+			target.ID)
+	}
 	// The rig's own provider, never the configured default. Another one
 	// answers "not found" for an instance it never held, which reads as
 	// confirmed absence of a machine that is still billing.
@@ -698,7 +727,17 @@ func cmdDown(ctx context.Context, args []string) error {
 		fmt.Printf("\n  ✓ rig %s recorded as never created — it no longer accrues\n", target.ID)
 		return nil
 	}
-	if err := o.Down(ctx, target, nil); err != nil {
+	// The decision the guard above already took, recorded where the teardown
+	// can see it. Reaching here for a rig that holds results means --discard-
+	// outputs was given, and the termination says so rather than implying it.
+	term := &core.Termination{
+		Actor: core.ActorOperator, Code: core.ReasonOperatorRequest,
+		At: time.Now().UTC(), Summary: "requested from the CLI",
+	}
+	if target.HoldsHostResults() {
+		term.Outputs = core.OutputsDiscarded
+	}
+	if err := o.Down(ctx, target, term); err != nil {
 		return err
 	}
 	c := target.End.Cost
@@ -908,6 +947,22 @@ func cmdResume(ctx context.Context, args []string) error {
 		}
 	}()
 	defer close(events)
+
+	// A claw's workload cannot be rebuilt from the rig alone. Server takes the
+	// Plan that Plan() produced, and that came from a job file this process
+	// has never seen — so there is nothing here to reconnect with.
+	//
+	// Said as its own refusal rather than left to pickRuntime, which returns
+	// "unknown runtime" and returns *before* the billing warning below. That
+	// left the operator with a bare error about a name, no price, and no
+	// remedy, for a machine that was still charging by the second (§4).
+	if !target.Runtime.ServesInference() {
+		fmt.Fprintf(os.Stderr,
+			"\n  ! rig %s is still billing at $%.3f/hr — 'larri down %s' destroys it\n",
+			target.ID, target.BilledPriceHr(), target.ID)
+		return fmt.Errorf("resume: rig %s runs %s: no job file to rebuild it from",
+			target.ID, target.Runtime)
+	}
 
 	// The engine the rig was brought up with, not vLLM for everything: each
 	// engine finds its own server process and port, and a llama.cpp rig
