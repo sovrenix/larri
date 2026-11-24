@@ -341,15 +341,16 @@ func (o *Orchestrator) ClawDown(ctx context.Context, s *ClawSession,
 	var res *claw.Result
 	switch s.Kind.Site() {
 	case claw.SiteRemote:
-		res = o.collectClaw(ctx, s)
-		if res != nil && !res.Complete() && term != nil {
+		var failure string
+		res, failure = o.collectClaw(ctx, s)
+		if failure != "" && term != nil {
 			// Recorded on the termination rather than only printed, so the
 			// answer to "where are my outputs" survives the session that
 			// lost them.
 			if term.Evidence == nil {
 				term.Evidence = map[string]string{}
 			}
-			term.Evidence["outputs"] = res.Summary()
+			term.Evidence["outputs"] = failure
 		}
 	case claw.SiteLocal:
 		o.revertClaw(s)
@@ -369,18 +370,18 @@ func (o *Orchestrator) ClawDown(ctx context.Context, s *ClawSession,
 	return res, err
 }
 
-// collectClaw retrieves what a remote claw produced, and never returns an
-// error: every caller is on its way to a destroy, and there is no failure here
-// worth not destroying over.
-func (o *Orchestrator) collectClaw(ctx context.Context, s *ClawSession) *claw.Result {
+// collectClaw retrieves what a remote claw produced. It returns any failure
+// summary as evidence for the termination record.
+func (o *Orchestrator) collectClaw(ctx context.Context, s *ClawSession) (*claw.Result, string) {
 	r, ok := s.Kind.(claw.Remote)
 	if !ok {
-		return nil
+		return nil, ""
 	}
 	sess := s.Live.Session()
 	if sess == nil {
-		o.warn("outputs", "no ssh session: whatever the host produced cannot be collected")
-		return nil
+		const failure = "no SSH session: whatever the host produced cannot be collected"
+		o.warn("outputs", "%s", failure)
+		return nil, failure
 	}
 	cctx, cancel := context.WithTimeout(ctx, o.outputBudget())
 	defer cancel()
@@ -388,19 +389,20 @@ func (o *Orchestrator) collectClaw(ctx context.Context, s *ClawSession) *claw.Re
 	o.emit("outputs", "collecting into %s", s.OutputDir)
 	res, err := r.Collect(cctx, sess, s.OutputDir, s.StartedAt.Add(-time.Minute))
 	if err != nil {
-		o.warn("outputs", "could not collect: %s — destroying anyway rather than leaving it billing",
-			shortErr(err))
-		return nil
+		failure := "could not collect: " + shortErr(err)
+		o.warn("outputs", "%s — destroying anyway rather than leaving it billing", failure)
+		return nil, failure
 	}
+	summary := res.Summary()
 	if res.Complete() {
-		o.emit("outputs", "%s", res.Summary())
-		return res
+		o.emit("outputs", "%s", summary)
+		return res, ""
 	}
-	o.warn("outputs", "%s — these are lost when the host goes", res.Summary())
+	o.warn("outputs", "%s — these are lost when the host goes", summary)
 	for name, why := range res.Failed {
 		o.warn("outputs", "  %s: %s", name, why)
 	}
-	return res
+	return res, summary
 }
 
 // revertClaw puts back whatever a local claw changed on this machine.

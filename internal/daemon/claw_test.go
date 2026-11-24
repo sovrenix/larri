@@ -27,6 +27,7 @@ import (
 	rfake "go.sovrenix.com/larri/internal/runtime/fake"
 	"go.sovrenix.com/larri/internal/secret"
 	"go.sovrenix.com/larri/internal/sizing"
+	"go.sovrenix.com/larri/internal/sshx"
 	"go.sovrenix.com/larri/internal/state"
 	"go.sovrenix.com/larri/internal/wire"
 )
@@ -178,24 +179,15 @@ func TestALocalClawNeedsNoOutputDirectory(t *testing.T) {
 
 // Results exist only on the host and a destroy is irreversible, so collection
 // happens first — and the teardown proceeds either way.
-func TestARemoteClawCollectsBeforeDestroying(t *testing.T) {
+func TestAMissingSSHSessionStillDestroys(t *testing.T) {
 	o := clawOrch(t)
-	k := cfake.NewRemote("demo", cfake.Behaviour{
-		Collected: &claw.Result{Saved: []string{"a.png"}, Failed: map[string]string{}},
-	})
+	k := cfake.NewRemote("demo", cfake.Behaviour{})
 	s := sessionFor(t, o, k)
-	rig := s.Live.Rig
 
-	// No SSH session exists, so collection cannot run — which is exactly the
-	// case that must still destroy.
-	res, err := o.ClawDown(context.Background(), s, term())
-	if err != nil {
+	if _, err := o.ClawDown(context.Background(), s, term()); err != nil {
 		t.Fatalf("teardown refused to proceed: %v", err)
 	}
-	if rig.State != core.StateDestroyed {
-		t.Errorf("state = %s, want DESTROYED", rig.State)
-	}
-	_ = res
+	assertCollectionFailureSaved(t, o, s.Live.Rig.ID, "no SSH session")
 }
 
 // A collection that fails outright must not keep a rig alive. Files left
@@ -204,16 +196,29 @@ func TestAFailedCollectionStillDestroys(t *testing.T) {
 	o := clawOrch(t)
 	k := cfake.NewRemote("demo", cfake.Behaviour{CollectErr: errors.New("host gone")})
 	s := sessionFor(t, o, k)
-	rig := s.Live.Rig
+	// The fake collector ignores the session, but ClawDown needs one to call it.
+	s.Live.ssh = &sshx.Client{}
 
 	if _, err := o.ClawDown(context.Background(), s, term()); err != nil {
 		t.Fatalf("a failed collection blocked the teardown: %v", err)
 	}
-	if rig.State != core.StateDestroyed {
-		t.Errorf("state = %s, want DESTROYED", rig.State)
+	assertCollectionFailureSaved(t, o, s.Live.Rig.ID, "host gone")
+}
+
+func assertCollectionFailureSaved(t *testing.T, o *Orchestrator, rigID, reason string) {
+	t.Helper()
+	saved, err := o.Store.Load(rigID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if rig.End == nil {
-		t.Error("no termination record; a destroyed rig must say why it went")
+	if saved.State != core.StateDestroyed {
+		t.Errorf("saved state = %s, want DESTROYED", saved.State)
+	}
+	if saved.End == nil {
+		t.Fatal("no saved termination record")
+	}
+	if got := saved.End.Evidence["outputs"]; !strings.Contains(got, reason) {
+		t.Errorf("saved output evidence = %q, want it to contain %q", got, reason)
 	}
 }
 
