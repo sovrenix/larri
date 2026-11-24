@@ -1,0 +1,48 @@
+# Copyright (C) 2026 Sovrenix Inc.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# A model manifest maps the bare filenames a ComfyUI graph uses to the
+# repositories they are published from.
+#
+# A graph names its models and says nothing about where they come from or how
+# large they are, so this is the piece the graph cannot supply. It is a
+# separate file rather than an annotation inside the workflow because ComfyUI
+# rewrites the workflow on every save, and anything LARRI added to it would not
+# survive.
+#
+# LARRI consults this file FIRST and its built-in catalogue second, so an entry
+# here always wins. That order matters: a catalogue entry silently overriding
+# an explicit mapping would fetch a different model than the one you asked for.
+#
+# You do not need this file for the models in the built-in catalogue — the
+# stock SDXL and FLUX filenames resolve without it. Use it for anything else,
+# or to pin a revision, or to point a stock name at your own fork.
+#
+#   larri comfy --workflow sdxl.json --models models.yaml
+#
+# `file` defaults to the key, so an entry may name only the repository.
+# `revision` pins a commit; omitted, it tracks the repository's main branch.
+# `bytes` asserts a size instead of looking one up, for a source that cannot be
+# measured ahead of time. Prefer letting LARRI measure it: the size is what
+# ranks the market on time-and-cost, and a wrong one picks the wrong host.
+#
+# Every file must be a safetensors (or GGUF) container. A .ckpt, .pt, .pth or
+# .bin is a pickle and torch executes it as code on load, on the host holding
+# your Hugging Face token — LARRI refuses those unless you pass --allow-pickle.
+
+models:
+  # The entries below are already in the built-in catalogue and are shown to
+  # demonstrate the shape. Uncomment to override them.
+  #
+  # sd_xl_base_1.0.safetensors:
+  #   repo: stabilityai/stable-diffusion-xl-base-1.0
+  #   file: sd_xl_base_1.0.safetensors
+  #   revision: 462165984030d82259a11f4367a4eed129e94a7b
+
+  # A model the catalogue does not know — the common case for this file.
+  #
+  # my_merge_v3.safetensors:
+  #   repo: someone/their-sdxl-merge
+  #   file: my_merge_v3.safetensors
+
+  {}

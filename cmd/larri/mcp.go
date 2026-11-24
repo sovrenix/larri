@@ -116,7 +116,19 @@ func cmdMCP(ctx context.Context, args []string) error {
 }
 
 // newOrchestrator builds one configured from the environment.
-func newOrchestrator(st *state.Store, runtimeKind, providerName string, model core.ModelSpec, events chan<- daemon.Event) (*daemon.Orchestrator, error) {
+// newOrchestrator builds the lifecycle for the surfaces that are not `up`.
+//
+// Shared by the TUI and by MCP, which is why anything the CLI resolves from
+// the environment has to be resolved here too. The stable client credential
+// was not, so both surfaces minted a fresh one per rig and would have
+// invalidated every wired client on every teardown.
+//
+// The spend ceiling is deliberately *not* here: it belongs to a bring-up
+// request rather than to the environment, so each provisioning caller sets it.
+// Invariant 6 is the rule that was broken either way — a capability that only
+// works from the CLI is in the wrong layer.
+func newOrchestrator(st *state.Store, runtimeKind, providerName string, model core.ModelSpec,
+	events chan<- daemon.Event) (*daemon.Orchestrator, error) {
 	prov, err := openProvider(providerName)
 	if err != nil {
 		return nil, err

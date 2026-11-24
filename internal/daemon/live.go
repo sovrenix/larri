@@ -44,9 +44,8 @@ type Live struct {
 	Rig      *core.Rig
 	Endpoint string
 
-	// ClientToken is a key for this rig alone, set only when one was minted
-	// (Orchestrator.OneRigKey, or no stored keys to accept). Empty means
-	// clients use their stored keys.
+	// ClientToken is the direct client credential this session accepts when one
+	// was supplied or minted. Empty means clients use only stored keys.
 	ClientToken secret.Secret
 
 	// probeToken is LARRI's own key for readiness and health probes. Never
@@ -69,7 +68,8 @@ type Live struct {
 	release func() // gives up holding the rig
 }
 
-// RigKey is the key for this rig alone, empty when clients use stored keys.
+// RigKey is the direct client credential for this session, empty when clients
+// use only stored keys.
 func (l *Live) RigKey() secret.Secret {
 	l.ending.Lock()
 	defer l.ending.Unlock()
@@ -156,8 +156,19 @@ func (l *Live) closeServing() {
 	}
 }
 
+// Session returns an authenticated channel to the host, for callers that need
+// to reach it outside the bring-up — collecting rendered files before a
+// teardown being the one that matters.
+func (l *Live) Session() runtime.Session {
+	if l.ssh == nil {
+		return nil
+	}
+	return l.ssh.Session()
+}
+
 // Serve brings a provisioned rig up to READY: waits for sshd, pins the host
-// key, bootstraps, launches, opens the tunnel, and verifies a real completion.
+// key, bootstraps, launches, opens the tunnel, and verifies a real round-trip
+// — a completion for an engine, a rendered file for an application workload.
 func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyPair,
 	localPort int, hfToken secret.Secret) (*Live, error) {
 
@@ -276,16 +287,26 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 			}
 		}
 	}()
+	// Hand the weight-download credential over *before* Bootstrap, because
+	// that is where the weights are fetched.
+	//
+	// It used to be handed over after, which worked for every engine that
+	// downloads at launch and silently broke the two that do not: both claws
+	// build their fetch command inside Bootstrap and read this token while
+	// doing it, so a gated repository passed local planning and was then
+	// pulled anonymously on the rented host. Public weights hid it — the runs
+	// that proved these claws used SDXL and whisper large-v3, neither gated.
+	//
+	// The reason it was late still holds and is unaffected: the rig was
+	// journalled and snapshotted in Up, long before this line, so the token
+	// reaches neither (FR-STATE-05).
+	if taker, ok := o.Runtime.(runtime.CredentialTaker); ok && !hfToken.Empty() {
+		taker.SetHuggingFaceToken(hfToken)
+	}
 	err = o.Runtime.Bootstrap(ctx, sess, rig.Model, rig.Plan, progress)
 	close(progress)
 	if err != nil {
 		return live, err
-	}
-
-	// Hand the weight-download credential over at launch, so it never reaches
-	// a snapshot or a journal entry (FR-STATE-05).
-	if taker, ok := o.Runtime.(runtime.CredentialTaker); ok && !hfToken.Empty() {
-		taker.SetHuggingFaceToken(hfToken)
 	}
 	o.emit("launch", "starting %s", o.Runtime.Kind())
 	ep, err := o.Runtime.Launch(ctx, sess, rig.Model, rig.Plan)
@@ -309,14 +330,33 @@ func (o *Orchestrator) Serve(ctx context.Context, rig *core.Rig, keys *sshx.KeyP
 	// whole path: the forward carries traffic, the proxy substitutes the rig
 	// credential, and the model produces a token. A check run on the host
 	// would prove only that vLLM answers itself.
-	o.emit("ready", "waiting for a completion to round-trip")
+	o.emit("ready", "waiting for %s to round-trip", o.roundTrip())
 	if err := o.waitReady(ctx, sess, rig, live.proxy.LocalPort(), live.probeToken); err != nil {
 		return live, err
 	}
-	if err := o.Store.Transition(rig, core.StateReady, "completion round-trip verified"); err != nil {
+	if err := o.Store.Transition(rig, core.StateReady,
+		o.roundTrip()+" round-trip verified"); err != nil {
 		return live, err
 	}
+	// Start the idle clock here, at the first moment the operator could have
+	// used the rig. Until this existed the clock was only ever set by a request
+	// arriving, so a rig that reached READY and was then walked away from had
+	// no clock at all and could never be reclaimed — the likeliest way to
+	// abandon one, and the case idle reclamation is for (invariant 4).
+	if a := live.Activity(); a != nil {
+		a.MarkOperator(time.Now())
+	}
 	return live, nil
+}
+
+// roundTrip names what READY proves, in the vocabulary of whatever is running.
+// The protocol answers it; see runtime.Protocol.RoundTrip for why each one
+// names its own.
+func (o *Orchestrator) roundTrip() string {
+	if o.Runtime == nil {
+		return runtime.ProtocolOpenAI.RoundTrip()
+	}
+	return o.Runtime.Protocol().RoundTrip()
 }
 
 // waitForSSH waits for the host to become usable, driven by what the provider
@@ -1028,7 +1068,7 @@ func sumGPUMemoryMB(out string) (totalMB, gpus int) {
 	return totalMB, gpus
 }
 
-// waitReady waits for a real completion, in two regimes.
+// waitReady waits for a real round-trip, in two regimes.
 //
 // Once SSH is up LARRI has far better control than the provider's status text
 // allowed, and the wait should reflect that. Before the runtime has produced a
@@ -1074,7 +1114,7 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 		ep := runtime.Endpoint{Host: "127.0.0.1", Port: port,
 			Model: rig.Model.ServedName, Key: token}
 		if err := o.Runtime.Ready(ctx, ep, rig.Model); err == nil {
-			o.emit("ready", "completion verified after %s",
+			o.emit("ready", "%s verified after %s", o.roundTrip(),
 				time.Since(deadline.Add(-o.readyCap())).Round(time.Second))
 			return nil
 		}
@@ -1156,7 +1196,12 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 					// "exited after 12s" would hunt for a crash on
 					// startup that never happened.
 					said := o.runtimeSaid(ctx, sess)
-					return errs.Newf(errs.ClassHostFailure, "daemon.waitReady",
+					// The workload reads its own traceback, because this
+					// layer cannot tell a dead host from a broken
+					// configuration and defaulting to "dead host" buys the
+					// same failure on the next machine (FR-PROV-05).
+					return errs.Newf(runtime.ClassifyFailure(o.Runtime, said),
+						"daemon.waitReady",
 						"runtime exited without serving%s; log quiet for %s%s",
 						because(said), idleSince(lastGrowth), said)
 				}
@@ -1186,7 +1231,7 @@ func (o *Orchestrator) waitReady(ctx context.Context, sess runtime.Session,
 		}
 	}
 	return errs.Newf(errs.ClassHostFailure, "daemon.waitReady",
-		"no completion before the deadline%s", o.runtimeSaid(ctx, sess))
+		"no %s before the deadline%s", o.roundTrip(), o.runtimeSaid(ctx, sess))
 }
 
 // runtimeSaid collects the runtime's own account of what went wrong.

@@ -38,6 +38,11 @@ func New() *Runtime { return &Runtime{} }
 
 func (r *Runtime) Kind() core.RuntimeKind { return core.RuntimeOllama }
 
+// Protocol reports the OpenAI-compatible /v1 surface, which is what makes
+// this a Runtime rather than merely a Workload: Ollama serves /v1 and the
+// wiring, the chat UI and the IDE configuration all depend on it.
+func (r *Runtime) Protocol() runtime.Protocol { return runtime.ProtocolOpenAI }
+
 // Requires reports the same low floor as llama.cpp, which is what Ollama runs.
 func (r *Runtime) Requires() runtime.Requirements {
 	return runtime.Requirements{MinComputeCapability: 500, Vendor: "nvidia", Why: "Ollama"}

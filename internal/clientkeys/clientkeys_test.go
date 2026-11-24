@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go.sovrenix.com/larri/internal/secret"
 )
 
 // The value is shown once and stored only as a hash: nothing on disk can be
@@ -103,5 +105,84 @@ func TestAnUnreadableKeyFileMatchesNothing(t *testing.T) {
 	}
 	if _, err := s.List(); err == nil {
 		t.Error("listing a corrupt key file reported nothing wrong")
+	}
+}
+
+func deriveWith(base string) func(salt string) (secret.Secret, error) {
+	return func(salt string) (secret.Secret, error) {
+		return secret.New(base + "/" + salt), nil
+	}
+}
+
+// A derived key is the same every session until it is revoked, and different
+// after: re-deriving from the name alone would hand a revoked client its key
+// back at the next bring-up.
+func TestADerivedKeyIsStableUntilRevoked(t *testing.T) {
+	s := Open(t.TempDir())
+	a, err := s.Derive("buzz", deriveWith("base"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.Derive("buzz", deriveWith("base"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.Equal(a) {
+		t.Error("the same client was derived a different key in the next session")
+	}
+	if name, ok := s.Match(a.Reveal()); !ok || name != "buzz" {
+		t.Errorf("Match = %q, %v: a derived key is not accepted", name, ok)
+	}
+	if err := s.Revoke("buzz"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Match(a.Reveal()); ok {
+		t.Error("a revoked derived key still matched")
+	}
+	fresh, err := s.Derive("buzz", deriveWith("base"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Equal(a) {
+		t.Error("after a revoke the same key was derived again")
+	}
+	if _, ok := s.Match(a.Reveal()); ok {
+		t.Error("the revoked key came back with the new derivation")
+	}
+}
+
+// A name held by a key from `larri token create` is configured in some other
+// client; replacing its hash would cut that client off unasked.
+func TestDeriveRefusesANameAnOperatorKeyHolds(t *testing.T) {
+	s := Open(t.TempDir())
+	made, err := s.Create("buzz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Derive("buzz", deriveWith("base")); !errors.Is(err, ErrExists) {
+		t.Errorf("err = %v, want ErrExists", err)
+	}
+	if _, ok := s.Match(made.Reveal()); !ok {
+		t.Error("the operator's key stopped working")
+	}
+}
+
+// When the base changes — an ephemeral client key, a replaced key file — the
+// stored hash follows, or the key just handed out would be refused.
+func TestADerivedKeyFollowsItsBase(t *testing.T) {
+	s := Open(t.TempDir())
+	if _, err := s.Derive("buzz", deriveWith("old")); err != nil {
+		t.Fatal(err)
+	}
+	k, err := s.Derive("buzz", deriveWith("new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Match(k.Reveal()); !ok {
+		t.Error("the key derived from a new base was refused")
+	}
+	list, _ := s.List()
+	if len(list) != 1 || !list[0].Derived() {
+		t.Errorf("entries = %+v, want one derived entry", list)
 	}
 }
